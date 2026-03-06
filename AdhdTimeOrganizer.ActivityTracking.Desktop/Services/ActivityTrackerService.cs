@@ -6,9 +6,6 @@ using Serilog;
 
 namespace DesktopActivityTracker.Services;
 
-/// <summary>
-/// Core service: polls foreground window, aggregates into 1-minute windows, sends to backend.
-/// </summary>
 public sealed class ActivityTrackerService : IDisposable
 {
     private readonly AppConfig _config;
@@ -20,14 +17,15 @@ public sealed class ActivityTrackerService : IDisposable
     private Task? _pollTask;
     private Task? _sendTask;
 
-    // key = "ProcessName|ExecutablePath", value = (sample, totalSeconds, monitorIndexSum, monitorSampleCount)
-    private readonly Dictionary<string, (ActivitySample Sample, int Seconds, int MonitorTotal, int MonitorCount)> _currentMinute = new();
+    private readonly Dictionary<string, ProcessAccumulator> _currentMinute = new();
     private DateTime _currentWindowStart;
     private int _currentIdleTotal;
     private readonly object _lock = new();
 
-    public bool IsRunning => _cts is not null && !_cts.IsCancellationRequested;
+    // Cached per exe path — populated on first encounter, kept for the app lifetime
+    private static readonly Dictionary<string, string?> _productNameCache = new();
 
+    public bool IsRunning => _cts is not null && !_cts.IsCancellationRequested;
     public event Action<string>? StatusChanged;
 
     public ActivityTrackerService(AppConfig config, ApiClient apiClient)
@@ -40,8 +38,11 @@ public sealed class ActivityTrackerService : IDisposable
     {
         if (IsRunning) return;
 
-        _log.Information("Starting tracker (poll interval: {PollMs}ms, idle threshold: {IdleS}s)",
-            _config.PollIntervalMs, _config.IdleThresholdSeconds);
+        _log.Information(
+            "Starting tracker (poll: {PollMs}ms, idle threshold: {IdleS}s, " +
+            "min bg window: {MinBg}%, max bg per monitor: {MaxBg})",
+            _config.PollIntervalMs, _config.IdleThresholdSeconds,
+            _config.MinBackgroundWindowPercent, _config.MaxBackgroundWindowsPerMonitor);
 
         _cts = new CancellationTokenSource();
         _currentWindowStart = GetCurrentMinuteStart();
@@ -59,9 +60,6 @@ public sealed class ActivityTrackerService : IDisposable
         StatusChanged?.Invoke("Tracking paused");
     }
 
-    /// <summary>
-    /// Polls the foreground window at the configured interval.
-    /// </summary>
     private async Task PollLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -73,7 +71,6 @@ public sealed class ActivityTrackerService : IDisposable
 
                 lock (_lock)
                 {
-                    // If we've crossed into a new minute, finalize the previous window
                     if (currentMinuteStart > _currentWindowStart)
                     {
                         FinalizeCurrentWindow();
@@ -81,37 +78,87 @@ public sealed class ActivityTrackerService : IDisposable
                     }
 
                     var pollSeconds = _config.PollIntervalMs / 1000;
+
                     if (idleSeconds >= _config.IdleThresholdSeconds)
                     {
                         _currentIdleTotal += pollSeconds;
                     }
                     else
                     {
-                        var sample = CaptureCurrentSample();
-                        if (sample is not null)
-                        {
-                            var monitor = MonitorHelper.GetActiveMonitorIndex();
-                            var key = $"{sample.ProcessName}|{sample.ExecutablePath}";
+                        // Gather audio info once per poll — used for all three sections below
+                        var audio = AudioSessionHelper.GetActiveAudioInfo();
 
-                            if (_currentMinute.TryGetValue(key, out var existing))
+                        var foregroundHwnd = Win32.GetForegroundWindow();
+
+                        // ── Active (foreground) window ────────────────────────────
+                        var activeSample = CaptureWindowSample(foregroundHwnd, out var activePid);
+                        if (activeSample is not null && !ShouldIgnore(activeSample))
+                        {
+                            var activeMonitor = MonitorHelper.GetActiveMonitorIndex();
+                            Accumulate(activeSample, activeMonitor, pollSeconds,
+                                isBackground: false,
+                                isPlayingSound: IsPlayingAudio(audio, activePid, activeSample.ExecutablePath),
+                                isFullscreen: MonitorHelper.IsWindowFullscreen(foregroundHwnd));
+                        }
+                        else
+                        {
+                            activeSample = null; // treat ignored active window as no active sample
+                        }
+
+                        var activeKey = activeSample is not null
+                            ? $"{activeSample.ProcessName}|{activeSample.ExecutablePath}"
+                            : null;
+
+                        var trackedKeys = new HashSet<string>();
+                        if (activeKey is not null) trackedKeys.Add(activeKey);
+
+                        // ── Background windows (other monitors, by visible area) ──
+                        var bgWindows = MonitorHelper.GetBackgroundWindows(
+                            foregroundHwnd,
+                            _config.MinBackgroundWindowPercent,
+                            _config.MaxBackgroundWindowsPerMonitor);
+
+                        foreach (var bg in bgWindows)
+                        {
+                            var bgSample = new ActivitySample
                             {
-                                _currentMinute[key] = (sample, existing.Seconds + pollSeconds,
-                                    existing.MonitorTotal + monitor, existing.MonitorCount + 1);
-                            }
-                            else
-                            {
-                                _currentMinute[key] = (sample, pollSeconds, monitor, 1);
-                            }
+                                ProcessName = bg.ProcessName,
+                                WindowTitle = bg.WindowTitle ?? string.Empty,
+                                ExecutablePath = bg.ExecutablePath
+                            };
+                            if (ShouldIgnore(bgSample)) continue;
+
+                            var key = $"{bg.ProcessName}|{bg.ExecutablePath}";
+                            if (!trackedKeys.Add(key)) continue;
+
+                            Accumulate(bgSample, bg.MonitorIndex, pollSeconds,
+                                isBackground: true,
+                                isPlayingSound: IsPlayingAudio(audio, bg.Pid, bg.ExecutablePath),
+                                isFullscreen: false);
+                        }
+
+                        // ── Audio-playing processes not yet tracked ───────────────
+                        foreach (var pid in audio.Pids)
+                        {
+                            var audioSample = CaptureProcessSample(pid, out var mainWindowHandle);
+                            if (audioSample is null || ShouldIgnore(audioSample)) continue;
+
+                            var key = $"{audioSample.ProcessName}|{audioSample.ExecutablePath}";
+                            if (!trackedKeys.Add(key)) continue;
+
+                            Accumulate(audioSample,
+                                MonitorHelper.GetWindowMonitorIndex(mainWindowHandle),
+                                pollSeconds,
+                                isBackground: true,
+                                isPlayingSound: true,
+                                isFullscreen: false);
                         }
                     }
                 }
 
                 await Task.Delay(_config.PollIntervalMs, ct);
             }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
+            catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
                 _log.Error(ex, "Poll loop error");
@@ -123,9 +170,6 @@ public sealed class ActivityTrackerService : IDisposable
         _log.Debug("Poll loop exited");
     }
 
-    /// <summary>
-    /// Periodically checks for windows to send and retries failed ones.
-    /// </summary>
     private async Task SendLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -137,25 +181,18 @@ public sealed class ActivityTrackerService : IDisposable
                 {
                     if (!_retryQueue.TryDequeue(out var window)) break;
 
-                    var sent = await _apiClient.SendActivityWindowAsync(window);
-                    if (sent)
-                    {
-                        _log.Debug("Sent activity window {WindowStart} ({Count} entries)",
-                            window.WindowStart, window.Entries.Count);
-                    }
+                    if (await _apiClient.SendActivityWindowAsync(window))
+                        _log.Debug("Sent window {WindowStart} ({Count} entries)", window.WindowStart, window.Entries.Count);
                     else
                     {
-                        _log.Warning("Failed to send activity window {WindowStart} — re-queuing", window.WindowStart);
+                        _log.Warning("Failed to send window {WindowStart} — re-queuing", window.WindowStart);
                         _retryQueue.Enqueue(window);
                     }
                 }
 
-                await Task.Delay(10_000, ct); // Check every 10s
+                await Task.Delay(10_000, ct);
             }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
+            catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
                 _log.Error(ex, "Send loop error");
@@ -166,10 +203,6 @@ public sealed class ActivityTrackerService : IDisposable
         _log.Debug("Send loop exited");
     }
 
-    /// <summary>
-    /// Aggregates the current minute's data and queues it for sending.
-    /// Must be called within lock(_lock).
-    /// </summary>
     private void FinalizeCurrentWindow()
     {
         if (_currentMinute.Count == 0) return;
@@ -187,22 +220,29 @@ public sealed class ActivityTrackerService : IDisposable
             WindowStart = _currentWindowStart,
             IdleSeconds = _currentIdleTotal,
             Entries = _currentMinute.Values
-                .OrderByDescending(x => x.Seconds)
+                .OrderByDescending(x => x.ActiveSeconds)
+                .ThenByDescending(x => x.BackgroundSeconds)
                 .Select(x => new ActivityEntry
                 {
                     ProcessName = x.Sample.ProcessName,
                     WindowTitle = x.Sample.WindowTitle,
                     ExecutablePath = x.Sample.ExecutablePath,
-                    Seconds = x.Seconds,
-                    ActiveMonitor = x.MonitorCount > 0
-                        ? (int)Math.Round((double)x.MonitorTotal / x.MonitorCount)
-                        : 0
+                    ActiveSeconds = x.ActiveSeconds,
+                    BackgroundSeconds = x.BackgroundSeconds,
+                    ActiveMonitor = x.ResolvedMonitor,
+                    IsPlayingSound = x.WasPlayingSound,
+                    IsFullscreen = x.WasFullscreen,
+                    ProductName = GetProductName(x.Sample.ExecutablePath)
                 })
                 .ToList()
         };
 
-        _log.Information("Finalized window {WindowStart}: {Count} processes, {IdleSeconds}s idle",
-            window.WindowStart, window.Entries.Count, window.IdleSeconds);
+        _log.Information(
+            "Finalized window {WindowStart}: {Count} processes ({Active} active / {Bg} background), {IdleSeconds}s idle",
+            window.WindowStart, window.Entries.Count,
+            window.Entries.Count(e => e.ActiveSeconds > 0),
+            window.Entries.Count(e => e.BackgroundSeconds > 0 && e.ActiveSeconds == 0),
+            window.IdleSeconds);
 
         _retryQueue.Enqueue(window);
         ResetCurrentWindow();
@@ -214,16 +254,69 @@ public sealed class ActivityTrackerService : IDisposable
         _currentIdleTotal = 0;
     }
 
-    private static ActivitySample? CaptureCurrentSample()
+    private void Accumulate(ActivitySample sample, int monitorIndex, int pollSeconds,
+        bool isBackground, bool isPlayingSound, bool isFullscreen)
     {
+        var key = $"{sample.ProcessName}|{sample.ExecutablePath}";
+
+        if (!_currentMinute.TryGetValue(key, out var acc))
+        {
+            acc = new ProcessAccumulator { Sample = sample };
+            _currentMinute[key] = acc;
+        }
+        else
+        {
+            acc.Sample = sample; // keep most recent window title
+        }
+
+        if (isPlayingSound) acc.WasPlayingSound = true;
+        if (isFullscreen) acc.WasFullscreen = true;
+
+        if (isBackground)
+        {
+            acc.BackgroundSeconds += pollSeconds;
+            acc.BackgroundMonitorTotal += monitorIndex;
+            acc.BackgroundMonitorCount++;
+        }
+        else
+        {
+            acc.ActiveSeconds += pollSeconds;
+            acc.ActiveMonitorTotal += monitorIndex;
+            acc.ActiveMonitorCount++;
+        }
+    }
+
+    private static ActivitySample? CaptureWindowSample(nint hWnd, out int pid)
+    {
+        pid = 0;
         try
         {
-            var title = Win32.GetForegroundWindowTitle();
-            var processId = Win32.GetForegroundProcessId();
+            if (hWnd == nint.Zero) return null;
+            Win32.GetWindowThreadProcessId(hWnd, out var processId);
+            pid = (int)processId;
+            if (pid == 0) return null;
 
-            if (title is null || processId is null) return null;
+            var process = Process.GetProcessById(pid);
+            return new ActivitySample
+            {
+                ProcessName = process.ProcessName,
+                WindowTitle = Win32.GetWindowTitle(hWnd) ?? string.Empty,
+                ExecutablePath = GetProcessPath(process)
+            };
+        }
+        catch { return null; }
+    }
 
-            var process = Process.GetProcessById((int)processId.Value);
+    private static ActivitySample? CaptureProcessSample(int pid, out nint mainWindowHandle)
+    {
+        mainWindowHandle = nint.Zero;
+        try
+        {
+            var process = Process.GetProcessById(pid);
+            mainWindowHandle = process.MainWindowHandle;
+            var title = mainWindowHandle != nint.Zero
+                ? Win32.GetWindowTitle(mainWindowHandle) ?? string.Empty
+                : string.Empty;
 
             return new ActivitySample
             {
@@ -232,22 +325,46 @@ public sealed class ActivityTrackerService : IDisposable
                 ExecutablePath = GetProcessPath(process)
             };
         }
-        catch
-        {
-            return null;
-        }
+        catch { return null; }
     }
 
     private static string? GetProcessPath(Process process)
     {
-        try
+        try { return process.MainModule?.FileName; }
+        catch { return null; }
+    }
+
+    private static string? GetProductName(string? executablePath)
+    {
+        if (executablePath is null) return null;
+        if (_productNameCache.TryGetValue(executablePath, out var cached)) return cached;
+
+        string? name = null;
+        try { name = FileVersionInfo.GetVersionInfo(executablePath).ProductName; }
+        catch { /* access denied or file gone */ }
+
+        _productNameCache[executablePath] = name;
+        return name;
+    }
+
+    private static bool IsPlayingAudio(ActiveAudioInfo audio, int pid, string? exePath)
+    {
+        if (audio.Pids.Contains(pid)) return true;
+        if (exePath is not null && audio.ExePaths.Contains(exePath)) return true;
+        return false;
+    }
+
+    private bool ShouldIgnore(ActivitySample sample)
+    {
+        foreach (var rule in _config.IgnoreRules)
         {
-            return process.MainModule?.FileName;
+            if (!sample.ProcessName.Equals(rule.ProcessName, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (rule.WindowTitle is null) return true;
+            if (rule.WindowTitle == "" && string.IsNullOrWhiteSpace(sample.WindowTitle)) return true;
+            if (sample.WindowTitle.Equals(rule.WindowTitle, StringComparison.OrdinalIgnoreCase)) return true;
         }
-        catch
-        {
-            return null;
-        }
+        return false;
     }
 
     private static DateTime GetCurrentMinuteStart()
@@ -260,5 +377,26 @@ public sealed class ActivityTrackerService : IDisposable
     {
         _cts?.Cancel();
         _cts?.Dispose();
+    }
+
+    // ── Accumulator ──────────────────────────────────────────────────────────
+
+    private sealed class ProcessAccumulator
+    {
+        public required ActivitySample Sample { get; set; }
+        public int ActiveSeconds { get; set; }
+        public int BackgroundSeconds { get; set; }
+        public int ActiveMonitorTotal { get; set; }
+        public int ActiveMonitorCount { get; set; }
+        public int BackgroundMonitorTotal { get; set; }
+        public int BackgroundMonitorCount { get; set; }
+        public bool WasPlayingSound { get; set; }
+        public bool WasFullscreen { get; set; }
+
+        public int ResolvedMonitor => ActiveMonitorCount > 0
+            ? (int)Math.Round((double)ActiveMonitorTotal / ActiveMonitorCount)
+            : BackgroundMonitorCount > 0
+                ? (int)Math.Round((double)BackgroundMonitorTotal / BackgroundMonitorCount)
+                : 0;
     }
 }

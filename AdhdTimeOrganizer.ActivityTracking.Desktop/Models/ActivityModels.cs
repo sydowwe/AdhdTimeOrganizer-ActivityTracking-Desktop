@@ -27,11 +27,23 @@ public sealed class ActivityEntry
     [JsonPropertyName("executablePath")]
     public string? ExecutablePath { get; init; }
 
-    [JsonPropertyName("seconds")]
-    public required int Seconds { get; init; }
+    [JsonPropertyName("activeSeconds")]
+    public required int ActiveSeconds { get; init; }
+
+    [JsonPropertyName("backgroundSeconds")]
+    public required int BackgroundSeconds { get; init; }
 
     [JsonPropertyName("activeMonitor")]
     public required int ActiveMonitor { get; init; }
+
+    [JsonPropertyName("isPlayingSound")]
+    public required bool IsPlayingSound { get; init; }
+
+    [JsonPropertyName("isFullscreen")]
+    public required bool IsFullscreen { get; init; }
+
+    [JsonPropertyName("productName")]
+    public string? ProductName { get; init; }
 }
 
 /// <summary>
