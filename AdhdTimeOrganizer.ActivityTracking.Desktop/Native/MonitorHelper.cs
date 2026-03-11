@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
-namespace DesktopActivityTracker.Native;
+namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Native;
 
 internal readonly record struct MonitorInfo(nint Handle, Win32.RECT Bounds);
 

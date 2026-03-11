@@ -1,8 +1,8 @@
-using DesktopActivityTracker.Helpers;
-using DesktopActivityTracker.Models;
-using DesktopActivityTracker.Services;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Helpers;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
-namespace DesktopActivityTracker;
+namespace AdhdTimeOrganizer.ActivityTracking.Desktop;
 
 public sealed class TrayApplicationContext : ApplicationContext
 {
@@ -40,9 +40,11 @@ public sealed class TrayApplicationContext : ApplicationContext
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Exit", null, OnExit);
 
+        using var iconStream = typeof(TrayApplicationContext).Assembly
+            .GetManifestResourceStream("AdhdTimeOrganizer.ActivityTracking.Desktop.timeorganizer-icon.ico");
         _trayIcon = new NotifyIcon
         {
-            Icon = SystemIcons.Application, // TODO: Replace with custom icon
+            Icon = iconStream is not null ? new Icon(iconStream) : SystemIcons.Application,
             Text = "Desktop Activity Tracker",
             Visible = true,
             ContextMenuStrip = contextMenu

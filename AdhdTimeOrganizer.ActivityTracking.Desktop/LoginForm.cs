@@ -1,6 +1,6 @@
-using DesktopActivityTracker.Services;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
-namespace DesktopActivityTracker;
+namespace AdhdTimeOrganizer.ActivityTracking.Desktop;
 
 public sealed class LoginForm : Form
 {

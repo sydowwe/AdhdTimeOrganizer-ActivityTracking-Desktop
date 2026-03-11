@@ -1,10 +1,10 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using DesktopActivityTracker.Models;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 using Serilog;
 
-namespace DesktopActivityTracker.Services;
+namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
 /// <summary>
 /// Handles API communication with JWT bearer token auth and refresh.

@@ -1,10 +1,10 @@
 using Microsoft.Win32;
 
-namespace DesktopActivityTracker.Helpers;
+namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Helpers;
 
 public static class AutoStartHelper
 {
-    private const string AppName = "DesktopActivityTracker";
+    private const string AppName = "AdhdTimeOrganizer";
     private const string RegistryKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
 
     public static bool IsEnabled()

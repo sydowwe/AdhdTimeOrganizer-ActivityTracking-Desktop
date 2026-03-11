@@ -1,10 +1,10 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Diagnostics;
-using DesktopActivityTracker.Models;
-using DesktopActivityTracker.Native;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Native;
 using Serilog;
 
-namespace DesktopActivityTracker.Services;
+namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
 public sealed class ActivityTrackerService : IDisposable
 {
@@ -123,7 +123,7 @@ public sealed class ActivityTrackerService : IDisposable
                             var bgSample = new ActivitySample
                             {
                                 ProcessName = bg.ProcessName,
-                                WindowTitle = bg.WindowTitle ?? string.Empty,
+                                WindowTitle = TrimAppSuffix(bg.ProcessName, bg.WindowTitle ?? string.Empty),
                                 ExecutablePath = bg.ExecutablePath
                             };
                             if (ShouldIgnore(bgSample)) continue;
@@ -257,16 +257,12 @@ public sealed class ActivityTrackerService : IDisposable
     private void Accumulate(ActivitySample sample, int monitorIndex, int pollSeconds,
         bool isBackground, bool isPlayingSound, bool isFullscreen)
     {
-        var key = $"{sample.ProcessName}|{sample.ExecutablePath}";
+        var key = $"{sample.ProcessName}|{sample.ExecutablePath}|{sample.WindowTitle}";
 
         if (!_currentMinute.TryGetValue(key, out var acc))
         {
             acc = new ProcessAccumulator { Sample = sample };
             _currentMinute[key] = acc;
-        }
-        else
-        {
-            acc.Sample = sample; // keep most recent window title
         }
 
         if (isPlayingSound) acc.WasPlayingSound = true;
@@ -286,6 +282,19 @@ public sealed class ActivityTrackerService : IDisposable
         }
     }
 
+    private static readonly HashSet<string> _trimSuffixProcesses =
+        new(StringComparer.OrdinalIgnoreCase) { "rider64", "chrome", "webstorm64", "studio64" };
+
+    private static string TrimAppSuffix(string processName, string title)
+    {
+        if (!_trimSuffixProcesses.Contains(processName)) return title;
+        // Rider uses en dash " – " (U+2013), browsers use hyphen " - "
+        var idx = title.LastIndexOf(" \u2013 ", StringComparison.Ordinal);
+        if (idx < 0)
+            idx = title.LastIndexOf(" - ", StringComparison.Ordinal);
+        return idx > 0 ? title[..idx] : title;
+    }
+
     private static ActivitySample? CaptureWindowSample(nint hWnd, out int pid)
     {
         pid = 0;
@@ -297,10 +306,11 @@ public sealed class ActivityTrackerService : IDisposable
             if (pid == 0) return null;
 
             var process = Process.GetProcessById(pid);
+            var rawTitle = Win32.GetWindowTitle(hWnd) ?? string.Empty;
             return new ActivitySample
             {
                 ProcessName = process.ProcessName,
-                WindowTitle = Win32.GetWindowTitle(hWnd) ?? string.Empty,
+                WindowTitle = TrimAppSuffix(process.ProcessName, rawTitle),
                 ExecutablePath = GetProcessPath(process)
             };
         }
@@ -314,14 +324,14 @@ public sealed class ActivityTrackerService : IDisposable
         {
             var process = Process.GetProcessById(pid);
             mainWindowHandle = process.MainWindowHandle;
-            var title = mainWindowHandle != nint.Zero
+            var rawTitle = mainWindowHandle != nint.Zero
                 ? Win32.GetWindowTitle(mainWindowHandle) ?? string.Empty
                 : string.Empty;
 
             return new ActivitySample
             {
                 ProcessName = process.ProcessName,
-                WindowTitle = title,
+                WindowTitle = TrimAppSuffix(process.ProcessName, rawTitle),
                 ExecutablePath = GetProcessPath(process)
             };
         }

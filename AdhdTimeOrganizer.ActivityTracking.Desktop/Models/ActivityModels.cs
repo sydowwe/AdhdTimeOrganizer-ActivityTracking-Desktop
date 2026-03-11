@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace DesktopActivityTracker.Models;
+namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 
 /// <summary>
 /// A single poll sample captured every 1-2 seconds.
@@ -8,7 +8,7 @@ namespace DesktopActivityTracker.Models;
 public sealed class ActivitySample
 {
     public required string ProcessName { get; init; }
-    public required string WindowTitle { get; init; }
+    public string? WindowTitle { get; init; }
     public string? ExecutablePath { get; init; }
     public DateTimeOffset Timestamp { get; init; } = DateTimeOffset.UtcNow;
 }
@@ -22,7 +22,7 @@ public sealed class ActivityEntry
     public required string ProcessName { get; init; }
 
     [JsonPropertyName("windowTitle")]
-    public required string WindowTitle { get; init; }
+    public string? WindowTitle { get; init; }
 
     [JsonPropertyName("executablePath")]
     public string? ExecutablePath { get; init; }

@@ -1,10 +1,10 @@
-using DesktopActivityTracker;
-using DesktopActivityTracker.Models;
+using AdhdTimeOrganizer.ActivityTracking.Desktop;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 using Serilog;
 
 var logDir = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-    "DesktopActivityTracker", "logs");
+    "AdhdTimeOrganizer", "logs");
 
 Directory.CreateDirectory(logDir);
 
@@ -19,7 +19,7 @@ Log.Logger = new LoggerConfiguration()
     .CreateLogger();
 
 // Prevent multiple instances
-using var mutex = new Mutex(true, "DesktopActivityTracker_SingleInstance", out var isNew);
+using var mutex = new Mutex(true, "AdhdTimeOrganizer_SingleInstance", out var isNew);
 if (!isNew)
 {
     Log.Warning("Another instance is already running — exiting");

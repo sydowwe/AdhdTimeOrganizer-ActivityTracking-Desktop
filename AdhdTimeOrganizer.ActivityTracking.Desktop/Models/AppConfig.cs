@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace DesktopActivityTracker.Models;
+namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 
 /// <summary>
 /// A rule that suppresses tracking for a process.
@@ -22,10 +22,11 @@ public sealed class AppConfig
 {
     private static readonly string ConfigPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "DesktopActivityTracker",
+        "AdhdTimeOrganizer.ActivityTracking.Desktop",
         "config.json");
 
     public string ApiBaseUrl { get; set; } = "https://localhost:8080";
+    // public string ApiBaseUrl { get; set; } = "https://adhdtimeorganizer.com";
     public int PollIntervalMs { get; set; } = 2000;
     public int IdleThresholdSeconds { get; set; } = 30;
     public bool AutoStart { get; set; } = true;
@@ -53,6 +54,7 @@ public sealed class AppConfig
         new() { ProcessName = "StartMenuExperienceHost" }, // Win 10/11 Start menu
         new() { ProcessName = "ShellExperienceHost" },     // Notification centre, older Start
         new() { ProcessName = "ActionCenter" },
+        new() { ProcessName = "Taskmgr" },
 
         // ── Lock / login screen ───────────────────────────────────────────────
         new() { ProcessName = "LockApp" },

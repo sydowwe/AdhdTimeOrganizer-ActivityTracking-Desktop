@@ -3,7 +3,7 @@ using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using Serilog;
 
-namespace DesktopActivityTracker.Native;
+namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Native;
 
 internal record ActiveAudioInfo(HashSet<int> Pids, HashSet<string> ExePaths);
 

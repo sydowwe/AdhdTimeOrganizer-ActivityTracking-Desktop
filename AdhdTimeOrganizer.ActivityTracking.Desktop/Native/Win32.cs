@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace DesktopActivityTracker.Native;
+namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Native;
 
 internal static partial class Win32
 {
