@@ -6,6 +6,9 @@ using Serilog;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
+/// <param name="TodayOnThisPc">Today's recorded foreground time on this machine (<see cref="TodayTotal"/>).</param>
+/// <param name="LastResolved">The newest minute the server stored, with what it resolved to; null before the first, or from an old server.</param>
+/// <param name="Coverage">The mapping coverage behind the "map these apps" prompt; null unless drift nudges are on and it has been fetched.</param>
 public sealed record TrackerStatus(
     bool IsRunning,
     bool IsLocked,
@@ -13,7 +16,13 @@ public sealed record TrackerStatus(
     DateTime? LastSentUtc,
     SendResult? LastSendResult,
     string? LastPollError,
-    DateTime? PausedUntilUtc = null);
+    DateTime? PausedUntilUtc = null,
+    TimeSpan TodayOnThisPc = default,
+    ResolvedMinute? LastResolved = null,
+    AgentCoverage? Coverage = null);
+
+/// <summary>A minute the server stored and what it said about it.</summary>
+public sealed record ResolvedMinute(DateTime WindowStartUtc, HeartbeatResponse Response);
 
 /// <summary>
 /// Polls the desktop, folds polls into minute windows, persists each finished window to the outbox and
@@ -32,11 +41,13 @@ public sealed class ActivityTrackerService : IDisposable
     private static readonly TimeSpan SendInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan OutboxRetention = TimeSpan.FromDays(30);
     private static readonly TimeSpan AgentRulesRefreshInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan CoverageRefreshInterval = TimeSpan.FromHours(1);
     private const int WindowsPerSendPass = 50;
 
     private readonly AppConfig _config;
     private readonly ApiClient _apiClient;
     private readonly OutboxStore _outbox;
+    private readonly TodayTotal _today;
     private readonly NudgeService? _nudges;
     private readonly ILogger _log = Log.ForContext<ActivityTrackerService>();
 
@@ -55,24 +66,34 @@ public sealed class ActivityTrackerService : IDisposable
     private volatile string? _lastPollError;
     private DateTime? _lastSentUtc;
     private SendResult? _lastSendResult;
+    private ResolvedMinute? _lastResolved;
+
+    // Send loop only, except the reset on sign-out / a settings change (both just make the next pass fetch).
+    private AgentCoverage? _coverage;
+    private DateTime _coverageCheckedUtc = DateTime.MinValue;
+    private bool _coverageNotSupported;
 
     public bool IsRunning => _pollCts is { IsCancellationRequested: false };
 
     public ActivityTrackerService(AppConfig config, ApiClient apiClient, NudgeService? nudges)
-        : this(config, apiClient, new OutboxStore(OutboxStore.DefaultDirectory, OutboxRetention), nudges)
+        : this(config, apiClient, new OutboxStore(OutboxStore.DefaultDirectory, OutboxRetention),
+            new TodayTotal(TodayTotal.DefaultPath, TimeZoneInfo.Local), nudges)
     {
     }
 
-    public ActivityTrackerService(AppConfig config, ApiClient apiClient, OutboxStore outbox, NudgeService? nudges = null)
+    public ActivityTrackerService(AppConfig config, ApiClient apiClient, OutboxStore outbox, TodayTotal today, NudgeService? nudges = null)
     {
         _config = config;
         _apiClient = apiClient;
         _outbox = outbox;
+        _today = today;
         _nudges = nudges;
         _recorder = new ActivityRecorder(MaxCreditedGapFor(PollInterval));
 
         // The server rules are one user's on one server; a sign-out (or a new server URL, which signs out) forgets them.
+        // So is what the server last said about the user's minutes and their mapping coverage.
         _apiClient.SignedOut += _agentRules.Clear;
+        _apiClient.SignedOut += ForgetServerAnswers;
 
         // Subscribed from the UI thread, whose message loop delivers them.
         SystemEvents.SessionSwitch += OnSessionSwitch;
@@ -148,8 +169,33 @@ public sealed class ActivityTrackerService : IDisposable
         lock (_lock) window = _recorder.Flush();
         if (window is null) return;
 
-        _outbox.Save(window);
+        Queue(window);
         _log.Information("Flushed partial window {WindowStart} ({Count} entries)", window.WindowStart, window.Entries.Count);
+    }
+
+    /// <summary>To the outbox, and into today's total: queued time counts, whether or not it has been sent yet.</summary>
+    private void Queue(ActivityWindow window)
+    {
+        _outbox.Save(window);
+        _today.Add(window.WindowStart, window.Entries.Sum(e => e.ActiveSeconds));
+    }
+
+    /// <summary>
+    /// Makes the next send pass fetch the mapping coverage again — after drift nudges are turned on, say. A server
+    /// found to have no coverage route isn't asked again until the next sign-in.
+    /// </summary>
+    public void RefreshCoverage()
+    {
+        _coverageCheckedUtc = DateTime.MinValue;
+        RequestSend();
+    }
+
+    private void ForgetServerAnswers()
+    {
+        lock (_lock) _lastResolved = null;
+        _coverage = null;
+        _coverageCheckedUtc = DateTime.MinValue;
+        _coverageNotSupported = false;
     }
 
     /// <summary>Wakes the send loop now instead of at its next interval — after signing in, for example.</summary>
@@ -165,8 +211,11 @@ public sealed class ActivityTrackerService : IDisposable
     public TrackerStatus GetStatus()
     {
         var pending = _outbox.Count; // disk read — kept outside the lock the poll loop takes
+        var today = _today.On(DateTime.UtcNow);
+        var coverage = _config.DriftNudgesEnabled ? _coverage : null;
         lock (_lock)
-            return new TrackerStatus(IsRunning, _isLocked, pending, _lastSentUtc, _lastSendResult, _lastPollError, _config.PausedUntilUtc);
+            return new TrackerStatus(IsRunning, _isLocked, pending, _lastSentUtc, _lastSendResult, _lastPollError, _config.PausedUntilUtc,
+                today, _lastResolved, coverage);
     }
 
     // ── Polling ──────────────────────────────────────────────────────────────
@@ -205,7 +254,7 @@ public sealed class ActivityTrackerService : IDisposable
 
                     foreach (var window in closed)
                     {
-                        _outbox.Save(window);
+                        Queue(window);
                         _log.Information(
                             "Finalized window {WindowStart}: {Count} entries ({Active}s active)",
                             window.WindowStart, window.Entries.Count, window.Entries.Sum(e => e.ActiveSeconds));
@@ -383,6 +432,16 @@ public sealed class ActivityTrackerService : IDisposable
                 _log.Error(ex, "Send loop error");
             }
 
+            try
+            {
+                await RefreshCoverageAsync(ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                _log.Error(ex, "Mapping coverage refresh failed");
+            }
+
             try { await _sendSignal.WaitAsync(SendInterval, ct); }
             catch (OperationCanceledException) { break; }
         }
@@ -412,31 +471,94 @@ public sealed class ActivityTrackerService : IDisposable
             var window = _agentRules.Filter(item.Window);
             if (window is null)
             {
-                _outbox.Remove(item);
+                if (_outbox.Remove(item)) TakeBackUnstored(item.Window, null);
                 _log.Debug("Window {WindowStart}: every entry is ignored by a server rule — not sent", item.Window.WindowStart);
                 continue;
             }
 
-            var result = await _apiClient.SendActivityWindowAsync(window, ct);
-            lock (_lock) _lastSendResult = result;
+            var outcome = await _apiClient.SendActivityWindowAsync(window, ct);
+            lock (_lock) _lastSendResult = outcome.Result;
 
-            switch (result)
+            switch (outcome.Result)
             {
                 case SendResult.Sent:
-                    _outbox.Remove(item);
+                    // Today's figures count a window once, when it is settled: one rewritten in flight goes again as a
+                    // whole, and its first answer covers only part of it.
+                    if (_outbox.Remove(item))
+                    {
+                        TakeBackUnstored(item.Window, window);
+                        if (outcome.Response is { } settled) _today.AddResolved(window.WindowStart, settled);
+                    }
                     lock (_lock) _lastSentUtc = DateTime.UtcNow;
                     _log.Debug("Sent window {WindowStart} ({Count} entries, {Dropped} ignored by a server rule)",
                         window.WindowStart, window.Entries.Count, item.Window.Entries.Count - window.Entries.Count);
+                    if (outcome.Response is { } response)
+                        OnResolved(window.WindowStart, response);
                     break;
 
                 case SendResult.Rejected:
                     // Logged with the server's reason by ApiClient. Retrying an identical batch cannot help.
-                    _outbox.Remove(item);
+                    if (_outbox.Remove(item)) TakeBackUnstored(item.Window, null);
                     break;
 
                 default:
                     return;
             }
+        }
+    }
+
+    /// <summary>
+    /// Takes what never got stored out of today's total: the entries a server rule dropped (<paramref name="sent"/> is
+    /// what was left), or all of a window nothing was sent of or the server refused (<paramref name="sent"/> null).
+    /// Only once the window is settled — one rewritten in flight goes again as a whole and is settled then.
+    /// </summary>
+    private void TakeBackUnstored(ActivityWindow queued, ActivityWindow? sent) =>
+        _today.Add(queued.WindowStart, (sent?.Entries.Sum(e => e.ActiveSeconds) ?? 0) - queued.Entries.Sum(e => e.ActiveSeconds));
+
+    /// <summary>Today's busiest activities on this PC, for the tray's breakdown.</summary>
+    public IReadOnlyList<ActivityTotal> GetTodayTop(int count) => _today.Top(DateTime.UtcNow, count);
+
+    /// <summary>
+    /// What the server said about a stored minute: the newest one is the tray's "now", and every one goes to the drift
+    /// nudge, which skips a backlog minute itself.
+    /// </summary>
+    private void OnResolved(DateTime windowStartUtc, HeartbeatResponse response)
+    {
+        var minute = new ResolvedMinute(MinuteVerdict.AsUtc(windowStartUtc), response);
+        lock (_lock)
+            if (_lastResolved is null || minute.WindowStartUtc >= _lastResolved.WindowStartUtc)
+                _lastResolved = minute;
+
+        _nudges?.OnMinuteResolved(DateTime.UtcNow, MinuteVerdict.From(windowStartUtc, response));
+    }
+
+    /// <summary>
+    /// Fetches the mapping coverage behind the "map these apps to enable drift nudges" prompt, hourly and only while
+    /// drift nudges are on: it is a week of the user's ledger resolved against their rules, not something to ask for
+    /// every pass.
+    /// </summary>
+    private async Task RefreshCoverageAsync(CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        if (!_config.DriftNudgesEnabled || _coverageNotSupported || !_apiClient.HasSession) return;
+        if (now - _coverageCheckedUtc < CoverageRefreshInterval) return;
+
+        var fetch = await _apiClient.FetchCoverageAsync(ct);
+        switch (fetch.Status)
+        {
+            case CoverageFetch.Fetched:
+                _coverage = fetch.Coverage;
+                _coverageCheckedUtc = now;
+                _log.Information("Mapping coverage: {Uncovered} busy unmapped apps", fetch.Coverage?.Uncovered.Count ?? 0);
+                break;
+            case CoverageFetch.NotSupported:
+                _coverageNotSupported = true;
+                _log.Information("The server has no mapping-coverage route — no mapping prompt");
+                break;
+            default:
+                // Try again in a few minutes rather than the full hour.
+                _coverageCheckedUtc = now - CoverageRefreshInterval + TimeSpan.FromMinutes(5);
+                break;
         }
     }
 
@@ -515,6 +637,7 @@ public sealed class ActivityTrackerService : IDisposable
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         SystemEvents.SessionEnding -= OnSessionEnding;
         _apiClient.SignedOut -= _agentRules.Clear;
+        _apiClient.SignedOut -= ForgetServerAnswers;
 
         // Let an in-flight poll finish before flushing, so nothing it records lands after the flush.
         _pollCts?.Cancel();

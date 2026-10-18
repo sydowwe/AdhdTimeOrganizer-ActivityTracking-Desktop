@@ -11,7 +11,10 @@ public enum NudgeKind
     AppStretch,
 
     /// <summary>The break the user started from a nudge is over.</summary>
-    BreakOver
+    BreakOver,
+
+    /// <summary>Off the planned block for too long (<see cref="DriftPolicy"/>).</summary>
+    Drift
 }
 
 public enum NudgeResponse
@@ -20,11 +23,20 @@ public enum NudgeResponse
     Snooze,
     NotNow,
     TurnOff,
-    Dismiss
+    Dismiss,
+    /// <summary>Drift only: open the planner to change the plan.</summary>
+    SwitchPlan
 }
 
-/// <summary>A nudge to show. <see cref="Id"/> ties the toast's buttons back to it.</summary>
-public sealed record Nudge(int Id, NudgeKind Kind, TimeSpan Length, string? AppName);
+/// <summary>What a drift nudge says about the plan. <see cref="PlannedName"/> is user-authored: never log it.</summary>
+public sealed record DriftDetails(string PlannedName, DateTime PlannedEndsUtc);
+
+/// <summary>
+/// A nudge to show. <see cref="Id"/> ties the toast's buttons back to it; ids are per kind's policy, so a press is
+/// routed by <see cref="Kind"/> first. For a drift nudge <see cref="Length"/> is the off-plan time and
+/// <see cref="AppName"/> what it went to.
+/// </summary>
+public sealed record Nudge(int Id, NudgeKind Kind, TimeSpan Length, string? AppName, DriftDetails? Drift = null);
 
 public sealed record NudgeStatus(TimeSpan? StretchLength, DateTime? BreakEndsUtc);
 
@@ -223,7 +235,7 @@ public sealed class HyperfocusPolicy(TimeSpan maxObservedGap)
     public NudgeStatus GetStatus(DateTime nowUtc) =>
         new(_stretchStartUtc is { } start ? nowUtc - start : null, _breakEndsUtc);
 
-    /// <summary>Shows a nudge of <paramref name="kind"/> now, so its toast and buttons can be tried by hand.</summary>
+    /// <summary>Shows a nudge of <paramref name="kind"/> (not <see cref="NudgeKind.Drift"/>) now, so its toast and buttons can be tried by hand.</summary>
     internal Nudge IssueForTest(NudgeKind kind, DateTime nowUtc)
     {
         switch (kind)

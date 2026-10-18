@@ -15,6 +15,14 @@ public sealed class TrayApplicationContext : ApplicationContext
     // "Until tomorrow morning" ends here, local time.
     private static readonly TimeSpan MorningResumeTime = TimeSpan.FromHours(6);
 
+    /// <summary>The distinct-entries grid filtered to what no rule covers, where each row can be mapped.</summary>
+    internal const string UncoveredEntriesPath = "/activity-tracking/desktop/settings/distinctEntries?coverage=Uncovered";
+
+    /// <summary>The merged dashboard: every tracker's day, not just this PC's.</summary>
+    internal const string DashboardPath = "/activity-tracking/unified";
+
+    private const int TopActivityCount = 5;
+
     private readonly NotifyIcon _trayIcon;
     private readonly AppConfig _config;
     private readonly ApiClient _apiClient;
@@ -22,13 +30,20 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ActivityTrackerService _tracker;
     private readonly System.Windows.Forms.Timer _statusTimer;
 
+    private readonly ToolStripMenuItem _glanceItem;
     private readonly ToolStripMenuItem _statusItem;
+    private readonly ToolStripMenuItem _mapAppsItem;
     private readonly ToolStripMenuItem _toggleItem;
     private readonly ToolStripMenuItem _autoStartItem;
     private readonly ToolStripMenuItem _signInOutItem;
 
     private bool _isInitializing = true;
     private bool _hadSession;
+
+    // The mapping prompt is a balloon once, right after drift nudges are turned on — not on every start while they
+    // stay on; the menu item stays while it applies.
+    private bool _mappingPromptShown = true;
+    private bool _balloonOpensMapping;
 
     public TrayApplicationContext(AppConfig config)
     {
@@ -39,7 +54,13 @@ public sealed class TrayApplicationContext : ApplicationContext
         _nudges = new NudgeService(config, new WindowsFormsSynchronizationContext());
         _tracker = new ActivityTrackerService(config, _apiClient, _nudges);
 
+        // Opens today's breakdown. A submenu rather than a left-click flyout: double-click already pauses and resumes,
+        // and a single click is half of every double-click. Filled when opened, so a refresh never rebuilds it under the mouse.
+        _glanceItem = new ToolStripMenuItem("Today on this PC: 0 min");
+        _glanceItem.DropDownItems.Add(new ToolStripMenuItem("…") { Enabled = false });
+        _glanceItem.DropDownOpening += (_, _) => FillTodayBreakdown();
         _statusItem = new ToolStripMenuItem("Status: Starting…") { Enabled = false };
+        _mapAppsItem = new ToolStripMenuItem("Map apps for drift nudges…", null, (_, _) => OpenWebApp(UncoveredEntriesPath)) { Visible = false };
         _toggleItem = new ToolStripMenuItem("Start Tracking", null, OnToggleTracking);
 
         var pauseForItem = new ToolStripMenuItem("Pause for");
@@ -55,7 +76,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         _signInOutItem = new ToolStripMenuItem("Sign in…", null, OnSignInOut);
 
         var contextMenu = new ContextMenuStrip();
+        contextMenu.Items.Add(_glanceItem);
         contextMenu.Items.Add(_statusItem);
+        contextMenu.Items.Add(_mapAppsItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(_toggleItem);
         contextMenu.Items.Add(pauseForItem);
@@ -70,6 +93,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         testNudge.DropDownItems.Add("Hyperfocus", null, (_, _) => _nudges.ShowTest(NudgeKind.Stretch));
         testNudge.DropDownItems.Add("Same app", null, (_, _) => _nudges.ShowTest(NudgeKind.AppStretch));
         testNudge.DropDownItems.Add("Break over", null, (_, _) => _nudges.ShowTest(NudgeKind.BreakOver));
+        testNudge.DropDownItems.Add("Drift", null, (_, _) => _nudges.ShowTest(NudgeKind.Drift));
         contextMenu.Items.Add(testNudge);
 #endif
         contextMenu.Items.Add(new ToolStripSeparator());
@@ -86,6 +110,12 @@ public sealed class TrayApplicationContext : ApplicationContext
         };
 
         _trayIcon.DoubleClick += OnTrayDoubleClick;
+        _trayIcon.BalloonTipClicked += (_, _) =>
+        {
+            if (_balloonOpensMapping) OpenWebApp(UncoveredEntriesPath);
+            _balloonOpensMapping = false;
+        };
+        _trayIcon.BalloonTipClosed += (_, _) => _balloonOpensMapping = false;
 
         // Status is pulled on the UI thread rather than pushed from the tracker's threads, so nothing
         // here is ever touched cross-thread.
@@ -127,6 +157,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
+        _balloonOpensMapping = false;
         _trayIcon.ShowBalloonTip(10_000, "Activity Tracker — paused",
             $"{DescribePause(_config.PausedUntilUtc)}. Double-click the tray icon to resume.", ToolTipIcon.Info);
     }
@@ -157,18 +188,98 @@ public sealed class TrayApplicationContext : ApplicationContext
         if (_hadSession && !hasSession)
         {
             // The server refused the refresh token. Tracking carries on into the outbox; say so once.
+            _balloonOpensMapping = false;
             _trayIcon.ShowBalloonTip(10_000, "Activity Tracker — signed out",
                 "Your session ended. Tracking continues offline; double-click the tray icon to sign in.",
                 ToolTipIcon.Warning);
         }
         _hadSession = hasSession;
 
-        var breakLeft = _nudges.GetStatus().BreakEndsUtc - DateTime.UtcNow;
+        var nowUtc = DateTime.UtcNow;
+        var breakLeft = _nudges.GetStatus().BreakEndsUtc - nowUtc;
         var text = DescribeStatus(status, hasSession, breakLeft);
+        var glance = DescribeGlance(status, nowUtc);
+        _glanceItem.Text = glance;
         _statusItem.Text = $"Status: {text}";
-        _trayIcon.Text = Truncate($"Activity Tracker — {text}", MaxTrayTextLength);
+        // The glance first: a long status is truncated from the end.
+        _trayIcon.Text = Truncate($"{glance}\n{text}", MaxTrayTextLength);
         _toggleItem.Text = status.IsRunning ? "Pause Tracking" : status.PausedUntilUtc is not null ? "Resume Tracking" : "Start Tracking";
         _signInOutItem.Text = hasSession ? "Sign out" : "Sign in…";
+
+        RefreshMappingPrompt(status.Coverage);
+    }
+
+    /// <summary>
+    /// "Map Slack, Chrome and Teams to enable drift nudges": a menu item while it applies, and a balloon the first time
+    /// the coverage arrives after drift nudges were turned on. Clicking either opens the uncovered entries.
+    /// </summary>
+    private void RefreshMappingPrompt(AgentCoverage? coverage)
+    {
+        var prompt = coverage is { Uncovered.Count: > 0 } ? DescribeMappingPrompt(coverage) : null;
+        _mapAppsItem.Visible = prompt is not null;
+        if (prompt is null) return;
+
+        _mapAppsItem.Text = prompt + "…";
+        if (_mappingPromptShown) return;
+
+        _mappingPromptShown = true;
+        _balloonOpensMapping = true;
+        _trayIcon.ShowBalloonTip(15_000, "Drift nudges need mapped apps",
+            $"{prompt}. Click to map them — time in apps without a rule can't be compared with your plan.", ToolTipIcon.Info);
+    }
+
+    /// <summary>"Today on this PC: 5 h 12 m · now: Thesis". "Now" only while the last minute the server resolved is recent.</summary>
+    internal static string DescribeGlance(TrackerStatus status, DateTime nowUtc)
+    {
+        var today = $"Today on this PC: {NudgeToast.FormatLength(status.TodayOnThisPc)}";
+        return DescribeNow(status.LastResolved, nowUtc) is { } now ? $"{today} · now: {now}" : today;
+    }
+
+    /// <summary>
+    /// What the latest minute's foreground time mostly mapped to, skipping ignored time; null when there is no recent
+    /// minute (paused, idle, offline, an old server) — a stale "now" is worse than none.
+    /// </summary>
+    internal static string? DescribeNow(ResolvedMinute? last, DateTime nowUtc)
+    {
+        if (last is null || last.WindowStartUtc < nowUtc - DriftPolicy.FreshFor) return null;
+
+        var top = last.Response.Resolution.FirstOrDefault(r => !r.IsIgnored);
+        return top is null ? null : top.Name ?? (top.IsUnmapped ? "not mapped" : null);
+    }
+
+    private void FillTodayBreakdown()
+    {
+        _glanceItem.DropDownItems.Clear();
+        foreach (var line in DescribeTodayBreakdown(_tracker.GetTodayTop(TopActivityCount)))
+            _glanceItem.DropDownItems.Add(new ToolStripMenuItem(line) { Enabled = false });
+        _glanceItem.DropDownItems.Add(new ToolStripSeparator());
+        _glanceItem.DropDownItems.Add("Open dashboard", null, (_, _) => OpenWebApp(DashboardPath));
+    }
+
+    /// <summary>"Thesis — 2 h 10 m", busiest first; one line saying there is nothing yet when there isn't.</summary>
+    internal static IReadOnlyList<string> DescribeTodayBreakdown(IReadOnlyList<ActivityTotal> top) =>
+        top.Count == 0
+            ? ["Nothing sent yet today"]
+            : top.Select(a => $"{a.Name} — {NudgeToast.FormatLength(TimeSpan.FromSeconds(a.ActiveSeconds))}").ToList();
+
+    /// <summary>"Map Slack, Chrome and Teams to enable drift nudges".</summary>
+    internal static string DescribeMappingPrompt(AgentCoverage coverage)
+    {
+        var names = coverage.Uncovered.Select(a => a.ProductName.Length > 0 ? a.ProductName : a.ProcessName).ToArray();
+        var list = names.Length == 1 ? names[0] : $"{string.Join(", ", names[..^1])} and {names[^1]}";
+        return $"Map {list} to enable drift nudges";
+    }
+
+    private void OpenWebApp(string pathAndQuery)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo { FileName = _config.WebAppUri(pathAndQuery).AbsoluteUri, UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "Could not open the web app");
+        }
     }
 
     internal static string DescribeStatus(TrackerStatus status, bool hasSession, TimeSpan? breakLeft = null)
@@ -265,11 +376,19 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         var previousUrl = _config.ApiBaseUrl;
         var previousPollInterval = _config.PollIntervalMs;
+        var hadDriftNudges = _config.DriftNudgesEnabled;
 
         using var settingsForm = new SettingsForm(_config);
         if (settingsForm.ShowDialog() != DialogResult.OK) return;
 
         _config.Save();
+
+        // Turned on: ask for the coverage now, and say once what is missing.
+        if (_config.DriftNudgesEnabled && !hadDriftNudges)
+        {
+            _mappingPromptShown = false;
+            _tracker.RefreshCoverage();
+        }
 
         if (_tracker.IsRunning && previousPollInterval != _config.PollIntervalMs)
         {

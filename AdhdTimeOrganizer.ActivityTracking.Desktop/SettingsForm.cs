@@ -10,6 +10,7 @@ public sealed class SettingsForm : Form
 {
     private readonly AppConfig _config;
     private readonly TextBox _apiUrlBox;
+    private readonly TextBox _webAppUrlBox;
     private readonly NumericUpDown _pollIntervalBox;
     private readonly NumericUpDown _idleThresholdBox;
     private readonly NumericUpDown _passiveIdleBox;
@@ -22,6 +23,8 @@ public sealed class SettingsForm : Form
     private readonly NumericUpDown _breakTimerBox;
     private readonly CheckBox _quietFullscreenBox;
     private readonly CheckBox _quietMicrophoneBox;
+    private readonly CheckBox _driftEnabledBox;
+    private readonly NumericUpDown _driftAfterBox;
     private readonly Label _errorLabel;
 
     public SettingsForm(AppConfig config)
@@ -47,6 +50,7 @@ public sealed class SettingsForm : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
         _apiUrlBox = new TextBox { Text = config.ApiBaseUrl, Width = 260 };
+        _webAppUrlBox = new TextBox { Text = config.WebAppUrl, Width = 260 };
         _pollIntervalBox = Number(config.PollIntervalMs, 500, 10_000, increment: 250);
         _idleThresholdBox = Number(config.IdleThresholdSeconds, 5, 600);
         _passiveIdleBox = Number(config.MaxPassiveIdleMinutes, 0, 600, increment: 10);
@@ -54,6 +58,7 @@ public sealed class SettingsForm : Form
         _maxBackgroundBox = Number(config.MaxBackgroundWindowsPerMonitor, 0, 10);
 
         AddRow(layout, "Server URL:", _apiUrlBox, "Changing it signs you out.");
+        AddRow(layout, "Web app URL:", _webAppUrlBox, "Where the planner and your mappings open.");
         AddRow(layout, "Poll interval (ms):", _pollIntervalBox, null);
         AddRow(layout, "Idle after (s):", _idleThresholdBox, "No keyboard or mouse input for this long.");
         AddRow(layout, "Watching / listening (min):", _passiveIdleBox,
@@ -76,6 +81,13 @@ public sealed class SettingsForm : Form
         AddRow(layout, "A break is away for (min):", _breakLengthBox,
             "No input, no sound in the foreground and no call for this long ends a stretch.");
         AddRow(layout, "Break timer (min):", _breakTimerBox, "How long \"Taking a break\" lasts before the back-to-it nudge.");
+
+        _driftEnabledBox = new CheckBox { Text = "On", Checked = config.DriftNudgesEnabled, AutoSize = true };
+        _driftAfterBox = Number(config.DriftNudgeMinutes, 10, 120, increment: 5);
+
+        AddRow(layout, "Drift nudges:", _driftEnabledBox,
+            "When your planner says one thing and your apps another. Apps without a mapping rule don't count either way.");
+        AddRow(layout, "Off plan, nudge after (min):", _driftAfterBox, "At most once per planned block.");
         AddRow(layout, "Stay quiet while:", _quietFullscreenBox, null);
         AddRow(layout, "", _quietMicrophoneBox, null);
 
@@ -126,13 +138,21 @@ public sealed class SettingsForm : Form
     private void OnSave(object? sender, EventArgs e)
     {
         var url = _apiUrlBox.Text.Trim().TrimEnd('/');
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+        if (!IsHttpUrl(url))
         {
             _errorLabel.Text = "Server URL must be an absolute http(s) address.";
             return;
         }
 
+        var webAppUrl = _webAppUrlBox.Text.Trim().TrimEnd('/');
+        if (!IsHttpUrl(webAppUrl))
+        {
+            _errorLabel.Text = "Web app URL must be an absolute http(s) address.";
+            return;
+        }
+
         _config.ApiBaseUrl = url;
+        _config.WebAppUrl = webAppUrl;
         _config.PollIntervalMs = (int)_pollIntervalBox.Value;
         _config.IdleThresholdSeconds = (int)_idleThresholdBox.Value;
         _config.MaxPassiveIdleMinutes = (int)_passiveIdleBox.Value;
@@ -145,10 +165,15 @@ public sealed class SettingsForm : Form
         _config.BreakTimerMinutes = (int)_breakTimerBox.Value;
         _config.QuietWhenFullscreen = _quietFullscreenBox.Checked;
         _config.QuietWhenMicrophoneInUse = _quietMicrophoneBox.Checked;
+        _config.DriftNudgesEnabled = _driftEnabledBox.Checked;
+        _config.DriftNudgeMinutes = (int)_driftAfterBox.Value;
 
         DialogResult = DialogResult.OK;
         Close();
     }
+
+    private static bool IsHttpUrl(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp);
 
     /// <summary>The privacy form saves on its own Save: its changes do not wait for, or depend on, this form's.</summary>
     private void OnEditPrivacy(object? sender, LinkLabelLinkClickedEventArgs e)

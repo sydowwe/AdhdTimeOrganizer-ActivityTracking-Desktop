@@ -19,12 +19,25 @@ public class NudgeToastTests
             NudgeToast.Text(new Nudge(1, NudgeKind.AppStretch, TimeSpan.FromMinutes(120), "Rider")).Title);
 
     [Fact]
+    public void Text_SaysWhatWasPlannedUntilWhen_AndWhereTheTimeWent()
+    {
+        var endsUtc = new DateTime(2026, 10, 18, 9, 30, 0, DateTimeKind.Utc);
+        var (title, body) = NudgeToast.Text(new Nudge(1, NudgeKind.Drift, TimeSpan.FromMinutes(10), "YouTube",
+            new DriftDetails("Thesis", endsUtc)));
+
+        Assert.Equal($"Planned: Thesis (until {TimeZoneInfo.ConvertTimeFromUtc(endsUtc, TimeZoneInfo.Local):HH:mm})", title);
+        Assert.Equal("Last 10 min: YouTube.", body);
+    }
+
+    [Fact]
     public void Parse_ReadsTheButtonPressed_AndIgnoresAClickOnTheBody()
     {
-        Assert.Equal(new NudgeActivation(7, NudgeResponse.TakeBreak),
-            NudgeToast.Parse(new Dictionary<string, string> { ["nudge"] = "7", ["action"] = "TakeBreak" }));
-        Assert.Null(NudgeToast.Parse(new Dictionary<string, string> { ["nudge"] = "7" }));
-        Assert.Null(NudgeToast.Parse(new Dictionary<string, string> { ["nudge"] = "x", ["action"] = "Snooze" }));
+        Assert.Equal(new NudgeActivation(NudgeKind.Stretch, 7, NudgeResponse.TakeBreak),
+            NudgeToast.Parse(new Dictionary<string, string> { ["kind"] = "Stretch", ["nudge"] = "7", ["action"] = "TakeBreak" }));
+        Assert.Null(NudgeToast.Parse(new Dictionary<string, string> { ["kind"] = "Stretch", ["nudge"] = "7" }));
+        Assert.Null(NudgeToast.Parse(new Dictionary<string, string> { ["kind"] = "Stretch", ["nudge"] = "x", ["action"] = "Snooze" }));
+        // Ids are counted per policy, so a press without its kind can't be routed.
+        Assert.Null(NudgeToast.Parse(new Dictionary<string, string> { ["nudge"] = "7", ["action"] = "Snooze" }));
     }
 
     /// <summary>
@@ -37,9 +50,12 @@ public class NudgeToastTests
     [InlineData(NudgeKind.Stretch, new[] { NudgeResponse.TakeBreak, NudgeResponse.Snooze, NudgeResponse.NotNow, NudgeResponse.TurnOff })]
     [InlineData(NudgeKind.AppStretch, new[] { NudgeResponse.TakeBreak, NudgeResponse.Snooze, NudgeResponse.NotNow, NudgeResponse.TurnOff })]
     [InlineData(NudgeKind.BreakOver, new[] { NudgeResponse.Dismiss, NudgeResponse.Snooze })]
+    [InlineData(NudgeKind.Drift, new[] { NudgeResponse.Dismiss, NudgeResponse.SwitchPlan, NudgeResponse.Snooze, NudgeResponse.TurnOff })]
     public void Build_EveryKind_EveryButtonCarriesTheNudgeAndItsAnswer(NudgeKind kind, NudgeResponse[] responses)
     {
-        var nudge = new Nudge(42, kind, TimeSpan.FromMinutes(90), "O'Reilly <Reader>");
+        // User-authored names in both drift fields: the planned activity and what the time went to.
+        var nudge = new Nudge(42, kind, TimeSpan.FromMinutes(90), "O'Reilly <Reader>",
+            kind == NudgeKind.Drift ? new DriftDetails("Thesis & \"notes\"", DateTime.UtcNow) : null);
         var notification = NudgeToast.Build(nudge);
         var toast = XDocument.Parse(notification.Payload).Root!;
 
@@ -47,7 +63,7 @@ public class NudgeToastTests
         Assert.Equal(NudgeToast.Group, notification.Group);
         Assert.Equal(NudgeToast.Text(nudge).Title, toast.Descendants("text").First().Value);
         Assert.Equal(
-            responses.Select(r => new NudgeActivation(42, r)),
+            responses.Select(r => new NudgeActivation(kind, 42, r)),
             toast.Descendants("action").Select(a => NudgeToast.Parse(Arguments((string)a.Attribute("arguments")!))));
     }
 

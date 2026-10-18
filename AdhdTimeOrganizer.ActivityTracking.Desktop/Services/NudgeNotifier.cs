@@ -3,6 +3,13 @@ using Serilog;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
+/// <summary>Shows and withdraws nudge toasts. <see cref="NudgeNotifier"/> in the app; a recording fake in tests.</summary>
+internal interface INudgeNotifier : IDisposable
+{
+    void Show(Nudge nudge);
+    void Remove(NudgeKind kind);
+}
+
 /// <summary>
 /// Windows notifications through the Windows App SDK, unpackaged: <see cref="AppNotificationManager.Register(string, Uri)"/>
 /// gives the exe an identity of its own, so no Start-menu shortcut or installer is needed.
@@ -18,7 +25,7 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 /// tracker into a nudge from yesterday.
 /// </para>
 /// </remarks>
-internal sealed class NudgeNotifier : IDisposable
+internal sealed class NudgeNotifier : INudgeNotifier
 {
     private const string DisplayName = "Activity Tracker";
 

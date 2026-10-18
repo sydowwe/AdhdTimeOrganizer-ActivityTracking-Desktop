@@ -13,22 +13,24 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | Path | What lives there |
 |---|---|
 | `Program.cs` | Logging (Serilog → `%LOCALAPPDATA%\AdhdTimeOrganizer\logs`), single-instance mutex, tray startup |
-| `TrayApplicationContext.cs` | Tray icon and menu (incl. "Pause for…"); pulls status from the tracker on a UI timer |
+| `TrayApplicationContext.cs` | Tray icon and menu (incl. "Pause for…", the today/now glance and the "map these apps" prompt); pulls status from the tracker on a UI timer |
 | `LoginForm.cs`, `SettingsForm.cs`, `PrivacyForm.cs` | Password + 2FA sign-in; settings editor; the user's ignore / hide-title rules and private-window handling |
 | `Services/ActivityTrackerService.cs` | Poll loop (observes the desktop), send loop (drains the outbox), lock/suspend/session-end handling |
 | `Services/ActivityRecorder.cs` | **Pure** minute accounting: measured elapsed time, split at minute boundaries, gap cap |
 | `Services/WindowLimits.cs` | The server's validation rules, applied before a window is queued |
 | `Services/WindowTitleNormalizer.cs` | Strips counters, unsaved markers and app-name suffixes from titles |
 | `Services/OutboxStore.cs` | Finished windows as JSON files under `%LOCALAPPDATA%\…Desktop\outbox` until sent |
-| `Services/ApiClient.cs` | Login, 2FA, token refresh, heartbeat, the server-rules download; `Classify` decides retry vs. drop per status code |
+| `Services/ApiClient.cs` | Login, 2FA, token refresh, heartbeat (and its answer), the server-rules and mapping-coverage downloads; `Classify` decides retry vs. drop per status code |
+| `Services/TodayTotal.cs` | Today's recorded foreground time on this PC, for the tray glance; saved to `today.json` |
 | `Services/PrivacyFilter.cs` | Recording-time privacy: local rules and private browser windows → keep, hide the title, or drop |
 | `Services/AgentRules.cs` | Send-time privacy: the user's server rules (in memory) and the filter that drops entries an ignore rule wins |
 | `Services/Matching/` | **Port of the server's matcher** (`PatternMatcher`, `MappingRuleSet`) — see "Rule matching" below |
 | `Services/HyperfocusPolicy.cs` | **Pure** nudge decisions: stretches, breaks, app stretches, snooze / repeat / "not now", the break timer |
+| `Services/DriftPolicy.cs` | **Pure** drift-nudge decisions over the server's per-minute plan verdicts (`MinuteVerdict`) |
 | `Services/NudgeService.cs` | Feeds polls to the policy, checks quiet conditions, shows and withdraws toasts, handles button presses |
 | `Services/NudgeNotifier.cs`, `NudgeToast.cs` | Windows App SDK notifications: registration, toast text and buttons, parsing a press |
 | `Native/` | P/Invoke (`Win32`, `MonitorHelper`), `ProcessInfoCache`, `AudioSessionHelper` (NAudio), `MicrophoneUsage` (registry) |
-| `Models/` | Wire models (`ActivityModels.cs`) and `AppConfig` (`%LOCALAPPDATA%\…Desktop\config.json`) |
+| `Models/` | Wire models (`ActivityModels.cs`, `AgentRule.cs`, `ServerResolution.cs` — the heartbeat's answer and the coverage) and `AppConfig` (`%LOCALAPPDATA%\…Desktop\config.json`) |
 | `AdhdTimeOrganizer.ActivityTracking.Desktop.Tests/` | xunit v3 tests, including `NativeSmokeTests` against the real machine |
 
 ## Building and testing — always through `scripts/test.ps1`
@@ -43,6 +45,11 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   `bin/`** or open in Rider, so a plain `dotnet build` fails with `MSB3021 … being used by another
   process` even though the code compiled.
 - `dotnet test` is not used; the test project is an xunit v3 executable and the script runs it.
+- **Tests never touch the user's real files, notifications or network.** Give every `AppConfig` a temp `FilePath`
+  (anything that signs in, refreshes a token or turns a nudge off calls `Save()`); pass `ApiClient` a fake
+  `HttpMessageHandler`; build `NudgeService` through its internal constructor with a fake `INudgeNotifier`, a
+  browser stand-in and a temp drift-state path; put `OutboxStore` and `TodayTotal` in a temp folder.
+  `NudgeServiceTests` and `SendLoopTests` show the shape.
 - `-BuildOnly` also builds Release: `AppConfig.ApiBaseUrl` defaults to `localhost` under `#if DEBUG`
   and to production otherwise, so Release is a different compile.
 - The build is architecture-specific (the Windows App SDK is self-contained; see below): the exe lands in
@@ -83,8 +90,18 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   - If nothing is known yet and the download fails, the send pass **waits** rather than upload unfiltered.
     A 404 (server older than the route) counts as "no rules": it filters on arrival, and waiting would
     hold the outbox forever.
-  - The port only decides drop / keep. Which *activity* a window maps to (nudges, tray glance) still has
-    to come from the server, e.g. in the heartbeat response.
+  - The port only decides drop / keep. Which *activity* a window maps to comes from the server — see the
+    next point. Never derive it from the port.
+- **The heartbeat answers with what the minute resolved to** (servers from 2026-10-18; `Models/ServerResolution.cs`):
+  the minute's active seconds by target, each with the server's `onPlan` verdict, and the planner blocks covering
+  it. The tray's "now" and the drift nudge read it, and nothing else may decide either. An older server answers a bare
+  count: `ApiClient.ReadHeartbeatResponse` reads that (or anything unreadable) as "no answer" — the window is still
+  sent, only the glance and the nudge go without. `target` stays a string so a target the server adds later can't fail
+  the parse. `GET …/agent-coverage` (404 = older server: no prompt) is fetched hourly, only while drift nudges are on.
+  - **Both answers are pinned by `Tests/DesktopAgentWire.samples.json`**, a copy of the server's
+    `AdhdTimeOrganizer.Tracking/application/dto/response/desktop/DesktopAgentWire.samples.json`, the same arrangement as
+    the matcher vectors: the server checks it against its DTOs and live routes, `WireSampleTests` read it through
+    these models, and each side fails when the other's copy differs. A wire change starts on the server.
 
 ### Time accounting
 - All of it lives in `ActivityRecorder`, which has no clock and no Win32, so it's unit-testable. Keep it
@@ -103,6 +120,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 - The send loop runs for the app's lifetime, independent of pausing, and stops a pass at the first
   window that has to wait (offline, signed out, server rules not known yet). The poll loop stops when
   tracking is paused.
+- **Today's total (`TodayTotal`) counts a window when it is queued**, so unsent time is in it, and takes back
+  what never got stored (entries a server rule drops, a window the server refuses) only once the outbox reports the window settled (`OutboxStore.Remove` returns true): a
+  window rewritten in flight goes again as a whole, and subtracting on both sends would count its drops twice.
 - **Never touch WinForms objects from the poll or send loop.** The tray pulls `GetStatus()` on a UI
   timer. A status event that set `NotifyIcon.Text` from the poll thread once threw out of the loop's own
   catch and silently ended tracking. (`NotifyIcon.Text` also throws past 127 characters, so it's
@@ -121,8 +141,22 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   for any new native call.
 
 ### Nudges and notifications
-- Nudges are **client-side only**: nothing about them reaches the server. The policy lives in
-  `HyperfocusPolicy`, pure like `ActivityRecorder` — keep clocks, Win32 and toasts out of it.
+- Nudges are **client-side only**: nothing about them reaches the server. The policies live in
+  `HyperfocusPolicy` and `DriftPolicy`, pure like `ActivityRecorder` — keep clocks, Win32 and toasts out of them.
+- **Drift nudges** are fed from the **send** loop, a minute at a time, with the server's verdicts; the policy only
+  counts them. Off by default, ≥ 10 min, one per planned block ("Snooze" asks for exactly one more after 30 min).
+  Unmapped and ignored minutes neither count nor reset — never treat "unmapped" as off-plan. A minute older than 3
+  minutes when sent (an outbox backlog) is skipped: it says nothing about now. Toast ids are counted per policy, so a
+  toast carries its `kind` and `NudgeService` routes a press by kind first; "Turn off" switches off only the kind it
+  was pressed on. "Switch plan" opens `WebAppUrl` + `/day-planner` — `WebAppUrl` is its own setting because in
+  development the web app is not on the API's origin.
+- The drift policy's state is saved to `drift.json` after each minute and each answer, so a restart mid-block neither
+  repeats the block's nudge nor loses the streak or a snooze. The hyperfocus policy keeps no such file.
+- The two families keep `HyperfocusPolicy.MinGapBetweenKinds` (10 min) apart: a nudge due within it of the other
+  family's is held like under a quiet condition, never dropped by it. The break-over nudge is exempt.
+- Today's total and its top-5 breakdown (`TodayTotal`, `today.json`) count a window **once, when settled**: the total
+  at queue time less what was never stored, the breakdown from the heartbeat's answer. The breakdown is the tray
+  glance's submenu, not a left-click flyout — double-click already pauses.
 - They're fed by the poll loop, so pausing tracking pauses them. A paused, asleep or hung gap as long as a
   break counts as a break.
 - A call (any app holding the microphone) counts as presence **for nudges only**. It must not change what

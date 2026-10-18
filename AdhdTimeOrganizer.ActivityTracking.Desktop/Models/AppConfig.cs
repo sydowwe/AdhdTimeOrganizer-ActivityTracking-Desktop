@@ -68,6 +68,13 @@ public sealed class AppConfig
 
     public static string ConfigPath { get; } = Path.Combine(ConfigDirectory, "config.json");
 
+    /// <summary>
+    /// Where <see cref="Save"/> writes: <see cref="ConfigPath"/>, except in tests, which must never write over the
+    /// config of the tracker the user is running.
+    /// </summary>
+    [JsonIgnore]
+    public string FilePath { get; init; } = ConfigPath;
+
     // Ties the DPAPI blob to this app as well as to the Windows user.
     private static readonly byte[] TokenEntropy = "AdhdTimeOrganizer.ActivityTracking.Desktop"u8.ToArray();
 
@@ -75,8 +82,14 @@ public sealed class AppConfig
 
 #if DEBUG
     public string ApiBaseUrl { get; set; } = "https://localhost:8080";
+
+    /// <summary>The web app, for the links the tracker opens (the planner, the mappings). Its own setting: in development it is a separate server.</summary>
+    public string WebAppUrl { get; set; } = "https://localhost:5173";
 #else
     public string ApiBaseUrl { get; set; } = "https://adhdtimeorganizer.com";
+
+    /// <summary>The web app, for the links the tracker opens (the planner, the mappings). Its own setting: in development it is a separate server.</summary>
+    public string WebAppUrl { get; set; } = "https://adhdtimeorganizer.com";
 #endif
     public int PollIntervalMs { get; set; } = 2000;
     public int IdleThresholdSeconds { get; set; } = 30;
@@ -111,6 +124,17 @@ public sealed class AppConfig
 
     /// <summary>Hold nudges while any app has the microphone open — a call, even a muted one.</summary>
     public bool QuietWhenMicrophoneInUse { get; set; } = true;
+
+    // ── Drift nudges (see DriftPolicy) ────────────────────────────────────────
+
+    /// <summary>
+    /// "You planned X, you've been on Y for 10 minutes." Off until the user turns it on: it needs a plan and mapped apps,
+    /// and an unasked-for "you drifted" is the nagging the tracker must not do.
+    /// </summary>
+    public bool DriftNudgesEnabled { get; set; }
+
+    /// <summary>Off-plan minutes inside one planned block before the nudge. At least 10.</summary>
+    public int DriftNudgeMinutes { get; set; } = 10;
 
     // ── Privacy (see PrivacyFilter) ───────────────────────────────────────────
 
@@ -207,6 +231,9 @@ public sealed class AppConfig
         new() { ProcessName = "PaintStudio" },        // Win 11 Snipping Tool itself is brief
     ];
 
+    /// <summary>A page of the web app, for <c>Process.Start</c>. <paramref name="pathAndQuery"/> starts with <c>/</c>.</summary>
+    public Uri WebAppUri(string pathAndQuery) => new(new Uri(WebAppUrl.TrimEnd('/') + "/"), pathAndQuery.TrimStart('/'));
+
     public static AppConfig Load()
     {
         try
@@ -237,12 +264,12 @@ public sealed class AppConfig
     {
         lock (SaveGate)
         {
-            Directory.CreateDirectory(ConfigDirectory);
+            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
 
             var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
-            var tempPath = ConfigPath + ".tmp";
+            var tempPath = FilePath + ".tmp";
             File.WriteAllText(tempPath, json);
-            File.Move(tempPath, ConfigPath, overwrite: true);
+            File.Move(tempPath, FilePath, overwrite: true);
         }
     }
 

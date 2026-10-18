@@ -84,14 +84,17 @@ public sealed class OutboxStore(string directory, TimeSpan retention)
 
     /// <summary>
     /// Deletes a sent window — unless it was rewritten (merged) while in flight, in which case it stays
-    /// and goes again; the server skips the rows it already holds.
+    /// and goes again; the server skips the rows it already holds. True when this deleted it, i.e. the window is
+    /// settled; false when it will come round again as a whole.
     /// </summary>
-    public void Remove(OutboxItem item)
+    public bool Remove(OutboxItem item)
     {
         lock (_gate)
         {
-            if (File.Exists(item.Path) && File.GetLastWriteTimeUtc(item.Path) == item.LastWriteUtc)
-                File.Delete(item.Path);
+            if (!File.Exists(item.Path) || File.GetLastWriteTimeUtc(item.Path) != item.LastWriteUtc) return false;
+
+            File.Delete(item.Path);
+            return true;
         }
     }
 

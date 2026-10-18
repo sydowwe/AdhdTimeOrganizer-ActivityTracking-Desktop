@@ -4,7 +4,8 @@ using Microsoft.Windows.AppNotifications.Builder;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
-internal sealed record NudgeActivation(int NudgeId, NudgeResponse Response);
+/// <param name="Kind">Which policy issued the nudge: ids are counted per policy.</param>
+internal sealed record NudgeActivation(NudgeKind Kind, int NudgeId, NudgeResponse Response);
 
 /// <summary>What a nudge says and which buttons it has, and how a button press comes back.</summary>
 internal static class NudgeToast
@@ -12,6 +13,7 @@ internal static class NudgeToast
     /// <summary>One toast per kind: a repeat replaces the one still in the notification centre.</summary>
     public const string Group = "nudges";
 
+    private const string KindArgument = "kind";
     private const string IdArgument = "nudge";
     private const string ActionArgument = "action";
 
@@ -21,6 +23,7 @@ internal static class NudgeToast
     {
         var (title, body) = Text(nudge);
         var builder = new AppNotificationBuilder()
+            .AddArgument(KindArgument, nudge.Kind.ToString())
             .AddArgument(IdArgument, nudge.Id.ToString(CultureInfo.InvariantCulture))
             .AddText(title)
             .AddText(body);
@@ -31,6 +34,14 @@ internal static class NudgeToast
             builder.SetScenario(AppNotificationScenario.Reminder)
                 .AddButton(Button("I’m back", nudge, NudgeResponse.Dismiss))
                 .AddButton(Button("5 more minutes", nudge, NudgeResponse.Snooze));
+        }
+        else if (nudge.Kind == NudgeKind.Drift)
+        {
+            builder.SetDuration(AppNotificationDuration.Long)
+                .AddButton(Button("Back to it", nudge, NudgeResponse.Dismiss))
+                .AddButton(Button("Switch plan", nudge, NudgeResponse.SwitchPlan))
+                .AddButton(Button("Snooze 30 min", nudge, NudgeResponse.Snooze))
+                .AddButton(Button("Turn off", nudge, NudgeResponse.TurnOff));
         }
         else
         {
@@ -49,11 +60,13 @@ internal static class NudgeToast
 
     /// <summary>The button pressed, or null for a click on the toast's body, which only dismisses it.</summary>
     public static NudgeActivation? Parse(IDictionary<string, string> arguments) =>
-        arguments.TryGetValue(IdArgument, out var id)
+        arguments.TryGetValue(KindArgument, out var kindText)
+        && Enum.TryParse<NudgeKind>(kindText, out var kind)
+        && arguments.TryGetValue(IdArgument, out var id)
         && int.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var nudgeId)
         && arguments.TryGetValue(ActionArgument, out var action)
         && Enum.TryParse<NudgeResponse>(action, out var response)
-            ? new NudgeActivation(nudgeId, response)
+            ? new NudgeActivation(kind, nudgeId, response)
             : null;
 
     internal static (string Title, string Body) Text(Nudge nudge) => nudge.Kind switch
@@ -62,6 +75,9 @@ internal static class NudgeToast
             "Stand up, stretch, drink some water?"),
         NudgeKind.AppStretch => ($"{FormatLength(nudge.Length)} straight in {nudge.AppName}",
             "Time to look up from it for a few minutes?"),
+        NudgeKind.Drift when nudge.Drift is { } drift =>
+            ($"Planned: {drift.PlannedName} (until {TimeZoneInfo.ConvertTimeFromUtc(drift.PlannedEndsUtc, TimeZoneInfo.Local):HH:mm})",
+                $"Last {FormatLength(nudge.Length)}: {nudge.AppName}."),
         _ => ("Break's over", $"That was {FormatLength(nudge.Length)}. Ready to get back to it?")
     };
 
@@ -79,6 +95,7 @@ internal static class NudgeToast
     /// </remarks>
     private static AppNotificationButton Button(string label, Nudge nudge, NudgeResponse response) =>
         new AppNotificationButton(label.Replace('\'', '’'))
+            .AddArgument(KindArgument, nudge.Kind.ToString())
             .AddArgument(IdArgument, nudge.Id.ToString(CultureInfo.InvariantCulture))
             .AddArgument(ActionArgument, response.ToString());
 }

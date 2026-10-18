@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 using Serilog;
 
@@ -36,6 +37,20 @@ public enum AgentRulesFetch
 
 public sealed record AgentRulesResult(AgentRulesFetch Status, IReadOnlyList<AgentRule>? Rules = null, string? ETag = null);
 
+/// <param name="Response">What the server resolved the minute to; null unless sent, and from a server that predates the answer.</param>
+public sealed record HeartbeatOutcome(SendResult Result, HeartbeatResponse? Response = null);
+
+public enum CoverageFetch
+{
+    Fetched,
+    /// <summary>The server predates the route: no prompt, and no point asking again this session.</summary>
+    NotSupported,
+    /// <summary>Offline, signed out or failed — try again later.</summary>
+    Unavailable
+}
+
+public sealed record CoverageResult(CoverageFetch Status, AgentCoverage? Coverage = null);
+
 /// <param name="PendingAuthToken">Set with <see cref="LoginStatus.TwoFactorRequired"/>; goes back with the code.</param>
 /// <param name="Message">What to tell the user when it did not work.</param>
 public sealed record LoginOutcome(LoginStatus Status, string? PendingAuthToken = null, string? Message = null);
@@ -48,12 +63,14 @@ public sealed record LoginOutcome(LoginStatus Status, string? PendingAuthToken =
 /// without a restart. The bearer token is set per request rather than on <c>DefaultRequestHeaders</c>,
 /// which is not safe to mutate while the send loop has a request in flight.
 /// </remarks>
-public sealed class ApiClient(AppConfig config) : IDisposable
+/// <param name="handler">Null for the real network; tests pass one that answers for the server.</param>
+public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = null) : IDisposable
 {
     private const string HeartbeatPath = "/api/activity-tracking/desktop/heartbeat";
     private const string AgentRulesPath = "/api/activity-tracking/desktop/agent-rules";
+    private const string AgentCoveragePath = "/api/activity-tracking/desktop/agent-coverage";
 
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private readonly HttpClient _http = new(handler ?? new HttpClientHandler()) { Timeout = TimeSpan.FromSeconds(30) };
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private readonly ILogger _log = Log.ForContext<ApiClient>();
     private volatile string? _accessToken;
@@ -160,27 +177,29 @@ public sealed class ApiClient(AppConfig config) : IDisposable
     }
 
     /// <summary>
-    /// Send an aggregated activity window to the backend.
+    /// Send an aggregated activity window to the backend. When stored, the outcome carries what the server resolved
+    /// the minute to (<see cref="HeartbeatResponse"/>), if the server is new enough to say.
     /// </summary>
-    public async Task<SendResult> SendActivityWindowAsync(ActivityWindow window, CancellationToken ct)
+    public async Task<HeartbeatOutcome> SendActivityWindowAsync(ActivityWindow window, CancellationToken ct)
     {
-        if (!HasSession) return SendResult.SignedOut;
+        if (!HasSession) return new HeartbeatOutcome(SendResult.SignedOut);
 
         try
         {
             var (response, outcome) = await SendAuthorizedAsync(
                 () => new HttpRequestMessage(HttpMethod.Post, BuildUri(HeartbeatPath)) { Content = JsonContent.Create(window) }, ct);
-            if (response is null) return ToSendResult(outcome);
+            if (response is null) return new HeartbeatOutcome(ToSendResult(outcome));
             using var owned = response;
 
             var result = Classify(response.StatusCode);
+            var body = await response.Content.ReadAsStringAsync(ct);
             if (result != SendResult.Sent)
             {
-                var body = await response.Content.ReadAsStringAsync(ct);
                 _log.Warning("Window {WindowStart} answered {StatusCode} ({Result}): {Body}",
                     window.WindowStart, (int)response.StatusCode, result, body);
+                return new HeartbeatOutcome(result);
             }
-            return result;
+            return new HeartbeatOutcome(result, ReadHeartbeatResponse(body));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -189,7 +208,27 @@ public sealed class ApiClient(AppConfig config) : IDisposable
         catch (Exception ex)
         {
             _log.Warning(ex, "Network error sending window {WindowStart} — will retry", window.WindowStart);
-            return SendResult.RetryLater;
+            return new HeartbeatOutcome(SendResult.RetryLater);
+        }
+    }
+
+    /// <summary>
+    /// The heartbeat's answer, or null when it has none to give: a server from before 2026-10-18 answers with the bare
+    /// stored count, and anything unreadable is treated the same. The window is stored either way; only the tray glance
+    /// and the drift nudge go without.
+    /// </summary>
+    internal static HeartbeatResponse? ReadHeartbeatResponse(string body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                ? document.RootElement.Deserialize<HeartbeatResponse>()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 
@@ -263,6 +302,40 @@ public sealed class ApiClient(AppConfig config) : IDisposable
         HttpStatusCode.NotFound => AgentRulesFetch.NotSupported,
         _ => AgentRulesFetch.Unavailable
     };
+
+    /// <summary>
+    /// How much of the last week the user's server rules map, and the busiest unmapped apps — what the "map these apps
+    /// to enable drift nudges" prompt names. A 404 is a server that predates the route.
+    /// </summary>
+    public async Task<CoverageResult> FetchCoverageAsync(CancellationToken ct)
+    {
+        if (!HasSession) return new CoverageResult(CoverageFetch.Unavailable);
+
+        try
+        {
+            var (response, _) = await SendAuthorizedAsync(() => new HttpRequestMessage(HttpMethod.Get, BuildUri(AgentCoveragePath)), ct);
+            if (response is null) return new CoverageResult(CoverageFetch.Unavailable);
+            using var owned = response;
+
+            if (response.StatusCode == HttpStatusCode.NotFound) return new CoverageResult(CoverageFetch.NotSupported);
+            if (response.StatusCode != HttpStatusCode.OK)
+            {
+                _log.Warning("Mapping coverage answered {StatusCode}", (int)response.StatusCode);
+                return new CoverageResult(CoverageFetch.Unavailable);
+            }
+
+            return new CoverageResult(CoverageFetch.Fetched, await response.Content.ReadFromJsonAsync<AgentCoverage>(ct));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Mapping coverage download failed — will retry");
+            return new CoverageResult(CoverageFetch.Unavailable);
+        }
+    }
 
     /// <summary>
     /// Sends a request with the session's access token, refreshing it first when there is none and once more on a

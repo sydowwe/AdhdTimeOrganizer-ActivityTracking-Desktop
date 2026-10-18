@@ -1,0 +1,23 @@
+{
+  "heartbeat": {
+    "processedCount": 4,
+    "resolution": [
+      { "target": "Activity", "activityId": 12, "name": "Thesis", "activeSeconds": 25, "onPlan": true },
+      { "target": "RoleOrCategory", "activityId": null, "name": "Leisure · Video", "activeSeconds": 15, "onPlan": false },
+      { "target": null, "activityId": null, "name": null, "activeSeconds": 12, "onPlan": null },
+      { "target": "Ignored", "activityId": null, "name": null, "activeSeconds": 8, "onPlan": null }
+    ],
+    "planned": [
+      { "plannerTaskId": 7, "activityId": 12, "activityName": "Thesis", "startsAt": "2026-10-18T09:00:00Z", "endsAt": "2026-10-18T09:30:00Z" }
+    ]
+  },
+  "coverage": {
+    "days": 7,
+    "trackedSeconds": 43200,
+    "mappedSeconds": 16200,
+    "uncovered": [
+      { "processName": "slack", "productName": "Slack", "activeSeconds": 9000 },
+      { "processName": "chrome", "productName": "Google Chrome", "activeSeconds": 5400 }
+    ]
+  }
+}
