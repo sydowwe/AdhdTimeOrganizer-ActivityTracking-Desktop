@@ -2,7 +2,8 @@ using System.Diagnostics;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Native;
 
-internal sealed record ProcessInfo(string ProcessName, string? ExecutablePath, string? ProductName);
+/// <param name="PackageFamilyName">Set for a process with package identity — how Windows names it in the microphone's consent store.</param>
+internal sealed record ProcessInfo(string ProcessName, string? ExecutablePath, string? ProductName, string? PackageFamilyName = null);
 
 /// <summary>
 /// Name, executable path and product name per process, resolved once per process lifetime.
@@ -48,7 +49,7 @@ internal static class ProcessInfoCache
 
             var path = QueryImagePath(handle);
             var info = path is not null
-                ? new ProcessInfo(ProcessNameFromPath(path), path, GetProductName(path))
+                ? new ProcessInfo(ProcessNameFromPath(path), path, GetProductName(path), Win32.GetPackageFamilyName(handle))
                 : FromProcessObject(pid);
             if (info is null) return null;
 

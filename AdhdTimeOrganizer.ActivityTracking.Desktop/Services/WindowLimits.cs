@@ -20,6 +20,12 @@ public static class WindowLimits
     public const int MaxIndexedEntryTextBytes = 2000;
 
     /// <summary>
+    /// The server's <c>MaxDesktopSwitchesPerEntry</c>. More is two windows fighting over focus; the count is clamped
+    /// to it rather than have the minute refused.
+    /// </summary>
+    public const int MaxSwitchesPerEntry = 120;
+
+    /// <summary>
     /// Clamps each entry to 60 seconds of active plus background time, drops empty ones, keeps the 200
     /// busiest, and trims the active total to 60 seconds — taking the excess from the busiest entries, where
     /// a rounding second is the smallest relative change.
@@ -77,7 +83,9 @@ public static class WindowLimits
             BackgroundSeconds = backgroundSeconds,
             ActiveMonitor = entry.ActiveMonitor,
             IsPlayingSound = entry.IsPlayingSound,
-            IsFullscreen = entry.IsFullscreen
+            IsFullscreen = entry.IsFullscreen,
+            SwitchCount = entry.SwitchCount is { } switches ? Math.Clamp(switches, 0, MaxSwitchesPerEntry) : null,
+            IsInCall = entry.IsInCall
         };
     }
 

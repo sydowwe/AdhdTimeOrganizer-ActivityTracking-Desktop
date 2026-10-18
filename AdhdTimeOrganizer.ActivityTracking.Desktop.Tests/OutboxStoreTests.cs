@@ -51,6 +51,23 @@ public sealed class OutboxStoreTests : IDisposable
         Assert.Equal(5, entries["b"].ActiveSeconds);
     }
 
+    /// <summary>
+    /// The measured fields merge like the seconds: switches add up, a call in either part is a call. An entry from an
+    /// outbox file an older agent wrote has no count, and stays unknown only if both parts are.
+    /// </summary>
+    [Fact]
+    public void Save_MergesTheSwitchCountAndCallFlagOfTheSameMinute()
+    {
+        _store.Save(Window(NineAm, Entry("a", 10, switchCount: 2), Entry("legacy", 5, switchCount: null)));
+        _store.Save(Window(NineAm, Entry("a", 15, switchCount: 1, isInCall: true), Entry("legacy", 5, switchCount: null)));
+
+        var entries = _store.Pending(NineAm, max: 10).Single().Window.Entries.ToDictionary(e => e.ProcessName);
+
+        Assert.Equal(3, entries["a"].SwitchCount);
+        Assert.True(entries["a"].IsInCall);
+        Assert.Null(entries["legacy"].SwitchCount);
+    }
+
     /// <summary>A window rewritten while in flight stays, so the merged-in part is sent too.</summary>
     [Fact]
     public void Remove_KeepsAWindowThatWasRewrittenWhileInFlight()
@@ -89,7 +106,7 @@ public sealed class OutboxStoreTests : IDisposable
     private static ActivityWindow Window(DateTime start, params ActivityEntry[] entries) =>
         new() { WindowStart = start, Entries = entries.ToList() };
 
-    private static ActivityEntry Entry(string process, int active) => new()
+    private static ActivityEntry Entry(string process, int active, int? switchCount = 0, bool isInCall = false) => new()
     {
         ProcessName = process,
         WindowTitle = "t",
@@ -99,7 +116,9 @@ public sealed class OutboxStoreTests : IDisposable
         BackgroundSeconds = 0,
         ActiveMonitor = 0,
         IsPlayingSound = false,
-        IsFullscreen = false
+        IsFullscreen = false,
+        SwitchCount = switchCount,
+        IsInCall = isInCall
     };
 
     public void Dispose()

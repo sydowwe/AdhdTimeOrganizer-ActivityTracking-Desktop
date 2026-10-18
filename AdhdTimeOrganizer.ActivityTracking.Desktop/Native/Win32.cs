@@ -66,7 +66,28 @@ internal static partial class Win32
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool CloseHandle(nint hObject);
 
+    /// <summary>0 on success; <see cref="APPMODEL_ERROR_NO_PACKAGE"/> for a process without package identity.</summary>
+    [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int GetPackageFamilyName(nint hProcess, ref uint packageFamilyNameLength, [Out] char[] packageFamilyName);
+
+    [LibraryImport("user32.dll")]
+    internal static unsafe partial nint SetWinEventHook(
+        uint eventMin, uint eventMax, nint hmodWinEventProc,
+        delegate* unmanaged<nint, uint, nint, int, int, uint, uint, void> pfnWinEventProc,
+        uint idProcess, uint idThread, uint dwFlags);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool UnhookWinEvent(nint hWinEventHook);
+
     // ── Constants ────────────────────────────────────────────────────────────
+
+    internal const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    internal const uint EVENT_OBJECT_NAMECHANGE = 0x800C;
+    internal const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    internal const int OBJID_WINDOW = 0;
+    internal const int CHILDID_SELF = 0;
+    internal const int APPMODEL_ERROR_NO_PACKAGE = 15700;
 
     internal const int GWL_EXSTYLE = -20;
     internal const int WS_EX_TOOLWINDOW = 0x00000080;
@@ -122,11 +143,24 @@ internal static partial class Win32
         return length > 0 ? new string(buffer, 0, length) : null;
     }
 
-    public static int GetIdleSeconds()
+    public static int GetIdleSeconds() => (int)GetIdleTime().TotalSeconds;
+
+    /// <summary>Time since the last keyboard or mouse input, to the millisecond — what idle backdating takes back.</summary>
+    public static TimeSpan GetIdleTime()
     {
         var info = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
-        if (!GetLastInputInfo(ref info)) return 0;
-        return (int)((GetTickCount() - info.dwTime) / 1000);
+        if (!GetLastInputInfo(ref info)) return TimeSpan.Zero;
+        return TimeSpan.FromMilliseconds(unchecked(GetTickCount() - info.dwTime));
+    }
+
+    /// <summary>The package family name of a process with package identity (a Store or MSIX app), else null.</summary>
+    public static string? GetPackageFamilyName(nint processHandle)
+    {
+        var buffer = new char[256];
+        var length = (uint)buffer.Length;
+        return GetPackageFamilyName(processHandle, ref length, buffer) == 0 && length > 1
+            ? new string(buffer, 0, (int)length - 1) // the length includes the terminating null
+            : null;
     }
 
     /// <summary>

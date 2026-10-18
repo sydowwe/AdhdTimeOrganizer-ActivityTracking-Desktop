@@ -135,7 +135,9 @@ public sealed class OutboxStore(string directory, TimeSpan retention)
                     BackgroundSeconds = group.Sum(e => e.BackgroundSeconds),
                     ActiveMonitor = busiest.ActiveMonitor,
                     IsPlayingSound = group.Any(e => e.IsPlayingSound),
-                    IsFullscreen = group.Any(e => e.IsFullscreen)
+                    IsFullscreen = group.Any(e => e.IsFullscreen),
+                    SwitchCount = group.Any(e => e.SwitchCount.HasValue) ? group.Sum(e => e.SwitchCount ?? 0) : null,
+                    IsInCall = group.Any(e => e.IsInCall)
                 };
             }))
     };

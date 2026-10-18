@@ -14,14 +14,22 @@ public sealed record ActivitySample
 }
 
 /// <summary>
-/// A sample plus how it was seen in that poll. A poll yields at most one non-background observation.
+/// A sample plus how it was seen. The tracker holds a set of these as "what is on screen now" and credits each span of
+/// time to the set that held during it; a set holds at most one non-background observation.
 /// </summary>
+/// <param name="IsInCall">The app holds the microphone. A flag on the entry only: it changes nothing that is credited.</param>
+/// <param name="IsSwitch">
+/// The window has just come to the front, from another window or another title. Counted once, for the span that
+/// begins with it — the tracker clears it after that span.
+/// </param>
 public sealed record Observation(
     ActivitySample Sample,
     int MonitorIndex,
     bool IsBackground,
     bool IsPlayingSound,
-    bool IsFullscreen);
+    bool IsFullscreen,
+    bool IsInCall = false,
+    bool IsSwitch = false);
 
 /// <summary>
 /// A single process entry within an aggregated 1-minute window.
@@ -54,6 +62,17 @@ public sealed class ActivityEntry
 
     [JsonPropertyName("productName")]
     public string? ProductName { get; init; }
+
+    /// <summary>
+    /// Times the window came to the front in this minute. Null only in an outbox file written by an agent from before
+    /// it was measured: the server stores that as "unknown", which is what it is.
+    /// </summary>
+    [JsonPropertyName("switchCount")]
+    public int? SwitchCount { get; init; }
+
+    /// <summary>The app held the microphone during the minute.</summary>
+    [JsonPropertyName("isInCall")]
+    public bool IsInCall { get; init; }
 }
 
 /// <summary>

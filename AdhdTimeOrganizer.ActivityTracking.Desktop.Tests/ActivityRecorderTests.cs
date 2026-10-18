@@ -47,7 +47,7 @@ public class ActivityRecorderTests
         var window = Assert.Single(closed);
         Assert.Equal(5, Assert.Single(window.Entries).ActiveSeconds);
 
-        var next = recorder.Flush()!;
+        var next = Assert.Single(recorder.Flush());
         Assert.Equal(NineAm.AddMinutes(1), next.WindowStart);
         Assert.Equal(3, Assert.Single(next.Entries).ActiveSeconds);
     }
@@ -71,7 +71,7 @@ public class ActivityRecorderTests
         Assert.Equal(NineAm, window.WindowStart);
         Assert.Equal(2, Assert.Single(window.Entries).ActiveSeconds);
 
-        Assert.Null(recorder.Flush());
+        Assert.Empty(recorder.Flush());
     }
 
     /// <summary>
@@ -89,7 +89,7 @@ public class ActivityRecorderTests
         recorder.Record(NineAm.AddSeconds(4), TwoSeconds, [new Observation(sample, 2, false, false, false)]);
         recorder.Record(NineAm.AddSeconds(6), TwoSeconds, [new Observation(sample, 2, false, false, false)]);
 
-        Assert.Equal(2, Assert.Single(recorder.Flush()!.Entries).ActiveMonitor);
+        Assert.Equal(2, Assert.Single(Assert.Single(recorder.Flush()).Entries).ActiveMonitor);
     }
 
     /// <summary>
@@ -108,7 +108,7 @@ public class ActivityRecorderTests
             new Observation(Sample("helper", ""), 0, true, true, false)
         ]);
 
-        var titles = recorder.Flush()!.Entries.ToDictionary(e => e.ProcessName, e => e.WindowTitle);
+        var titles = Assert.Single(recorder.Flush()).Entries.ToDictionary(e => e.ProcessName, e => e.WindowTitle);
         Assert.Equal("Google Chrome", titles["chrome"]);
         Assert.Equal("helper", titles["helper"]);
     }
@@ -124,11 +124,154 @@ public class ActivityRecorderTests
         recorder.Record(NineAm.AddSeconds(4), TwoSeconds, [new Observation(sample, 1, true, true, false)]);
         recorder.Record(NineAm.AddSeconds(6), TwoSeconds, [new Observation(sample, 1, true, false, false)]);
 
-        var entry = Assert.Single(recorder.Flush()!.Entries);
+        var entry = Assert.Single(Assert.Single(recorder.Flush()).Entries);
         Assert.Equal(2, entry.ActiveSeconds);
         Assert.Equal(4, entry.BackgroundSeconds);
         Assert.True(entry.IsPlayingSound);
         Assert.Equal(0, entry.ActiveMonitor);
+    }
+
+    // ── Switches and calls ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// A switch is counted for the span it begins, once — even when that span runs over the minute boundary. The next
+    /// minute's share of the same span is the window staying in front, not coming to it again.
+    /// </summary>
+    [Fact]
+    public void Record_CountsASwitchOnce_InTheMinuteItHappenedIn()
+    {
+        var recorder = new ActivityRecorder(TimeSpan.FromSeconds(10), holdBack: TimeSpan.FromSeconds(30));
+        var sample = Sample("code", "Project");
+
+        recorder.Record(NineAm.AddSeconds(55), TimeSpan.Zero, []);
+        recorder.Record(NineAm.AddSeconds(63), TimeSpan.FromSeconds(8), [Active("code", "Project") with { IsSwitch = true }]);
+        recorder.Record(NineAm.AddSeconds(65), TwoSeconds, [new Observation(sample, 0, false, false, false)]);
+
+        var windows = recorder.Flush();
+
+        Assert.Equal([1, 0], windows.Select(w => Assert.Single(w.Entries).SwitchCount));
+        Assert.Equal([5, 5], windows.Select(w => Assert.Single(w.Entries).ActiveSeconds));
+    }
+
+    /// <summary>
+    /// Every entry from this agent carries a measured count, zero included: on the server a null means "an agent that
+    /// did not measure", and a background window that never came to the front measured zero switches.
+    /// </summary>
+    [Fact]
+    public void Flush_ReportsAMeasuredZero_AndTheCallFlag()
+    {
+        var recorder = new ActivityRecorder(TimeSpan.FromSeconds(10));
+
+        recorder.Record(NineAm, TimeSpan.Zero, []);
+        recorder.Record(NineAm.AddSeconds(2), TwoSeconds,
+        [
+            Active("code", "Project"),
+            new Observation(Sample("teams", "Standup"), 1, IsBackground: true, IsPlayingSound: false, IsFullscreen: false, IsInCall: true)
+        ]);
+
+        var entries = Assert.Single(recorder.Flush()).Entries.ToDictionary(e => e.ProcessName);
+        Assert.Equal(0, entries["code"].SwitchCount);
+        Assert.False(entries["code"].IsInCall);
+        Assert.Equal(0, entries["teams"].SwitchCount);
+        Assert.True(entries["teams"].IsInCall);
+        Assert.Equal(2, entries["teams"].BackgroundSeconds);
+    }
+
+    // ── Hold-back and idle backdating ────────────────────────────────────────
+
+    /// <summary>
+    /// A minute closes only once the hold-back has passed its end — before that, its last seconds could still be taken
+    /// back, and a window that has been queued (or sent) can't be.
+    /// </summary>
+    [Fact]
+    public void Record_ClosesAMinuteOnlyOnceTheHoldBackHasPassedItsEnd()
+    {
+        var recorder = new ActivityRecorder(TimeSpan.FromSeconds(10), holdBack: TimeSpan.FromSeconds(40));
+        var editor = Active("code", "Project");
+
+        recorder.Record(NineAm.AddSeconds(50), TimeSpan.Zero, []);
+        for (var second = 55; second <= 100; second += 5)
+            Assert.Empty(recorder.Record(NineAm.AddSeconds(second), TimeSpan.FromSeconds(5), [editor]));
+
+        var window = Assert.Single(recorder.Record(NineAm.AddSeconds(105), TimeSpan.FromSeconds(5), [editor]));
+        Assert.Equal(NineAm, window.WindowStart);
+        Assert.Equal(10, Assert.Single(window.Entries).ActiveSeconds);
+    }
+
+    /// <summary>
+    /// The minute boundary case idle backdating has to get right: the user's last input was at 9:00:55, idleness is
+    /// noticed at 9:01:27, and the time taken back runs across the boundary. The 9:00 window loses its last five
+    /// seconds and 9:01 loses everything — and neither has been closed yet, so nothing already queued is touched.
+    /// </summary>
+    [Fact]
+    public void Retract_TakesBackTimeAcrossTheMinuteBoundary_BeforeEitherWindowCloses()
+    {
+        var recorder = new ActivityRecorder(TimeSpan.FromSeconds(15), holdBack: TimeSpan.FromSeconds(45));
+        var editor = Active("code", "Project");
+
+        recorder.Record(NineAm.AddSeconds(27), TimeSpan.Zero, []);
+        for (var second = 31; second <= 87; second += 4)
+            Assert.Empty(recorder.Record(NineAm.AddSeconds(second), TimeSpan.FromSeconds(4), [editor]));
+
+        var retracted = recorder.Retract(NineAm.AddSeconds(55));
+
+        Assert.Equal(TimeSpan.FromSeconds(32), retracted);
+        var window = Assert.Single(recorder.Flush());
+        Assert.Equal(NineAm, window.WindowStart);
+        Assert.Equal(28, Assert.Single(window.Entries).ActiveSeconds);
+    }
+
+    /// <summary>Time older than the hold-back is committed: it can no longer be taken back, and saying so is the answer.</summary>
+    [Fact]
+    public void Retract_CannotReachPastTheHoldBack()
+    {
+        var recorder = new ActivityRecorder(TimeSpan.FromSeconds(10), holdBack: TimeSpan.FromSeconds(10));
+        var editor = Active("code", "Project");
+
+        recorder.Record(NineAm, TimeSpan.Zero, []);
+        for (var second = 5; second <= 30; second += 5)
+            recorder.Record(NineAm.AddSeconds(second), TimeSpan.FromSeconds(5), [editor]);
+
+        Assert.Equal(TimeSpan.FromSeconds(10), recorder.Retract(NineAm));
+        Assert.Equal(20, Assert.Single(Assert.Single(recorder.Flush()).Entries).ActiveSeconds);
+    }
+
+    /// <summary>
+    /// With time held back across the boundary, an early flush (exit, suspend) has two windows to persist — the one
+    /// whose minute is over and the one in progress.
+    /// </summary>
+    [Fact]
+    public void Flush_PersistsBothWindowsWhenTheHoldBackSpansTheBoundary()
+    {
+        var recorder = new ActivityRecorder(TimeSpan.FromSeconds(10), holdBack: TimeSpan.FromSeconds(30));
+        var editor = Active("code", "Project");
+
+        recorder.Record(NineAm.AddSeconds(50), TimeSpan.Zero, []);
+        recorder.Record(NineAm.AddSeconds(58), TimeSpan.FromSeconds(8), [editor]);
+        recorder.Record(NineAm.AddSeconds(66), TimeSpan.FromSeconds(8), [editor]);
+
+        var windows = recorder.Flush();
+
+        Assert.Equal([NineAm, NineAm.AddMinutes(1)], windows.Select(w => w.WindowStart));
+        Assert.Equal([10, 6], windows.Select(w => Assert.Single(w.Entries).ActiveSeconds));
+    }
+
+    /// <summary>
+    /// A wall clock stepped backwards credits nothing for the stretch it repeats: crediting it would count those seconds
+    /// twice, and the minute they fall in may already be closed.
+    /// </summary>
+    [Fact]
+    public void Record_CreditsNothingTwice_WhenTheWallClockStepsBack()
+    {
+        var recorder = new ActivityRecorder(TimeSpan.FromSeconds(10));
+        var editor = Active("code", "Project");
+
+        recorder.Record(NineAm.AddSeconds(20), TimeSpan.Zero, []);
+        recorder.Record(NineAm.AddSeconds(30), TimeSpan.FromSeconds(10), [editor]);
+        recorder.Record(NineAm.AddSeconds(27), TimeSpan.FromSeconds(5), [editor]);
+        recorder.Record(NineAm.AddSeconds(35), TimeSpan.FromSeconds(8), [editor]);
+
+        Assert.Equal(15, Assert.Single(Assert.Single(recorder.Flush()).Entries).ActiveSeconds);
     }
 
     private static Observation Active(string process, string title) =>

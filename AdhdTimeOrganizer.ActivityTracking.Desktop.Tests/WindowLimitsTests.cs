@@ -102,7 +102,28 @@ public class WindowLimitsTests
         Assert.Equal("", noPath.ProductName);
     }
 
-    private static ActivityEntry Entry(string process, int active, int background = 0, string title = "t") => new()
+    /// <summary>
+    /// Two windows fighting over focus can flip hundreds of times a minute. The server refuses past its bound, and a
+    /// refused heartbeat is a lost minute — so the count is clamped to it, and an unknown one stays unknown.
+    /// </summary>
+    [Fact]
+    public void Apply_ClampsTheSwitchCountToTheServersBound()
+    {
+        var entries = WindowLimits.Apply(
+        [
+            Entry("fighting", active: 30, switchCount: 500),
+            Entry("calm", active: 20, switchCount: 3, isInCall: true),
+            Entry("unknown", active: 5, switchCount: null)
+        ]).ToDictionary(e => e.ProcessName);
+
+        Assert.Equal(WindowLimits.MaxSwitchesPerEntry, entries["fighting"].SwitchCount);
+        Assert.Equal(3, entries["calm"].SwitchCount);
+        Assert.True(entries["calm"].IsInCall);
+        Assert.Null(entries["unknown"].SwitchCount);
+    }
+
+    private static ActivityEntry Entry(
+        string process, int active, int background = 0, string title = "t", int? switchCount = 0, bool isInCall = false) => new()
     {
         ProcessName = process,
         WindowTitle = title,
@@ -112,6 +133,8 @@ public class WindowLimitsTests
         BackgroundSeconds = background,
         ActiveMonitor = 0,
         IsPlayingSound = false,
-        IsFullscreen = false
+        IsFullscreen = false,
+        SwitchCount = switchCount,
+        IsInCall = isInCall
     };
 }

@@ -91,7 +91,11 @@ public sealed class AppConfig
     /// <summary>The web app, for the links the tracker opens (the planner, the mappings). Its own setting: in development it is a separate server.</summary>
     public string WebAppUrl { get; set; } = "https://adhdtimeorganizer.com";
 #endif
-    public int PollIntervalMs { get; set; } = 2000;
+    /// <summary>
+    /// How often idleness, background windows, sound and the microphone are checked. Not the foreground: that is
+    /// followed from events as it changes, so this can be slower than the 2 s it was when it sampled the foreground too.
+    /// </summary>
+    public int PollIntervalMs { get; set; } = 5000;
     public int IdleThresholdSeconds { get; set; } = 30;
     public int MinBackgroundWindowPercent { get; set; } = 15;
     public int MaxBackgroundWindowsPerMonitor { get; set; } = 2;

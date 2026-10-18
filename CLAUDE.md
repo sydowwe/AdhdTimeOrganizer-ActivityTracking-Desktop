@@ -15,8 +15,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Program.cs` | Logging (Serilog → `%LOCALAPPDATA%\AdhdTimeOrganizer\logs`), single-instance mutex, tray startup |
 | `TrayApplicationContext.cs` | Tray icon and menu (incl. "Pause for…", the today/now glance and the "map these apps" prompt); pulls status from the tracker on a UI timer |
 | `LoginForm.cs`, `SettingsForm.cs`, `PrivacyForm.cs` | Password + 2FA sign-in; settings editor; the user's ignore / hide-title rules and private-window handling |
-| `Services/ActivityTrackerService.cs` | Poll loop (observes the desktop), send loop (drains the outbox), lock/suspend/session-end handling |
-| `Services/ActivityRecorder.cs` | **Pure** minute accounting: measured elapsed time, split at minute boundaries, gap cap |
+| `Services/ActivityTrackerService.cs` | Poll loop (foreground changes as they happen, plus a poll for the rest of the desktop), send loop (drains the outbox), lock/suspend/session-end handling |
+| `Services/ActivityRecorder.cs` | **Pure** minute accounting: measured elapsed time, split at minute boundaries, gap cap, switch counts, the hold-back that idle backdating retracts from |
+| `Services/ScreenState.cs` | **Pure** "what is on screen now": which observations a span is credited to, what counts as a switch, when idleness starts a backdate |
 | `Services/WindowLimits.cs` | The server's validation rules, applied before a window is queued |
 | `Services/WindowTitleNormalizer.cs` | Strips counters, unsaved markers and app-name suffixes from titles |
 | `Services/OutboxStore.cs` | Finished windows as JSON files under `%LOCALAPPDATA%\…Desktop\outbox` until sent |
@@ -29,7 +30,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/DriftPolicy.cs` | **Pure** drift-nudge decisions over the server's per-minute plan verdicts (`MinuteVerdict`) |
 | `Services/NudgeService.cs` | Feeds polls to the policy, checks quiet conditions, shows and withdraws toasts, handles button presses |
 | `Services/NudgeNotifier.cs`, `NudgeToast.cs` | Windows App SDK notifications: registration, toast text and buttons, parsing a press |
-| `Native/` | P/Invoke (`Win32`, `MonitorHelper`), `ProcessInfoCache`, `AudioSessionHelper` (NAudio), `MicrophoneUsage` (registry) |
+| `Native/` | P/Invoke (`Win32`, `MonitorHelper`), `ProcessInfoCache`, `AudioSessionHelper` (NAudio), `MicrophoneUsage` (registry: whether, and which apps), `ForegroundEvents` (the WinEvent hook) |
 | `Models/` | Wire models (`ActivityModels.cs`, `AgentRule.cs`, `ServerResolution.cs` — the heartbeat's answer and the coverage) and `AppConfig` (`%LOCALAPPDATA%\…Desktop\config.json`) |
 | `AdhdTimeOrganizer.ActivityTracking.Desktop.Tests/` | xunit v3 tests, including `NativeSmokeTests` against the real machine |
 
@@ -65,7 +66,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 - **A refused heartbeat is a lost minute.** The agent cannot repair a batch the server calls
   malformed: a 4xx other than 401/403/408/409/425/429 is dropped (`ApiClient.Classify`). So every server
   bound is mirrored in `WindowLimits` and applied before queuing: ≤ 60 s active + background per entry,
-  ≤ 60 s active per window, ≤ 200 entries, column widths, and the 2000-byte (process, title) index limit.
+  ≤ 60 s active per window, ≤ 200 entries, column widths, the 2000-byte (process, title) index limit, and
+  ≤ 120 switches per entry (clamped, not refused).
   When the server's `DesktopActivityHeartbeatValidator` or `TrackingIngestLimits` change, change
   `WindowLimits` with them.
 - **Never send null or a blank title.** Missing product names and paths go out as `""`, and an untitled
@@ -104,12 +106,32 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     these models, and each side fails when the other's copy differs. A wire change starts on the server.
 
 ### Time accounting
-- All of it lives in `ActivityRecorder`, which has no clock and no Win32, so it's unit-testable. Keep it
-  that way: the service passes `DateTime.UtcNow` and the measured elapsed time in.
+- All of it lives in `ActivityRecorder` and `ScreenState`, which have no clock and no Win32, so they're
+  unit-testable. Keep it that way: the service passes `DateTime.UtcNow` and the measured elapsed time in.
 - Credit **measured** elapsed time, never the configured interval. A gap longer than `MaxCreditedGap`
   (sleep, a hang) credits nothing.
-- A poll yields at most one non-background observation, and each process (name + path) is observed at
-  most once per poll. That's what keeps entries within the 60-second rules without clamping.
+- **The foreground is followed from events, everything else is polled.** `ForegroundEvents` (a WinEvent hook on
+  foreground changes, and on title changes of the foreground process only) wakes the poll loop the moment the window
+  in front changes; the poll (`PollIntervalMs`, 5 s by default) covers idleness, background windows, sound and the
+  microphone. Each span is credited to what was on screen **during** it — the state set by the last change or poll —
+  so a span ends exactly where the window changed. The hook needs the UI thread (see "Native code"); if it can't be
+  set, the poll alone still records, only less precisely.
+- The state holds at most one non-background observation, and each process (name + path) is observed at most once at
+  a time — a window coming to the front drops its own background observation. That's what keeps entries within the
+  60-second rules without clamping.
+- **A switch** is the entry in front changing: another window, or another (normalized) title of the same one. It is
+  counted once, in the minute it happened (`SwitchCount`, sent on every entry — a measured zero is not the server's
+  "unknown"). Coming back to the same window from idle or a lock is not one; a window that may not be recorded still
+  is something in front, so switching back from it counts.
+- **Idle backdating.** Idleness is noticed only once the threshold has run out, and those seconds were credited as if
+  someone were there. The first poll that finds the user gone retracts everything after the last input (or after the
+  last poll that found them present by sound — passive presence stays credited). It works because credited time is
+  **held back** for `IdleThresholdSeconds` + one credited gap before it is committed to its minute, so a minute window
+  closes that long after its end, and nothing already queued or sent is ever touched. Flush (exit, suspend) commits
+  early and can close two windows. A locked screen is not idleness and takes nothing back.
+  - The hold-back is **capped at 50 s** (`MaxHoldBack`): the tray's "now" and the drift nudge only use a minute
+    younger than `DriftPolicy.FreshFor`, and a later window would arrive too old for them. A longer idle threshold is
+    backdated only that far. Lengthen one and you must re-check the other.
 - Idle = no input for `IdleThresholdSeconds`, unless the **foreground** window is audibly playing
   (`IsPassivelyPresent`), up to `MaxPassiveIdleMinutes`. Fullscreen alone deliberately doesn't count:
   a paused fullscreen video looks like a watched one. A locked session records nothing.
@@ -139,6 +161,13 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   reintroduce it.
 - A wrong P/Invoke signature compiles and fails silently at runtime. Add a case to `NativeSmokeTests`
   for any new native call.
+- **`ForegroundEvents` is installed and removed on the UI thread** (`Start`, `Stop`, `Dispose`): an out-of-context
+  WinEvent hook is delivered through the setting thread's message loop, and only that thread may remove it. The
+  callback is `[UnmanagedCallersOnly]` and static (WinEvent callbacks carry no context), stamps a `Stopwatch`
+  timestamp, queues, and returns; the one other thing it does is move the title-change hook to the new foreground
+  process — hooked system-wide, every accessible-name change on the machine would be a message on the UI thread.
+- A packaged app is named in the microphone's consent store by its **package family name**, read per process with
+  `GetPackageFamilyName` on the limited handle (`ProcessInfo.PackageFamilyName`); a desktop app by its path.
 
 ### Nudges and notifications
 - Nudges are **client-side only**: nothing about them reaches the server. The policies live in
@@ -160,7 +189,10 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 - They're fed by the poll loop, so pausing tracking pauses them. A paused, asleep or hung gap as long as a
   break counts as a break.
 - A call (any app holding the microphone) counts as presence **for nudges only**. It must not change what
-  the tracker records or sends; passive presence stays the only idle exception there.
+  the tracker credits; passive presence stays the only idle exception there. What the tracker does with a call is
+  mark it: the mic-holding app's entry carries `IsInCall`, and the app is observed as a background window (like an
+  audio-playing one) so a muted, hidden call app still has an entry to carry it. It is credited active time only while
+  it was really in front.
 - Quiet conditions hold a due nudge until they end; they never drop it. "Full screen" means
   `SHQueryUserNotificationState`, Windows' own definition. A rectangle check also catches a maximised
   window behind an auto-hiding taskbar, and the desktop. The break-over nudge ignores quiet conditions

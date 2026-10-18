@@ -59,8 +59,10 @@ public sealed class SettingsForm : Form
 
         AddRow(layout, "Server URL:", _apiUrlBox, "Changing it signs you out.");
         AddRow(layout, "Web app URL:", _webAppUrlBox, "Where the planner and your mappings open.");
-        AddRow(layout, "Poll interval (ms):", _pollIntervalBox, null);
-        AddRow(layout, "Idle after (s):", _idleThresholdBox, "No keyboard or mouse input for this long.");
+        AddRow(layout, "Poll interval (ms):", _pollIntervalBox,
+            "Idleness, background windows, sound. The window in front is followed as it changes.");
+        AddRow(layout, "Idle after (s):", _idleThresholdBox,
+            "No keyboard or mouse input for this long. The time since the last input is then not counted.");
         AddRow(layout, "Watching / listening (min):", _passiveIdleBox,
             "How long a foreground window playing sound keeps you present without input. 0 turns it off.");
         AddRow(layout, "Background window min area (%):", _minBackgroundBox, null);

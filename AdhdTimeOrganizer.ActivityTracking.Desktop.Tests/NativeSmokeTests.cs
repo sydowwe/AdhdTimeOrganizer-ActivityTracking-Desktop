@@ -47,8 +47,51 @@ public class NativeSmokeTests
     }
 
     [Fact]
-    public void MicrophoneUsage_ReadsTheConsentStore_WithoutThrowing() =>
-        _ = MicrophoneUsage.IsInUse(); // fails closed — a wrong layout reads as "not in use", logged once
+    public void MicrophoneUsage_ReadsTheConsentStore_WithoutThrowing()
+    {
+        // Fails closed — a wrong layout reads as "not in use", logged once.
+        var holders = MicrophoneUsage.GetHolders();
+        Assert.Equal(holders.Any, MicrophoneUsage.IsInUse());
+        Assert.All(holders.FindProcessIds(), pid => Assert.True(pid > 0));
+    }
+
+    /// <summary>
+    /// The hook is set and removed on this thread, which has no message loop, so nothing is delivered — what this
+    /// pins is the signature: a wrong one returns a null hook, and the tracker silently falls back to polling.
+    /// </summary>
+    [Fact]
+    public void ForegroundEvents_InstallAndUninstall()
+    {
+        Assert.True(ForegroundEvents.Install());
+        Assert.True(ForegroundEvents.IsInstalled);
+
+        ForegroundEvents.Uninstall();
+        Assert.False(ForegroundEvents.IsInstalled);
+    }
+
+    /// <summary>
+    /// A packaged call app (the new Teams) is named by its package family name in the microphone's consent store; a
+    /// wrong signature here would leave every packaged app unrecognised, and its calls unmarked.
+    /// </summary>
+    [Fact]
+    public void PackageFamilyName_IsReadForPackagedProcesses_AndNullForThisOne()
+    {
+        Assert.Null(ProcessInfoCache.Get(Environment.ProcessId)!.PackageFamilyName);
+
+        string[] packagedShellProcesses = ["StartMenuExperienceHost", "ShellExperienceHost", "SearchHost", "TextInputHost"];
+        var running = packagedShellProcesses.SelectMany(System.Diagnostics.Process.GetProcessesByName).ToList();
+        try
+        {
+            if (running.Count == 0)
+                Assert.Skip("None of the packaged shell processes is running here.");
+
+            Assert.Contains(running, p => ProcessInfoCache.Get(p.Id)?.PackageFamilyName?.Contains('_') == true);
+        }
+        finally
+        {
+            foreach (var process in running) process.Dispose();
+        }
+    }
 
     /// <summary>
     /// The project extracts this from the runtime MSIX because the self-contained SDK 2.x leaves it out, and

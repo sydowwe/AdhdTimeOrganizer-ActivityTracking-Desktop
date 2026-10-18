@@ -25,8 +25,8 @@ public sealed record TrackerStatus(
 public sealed record ResolvedMinute(DateTime WindowStartUtc, HeartbeatResponse Response);
 
 /// <summary>
-/// Polls the desktop, folds polls into minute windows, persists each finished window to the outbox and
-/// sends the outbox.
+/// Follows the window in front from events and polls the rest of the desktop, folds both into minute windows, persists
+/// each finished window to the outbox and sends the outbox.
 /// </summary>
 /// <remarks>
 /// Recording and sending are independent: pausing tracking stops the poll loop only, and the send loop
@@ -43,6 +43,16 @@ public sealed class ActivityTrackerService : IDisposable
     private static readonly TimeSpan AgentRulesRefreshInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan CoverageRefreshInterval = TimeSpan.FromHours(1);
     private const int WindowsPerSendPass = 50;
+    private static readonly TimeSpan MicrophoneCheckInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan MinForegroundChangeSpacing = TimeSpan.FromMilliseconds(200);
+
+    /// <summary>
+    /// A window is sent its minute plus the hold-back after it starts, and the tray's "now" and the drift nudge only use
+    /// a minute younger than <see cref="DriftPolicy.FreshFor"/> (3 min). The newest minute must still be that young when
+    /// the next one arrives: one minute, this, another minute and a poll fit in three. A longer hold-back would leave
+    /// both blank for part of every minute — or, past a minute, for good.
+    /// </summary>
+    private static readonly TimeSpan MaxHoldBack = TimeSpan.FromSeconds(50);
 
     private readonly AppConfig _config;
     private readonly ApiClient _apiClient;
@@ -88,7 +98,8 @@ public sealed class ActivityTrackerService : IDisposable
         _outbox = outbox;
         _today = today;
         _nudges = nudges;
-        _recorder = new ActivityRecorder(MaxCreditedGapFor(PollInterval));
+        var maxCreditedGap = MaxCreditedGapFor(PollInterval);
+        _recorder = new ActivityRecorder(maxCreditedGap, HoldBackFor(maxCreditedGap));
 
         // The server rules are one user's on one server; a sign-out (or a new server URL, which signs out) forgets them.
         // So is what the server last said about the user's minutes and their mapping coverage.
@@ -115,6 +126,11 @@ public sealed class ActivityTrackerService : IDisposable
             _config.PollIntervalMs, _config.IdleThresholdSeconds,
             _config.MinBackgroundWindowPercent, _config.MaxBackgroundWindowsPerMonitor, _config.MaxPassiveIdleMinutes);
 
+        // On the UI thread, which delivers the hook's events (see ForegroundEvents). Without it the poll still sees
+        // the foreground, a poll interval at a time, and no switch between two polls.
+        if (!ForegroundEvents.Install())
+            _log.Warning("Could not hook foreground changes — the foreground is polled only, and switches between polls are missed");
+
         _pollCts = new CancellationTokenSource();
         var token = _pollCts.Token;
         _pollTask = Task.Run(() => PollLoopAsync(token));
@@ -124,6 +140,7 @@ public sealed class ActivityTrackerService : IDisposable
     {
         if (!IsRunning) return;
         _log.Information("Stopping tracker");
+        ForegroundEvents.Uninstall();
         _pollCts?.Cancel();
     }
 
@@ -165,12 +182,14 @@ public sealed class ActivityTrackerService : IDisposable
     /// </summary>
     public void Flush()
     {
-        ActivityWindow? window;
-        lock (_lock) window = _recorder.Flush();
-        if (window is null) return;
+        List<ActivityWindow> windows;
+        lock (_lock) windows = _recorder.Flush();
 
-        Queue(window);
-        _log.Information("Flushed partial window {WindowStart} ({Count} entries)", window.WindowStart, window.Entries.Count);
+        foreach (var window in windows)
+        {
+            Queue(window);
+            _log.Information("Flushed partial window {WindowStart} ({Count} entries)", window.WindowStart, window.Entries.Count);
+        }
     }
 
     /// <summary>To the outbox, and into today's total: queued time counts, whether or not it has been sent yet.</summary>
@@ -220,80 +239,196 @@ public sealed class ActivityTrackerService : IDisposable
 
     // ── Polling ──────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Credits time from two sources: <b>foreground changes</b>, the moment they happen (<see cref="ForegroundEvents"/>),
+    /// and a <b>poll</b> every <see cref="PollInterval"/> for what has no event — idleness, background windows, sound,
+    /// the microphone. Each span is credited to what was on screen <em>during</em> it, so a span ends exactly where the
+    /// window in front changed.
+    /// </summary>
+    /// <remarks>
+    /// The loop's state lives in a <see cref="PollSession"/> of its own: a settings change restarts the loop, and the
+    /// old one may still be finishing a poll while the new one starts.
+    /// </remarks>
     private async Task PollLoopAsync(CancellationToken ct)
     {
         var interval = PollInterval;
+        var intervalTicks = (long)(interval.TotalSeconds * Stopwatch.Frequency);
         var maxCreditedGap = MaxCreditedGapFor(interval);
-        lock (_lock) _recorder.MaxCreditedGap = maxCreditedGap;
-
-        // A PeriodicTimer ticks on a fixed cadence however long a poll takes, and the time credited is
-        // measured, not assumed — see ActivityRecorder.
-        using var timer = new PeriodicTimer(interval);
-        var clock = Stopwatch.StartNew();
-        var lastTick = TimeSpan.Zero;
-
-        try
+        lock (_lock)
         {
-            while (await timer.WaitForNextTickAsync(ct))
+            _recorder.MaxCreditedGap = maxCreditedGap;
+            _recorder.HoldBack = HoldBackFor(maxCreditedGap);
+        }
+
+        var session = new PollSession { CreditedUntil = Stopwatch.GetTimestamp() };
+
+        // The first poll runs at once: there is nothing to credit yet, but it says what is on screen.
+        var nextPoll = session.CreditedUntil;
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
             {
-                var now = clock.Elapsed;
-                var elapsed = now - lastTick;
-                lastTick = now;
+                var wait = Stopwatch.GetElapsedTime(Stopwatch.GetTimestamp(), nextPoll);
+                if (wait > TimeSpan.Zero) await ForegroundEvents.WaitAsync(wait, ct);
+            }
+            catch (OperationCanceledException) { break; }
 
-                try
+            try
+            {
+                // Drained on every pass, not only on a wake: a change that arrives as a poll falls due must be credited
+                // before the poll, or the poll would credit past it to the window that was in front before.
+                if (ForegroundEvents.TryDrain(out var changedAt))
                 {
-                    var isLocked = _isLocked;
-                    var poll = isLocked ? PollResult.Locked : Observe();
-                    var nowUtc = DateTime.UtcNow;
+                    // An app rewriting its title many times a second (a terminal, a progress counter) would otherwise
+                    // cost a window capture each time. The change keeps its own timestamp, so the spacing costs nothing
+                    // in accuracy — only a window in front for less than this goes unseen.
+                    var sinceLast = Stopwatch.GetElapsedTime(session.LastChangeHandled);
+                    if (sinceLast < MinForegroundChangeSpacing) await Task.Delay(MinForegroundChangeSpacing - sinceLast, ct);
 
-                    List<ActivityWindow> closed;
-                    lock (_lock) closed = _recorder.Record(nowUtc, elapsed, poll.Observations);
-
-                    // Catches its own failures: a nudge going wrong must not show up as a poll error.
-                    _nudges?.OnPoll(nowUtc, maxCreditedGap, isLocked, poll.IsPresent, poll.Foreground);
-
-                    foreach (var window in closed)
-                    {
-                        Queue(window);
-                        _log.Information(
-                            "Finalized window {WindowStart}: {Count} entries ({Active}s active)",
-                            window.WindowStart, window.Entries.Count, window.Entries.Sum(e => e.ActiveSeconds));
-                    }
-
-                    if (closed.Count > 0) RequestSend();
-                    _lastPollError = null;
+                    OnForegroundChanged(session, changedAt);
+                    session.LastChangeHandled = Stopwatch.GetTimestamp();
                 }
-                catch (Exception ex)
+
+                var now = Stopwatch.GetTimestamp();
+                if (now >= nextPoll)
                 {
-                    _log.Error(ex, "Poll failed");
-                    _lastPollError = ex.Message;
+                    Poll(session, now, maxCreditedGap);
+
+                    // After a sleep or a hang, the next poll is an interval from now — not a burst catching up.
+                    nextPoll += intervalTicks;
+                    if (nextPoll <= now) nextPoll = now + intervalTicks;
                 }
+
+                _lastPollError = null;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                _log.Error(ex, "Poll failed");
+                _lastPollError = ex.Message;
             }
         }
-        catch (OperationCanceledException) { }
 
         _log.Debug("Poll loop exited");
     }
 
-    /// <summary>
-    /// What one poll saw. <see cref="IsPresent"/> is the user being there at all — input, or sound in the
-    /// foreground — which an ignored foreground window doesn't change; <see cref="Foreground"/> is null then.
-    /// </summary>
-    private sealed record PollResult(List<Observation> Observations, bool IsPresent, ActivitySample? Foreground)
+    /// <summary>One run of the poll loop's own state. Touched by that loop's thread only.</summary>
+    private sealed class PollSession
     {
-        public static PollResult Locked { get; } = new([], false, null);
+        public ScreenState Screen { get; } = new();
+
+        /// <summary>The <see cref="Stopwatch"/> timestamp the recorder has been credited up to.</summary>
+        public long CreditedUntil { get; set; }
+
+        /// <summary>When the last foreground change was handled, for <see cref="MinForegroundChangeSpacing"/>.</summary>
+        public long LastChangeHandled { get; set; }
+
+        /// <summary>The last poll's sound and microphone, for a foreground change between polls.</summary>
+        public ActiveAudioInfo? Audio { get; set; }
+
+        public MicrophoneHolders Microphone { get; set; } = MicrophoneHolders.None;
+        public List<int> MicrophonePids { get; set; } = [];
+        public DateTime MicrophoneCheckedUtc { get; set; } = DateTime.MinValue;
     }
 
-    private PollResult Observe()
+    /// <summary>
+    /// The window in front changed at <paramref name="changedAt"/>. The time up to it goes to what was in front before;
+    /// from it, to the new window — unless the user is away, which the next poll settles (it knows about sound).
+    /// </summary>
+    private void OnForegroundChanged(PollSession session, long changedAt)
     {
-        var idleSeconds = Win32.GetIdleSeconds();
+        if (_isLocked) return;
+
+        CreditUntil(session, changedAt);
+        if (Win32.GetIdleTime().TotalSeconds >= _config.IdleThresholdSeconds) return;
+
+        var hwnd = Win32.GetForegroundWindow();
+        var sample = CaptureWindow(hwnd, out var pid, out var process);
+        if (sample is null)
+        {
+            session.Screen.ForegroundChanged(null);
+            return;
+        }
+
+        var monitors = MonitorHelper.GetMonitors();
+        session.Screen.ForegroundChanged(new Observation(sample,
+            MonitorHelper.GetWindowMonitorIndex(hwnd, monitors),
+            IsBackground: false,
+            IsPlayingSound: session.Audio is { } audio && IsPlayingAudio(audio, pid, sample.ExecutablePath),
+            IsFullscreen: MonitorHelper.IsWindowFullscreen(hwnd, monitors),
+            IsInCall: process is not null && session.Microphone.Holds(process)));
+    }
+
+    /// <summary>
+    /// The full look at the screen. Credits the span since the last change to what held during it, takes back what was
+    /// credited after the last input when this poll is the first to find the user gone, then adopts what it saw.
+    /// </summary>
+    private void Poll(PollSession session, long now, TimeSpan maxCreditedGap)
+    {
+        var isLocked = _isLocked;
+        var poll = isLocked ? PollResult.Locked : Observe(session);
+
+        CreditUntil(session, now);
+        var nowUtc = DateTime.UtcNow;
+
+        if (session.Screen.Polled(nowUtc, poll) is { } awayFrom)
+        {
+            TimeSpan retracted;
+            lock (_lock)
+            {
+                // Followed on every poll: the idle threshold can change in Settings without a restart.
+                _recorder.HoldBack = HoldBackFor(maxCreditedGap);
+                retracted = _recorder.Retract(awayFrom);
+            }
+            _log.Debug("Away — took back {Seconds:0.#}s credited before it was noticed", retracted.TotalSeconds);
+        }
+        else
+        {
+            lock (_lock) _recorder.HoldBack = HoldBackFor(maxCreditedGap);
+        }
+
+        // Catches its own failures: a nudge going wrong must not show up as a poll error.
+        _nudges?.OnPoll(nowUtc, maxCreditedGap, isLocked, poll.IsPresent, poll.Foreground);
+    }
+
+    /// <summary>Credits the time up to <paramref name="timestamp"/> to what was on screen, and queues the windows that closed.</summary>
+    private void CreditUntil(PollSession session, long timestamp)
+    {
+        var elapsed = Stopwatch.GetElapsedTime(session.CreditedUntil, timestamp);
+        if (elapsed < TimeSpan.Zero) return;
+
+        var atUtc = DateTime.UtcNow - Stopwatch.GetElapsedTime(timestamp);
+        session.CreditedUntil = timestamp;
+
+        List<ActivityWindow> closed;
+        lock (_lock) closed = _recorder.Record(atUtc, elapsed, session.Screen.TakeForSpan());
+
+        foreach (var window in closed)
+        {
+            Queue(window);
+            _log.Information(
+                "Finalized window {WindowStart}: {Count} entries ({Active}s active, {Switches} switches)",
+                window.WindowStart, window.Entries.Count, window.Entries.Sum(e => e.ActiveSeconds), window.Entries.Sum(e => e.SwitchCount ?? 0));
+        }
+
+        if (closed.Count > 0) RequestSend();
+    }
+
+    private PollResult Observe(PollSession session)
+    {
+        var idleTime = Win32.GetIdleTime();
+        var idleSeconds = (int)idleTime.TotalSeconds;
         var monitors = MonitorHelper.GetMonitors();
         var audio = AudioSessionHelper.GetActiveAudioInfo();
         var foregroundHwnd = Win32.GetForegroundWindow();
+        session.Audio = audio;
+        RefreshMicrophone(session);
 
         // ── Active (foreground) window ────────────────────────────────────────
-        var active = CaptureWindow(foregroundHwnd, out var activePid);
+        var active = CaptureWindow(foregroundHwnd, out var activePid, out var activeProcess);
         var isActivePlayingSound = active is not null && IsPlayingAudio(audio, activePid, active.ExecutablePath);
+        var isActiveInCall = activeProcess is not null && session.Microphone.Holds(activeProcess);
 
         if (idleSeconds >= _config.IdleThresholdSeconds)
         {
@@ -306,9 +441,10 @@ public sealed class ActivityTrackerService : IDisposable
                         MonitorHelper.GetWindowMonitorIndex(foregroundHwnd, monitors),
                         IsBackground: false,
                         IsPlayingSound: true,
-                        IsFullscreen: MonitorHelper.IsWindowFullscreen(foregroundHwnd, monitors))
-                ], IsPresent: true, active)
-                : new PollResult([], IsPresent: false, null);
+                        IsFullscreen: MonitorHelper.IsWindowFullscreen(foregroundHwnd, monitors),
+                        IsInCall: isActiveInCall)
+                ], IsPresent: true, active, IsPassive: true, IdleTime: idleTime)
+                : new PollResult([], IsPresent: false, null, IdleTime: idleTime);
         }
 
         var observations = new List<Observation>();
@@ -320,8 +456,9 @@ public sealed class ActivityTrackerService : IDisposable
                 MonitorHelper.GetWindowMonitorIndex(foregroundHwnd, monitors),
                 IsBackground: false,
                 IsPlayingSound: isActivePlayingSound,
-                IsFullscreen: MonitorHelper.IsWindowFullscreen(foregroundHwnd, monitors)));
-            trackedKeys.Add(ProcessKey(active));
+                IsFullscreen: MonitorHelper.IsWindowFullscreen(foregroundHwnd, monitors),
+                IsInCall: isActiveInCall));
+            trackedKeys.Add(ScreenState.ProcessKey(active));
         }
 
         // ── Background windows (other monitors, by visible area) ──────────────
@@ -331,32 +468,51 @@ public sealed class ActivityTrackerService : IDisposable
         foreach (var bg in backgroundWindows)
         {
             var sample = ToSample(bg.Process, bg.WindowTitle);
-            if (sample is null || !trackedKeys.Add(ProcessKey(sample))) continue;
+            if (sample is null || !trackedKeys.Add(ScreenState.ProcessKey(sample))) continue;
 
             observations.Add(new Observation(sample, bg.MonitorIndex,
                 IsBackground: true,
                 IsPlayingSound: IsPlayingAudio(audio, bg.Pid, sample.ExecutablePath),
-                IsFullscreen: false));
+                IsFullscreen: false,
+                IsInCall: session.Microphone.Holds(bg.Process)));
         }
 
-        // ── Audio-playing processes not yet tracked ───────────────────────────
-        foreach (var pid in audio.Pids)
+        // ── Audio-playing processes, then call apps, not yet tracked ──────────
+        // A call app is usually behind the window being worked in, often silent (muted, nobody talking), and its flag
+        // needs an entry to go on. It is observed like any background window; it is never credited active time it did
+        // not have in front.
+        foreach (var pid in audio.Pids.Concat(session.MicrophonePids))
         {
             var process = ProcessInfoCache.Get(pid);
             if (process is null) continue;
 
             var mainWindow = GetMainWindow(pid);
             var sample = ToSample(process, mainWindow != nint.Zero ? Win32.GetWindowTitle(mainWindow) : null);
-            if (sample is null || !trackedKeys.Add(ProcessKey(sample))) continue;
+            if (sample is null || !trackedKeys.Add(ScreenState.ProcessKey(sample))) continue;
 
             observations.Add(new Observation(sample,
                 MonitorHelper.GetWindowMonitorIndex(mainWindow, monitors),
                 IsBackground: true,
-                IsPlayingSound: true,
-                IsFullscreen: false));
+                IsPlayingSound: IsPlayingAudio(audio, pid, sample.ExecutablePath),
+                IsFullscreen: false,
+                IsInCall: session.Microphone.Holds(process)));
         }
 
-        return new PollResult(observations, IsPresent: true, active);
+        return new PollResult(observations, IsPresent: true, active, IdleTime: idleTime);
+    }
+
+    /// <summary>
+    /// Which apps hold the microphone, at most every <see cref="MicrophoneCheckInterval"/>: a registry read, and for a
+    /// packaged call app a look at every process's package identity.
+    /// </summary>
+    private static void RefreshMicrophone(PollSession session)
+    {
+        var now = DateTime.UtcNow;
+        if (now - session.MicrophoneCheckedUtc < MicrophoneCheckInterval) return;
+
+        session.MicrophoneCheckedUtc = now;
+        session.Microphone = MicrophoneUsage.GetHolders();
+        session.MicrophonePids = session.Microphone.FindProcessIds();
     }
 
     /// <summary>
@@ -368,12 +524,13 @@ public sealed class ActivityTrackerService : IDisposable
     internal static bool IsPassivelyPresent(int idleSeconds, bool isForegroundPlayingSound, int maxPassiveIdleMinutes) =>
         isForegroundPlayingSound && idleSeconds < maxPassiveIdleMinutes * 60;
 
-    private ActivitySample? CaptureWindow(nint hWnd, out int pid)
+    private ActivitySample? CaptureWindow(nint hWnd, out int pid, out ProcessInfo? process)
     {
         pid = 0;
+        process = null;
         if (hWnd == nint.Zero) return null;
 
-        var process = ProcessInfoCache.GetForWindow(hWnd, out pid);
+        process = ProcessInfoCache.GetForWindow(hWnd, out pid);
         if (process is null) return null;
 
         return ToSample(process, Win32.GetWindowTitle(hWnd));
@@ -408,13 +565,22 @@ public sealed class ActivityTrackerService : IDisposable
         catch { return nint.Zero; }
     }
 
-    private static string ProcessKey(ActivitySample sample) => $"{sample.ProcessName}|{sample.ExecutablePath}";
-
     private static bool IsPlayingAudio(ActiveAudioInfo audio, int pid, string? exePath) =>
         audio.Pids.Contains(pid) || (exePath is not null && audio.ExePaths.Contains(exePath));
 
     private static TimeSpan MaxCreditedGapFor(TimeSpan pollInterval) =>
         TimeSpan.FromTicks(Math.Max(pollInterval.Ticks * 3, TimeSpan.FromSeconds(10).Ticks));
+
+    /// <summary>
+    /// How long credited time stays retractable: the idle threshold — the seconds idle backdating takes back — plus one
+    /// credited gap, because idleness is noticed up to a poll after the threshold ran out. At most
+    /// <see cref="MaxHoldBack"/>, so a longer threshold is backdated only that far.
+    /// </summary>
+    private TimeSpan HoldBackFor(TimeSpan maxCreditedGap)
+    {
+        var holdBack = TimeSpan.FromSeconds(Math.Max(0, _config.IdleThresholdSeconds)) + maxCreditedGap;
+        return holdBack < MaxHoldBack ? holdBack : MaxHoldBack;
+    }
 
     // ── Sending ──────────────────────────────────────────────────────────────
 
@@ -640,6 +806,7 @@ public sealed class ActivityTrackerService : IDisposable
         _apiClient.SignedOut -= ForgetServerAnswers;
 
         // Let an in-flight poll finish before flushing, so nothing it records lands after the flush.
+        ForegroundEvents.Uninstall();
         _pollCts?.Cancel();
         try { _pollTask?.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
         Flush();
