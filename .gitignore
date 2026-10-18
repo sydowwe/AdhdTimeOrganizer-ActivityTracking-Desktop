@@ -11,6 +11,7 @@ x86/
 # Ignore build output folders
 bin/
 obj/
+artifacts-cli/
 logs/
 temp/
 
