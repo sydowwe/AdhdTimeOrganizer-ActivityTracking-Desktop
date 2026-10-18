@@ -2,16 +2,12 @@ using AdhdTimeOrganizer.ActivityTracking.Desktop;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 using Serilog;
 
-var logDir = Path.Combine(
-    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-    "AdhdTimeOrganizer", "logs");
-
-Directory.CreateDirectory(logDir);
+Directory.CreateDirectory(Program.LogDirectory);
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Debug()
     .WriteTo.File(
-        Path.Combine(logDir, "log-.txt"),
+        Path.Combine(Program.LogDirectory, "log-.txt"),
         rollingInterval: RollingInterval.Day,
         retainedFileCountLimit: 7,
         outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
@@ -34,6 +30,9 @@ Application.ThreadException += (_, e) =>
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     Log.Fatal(e.ExceptionObject as Exception, "Unhandled domain exception");
 
+TaskScheduler.UnobservedTaskException += (_, e) =>
+    Log.Error(e.Exception, "Unobserved task exception");
+
 Application.EnableVisualStyles();
 Application.SetCompatibleTextRenderingDefault(false);
 Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -50,4 +49,11 @@ finally
 {
     Log.Information("Application exiting");
     Log.CloseAndFlush();
+}
+
+public partial class Program
+{
+    public static string LogDirectory { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "AdhdTimeOrganizer", "logs");
 }

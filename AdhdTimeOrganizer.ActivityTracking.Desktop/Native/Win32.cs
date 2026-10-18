@@ -28,6 +28,10 @@ internal static partial class Win32
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
+    internal static unsafe partial bool EnumChildWindows(nint hWndParent, delegate* unmanaged<nint, nint, int> lpEnumFunc, nint lParam);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool IsWindowVisible(nint hWnd);
 
     [LibraryImport("user32.dll")]
@@ -41,11 +45,31 @@ internal static partial class Win32
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool GetWindowRect(nint hWnd, out RECT lpRect);
 
+    [LibraryImport("dwmapi.dll")]
+    internal static partial int DwmGetWindowAttribute(nint hWnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    internal static partial nint OpenProcess(uint dwDesiredAccess, [MarshalAs(UnmanagedType.Bool)] bool bInheritHandle, uint dwProcessId);
+
+    [LibraryImport("kernel32.dll", EntryPoint = "QueryFullProcessImageNameW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool QueryFullProcessImageName(nint hProcess, uint dwFlags, [Out] char[] lpExeName, ref uint lpdwSize);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetProcessTimes(nint hProcess, out long lpCreationTime, out long lpExitTime, out long lpKernelTime, out long lpUserTime);
+
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool CloseHandle(nint hObject);
+
     // ── Constants ────────────────────────────────────────────────────────────
 
     internal const int GWL_EXSTYLE = -20;
     internal const int WS_EX_TOOLWINDOW = 0x00000080;
     internal const int WS_EX_APPWINDOW = 0x00040000;
+    internal const int DWMWA_CLOAKED = 14;
+    internal const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 
     // ── Structs ──────────────────────────────────────────────────────────────
 
@@ -83,20 +107,6 @@ internal static partial class Win32
         return length > 0 ? new string(buffer, 0, length) : null;
     }
 
-    public static string? GetForegroundWindowTitle()
-    {
-        var hWnd = GetForegroundWindow();
-        return hWnd == nint.Zero ? null : GetWindowTitle(hWnd);
-    }
-
-    public static uint? GetForegroundProcessId()
-    {
-        var hWnd = GetForegroundWindow();
-        if (hWnd == nint.Zero) return null;
-        GetWindowThreadProcessId(hWnd, out var processId);
-        return processId;
-    }
-
     public static int GetIdleSeconds()
     {
         var info = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
@@ -104,9 +114,53 @@ internal static partial class Win32
         return (int)((GetTickCount() - info.dwTime) / 1000);
     }
 
+    public static int GetWindowProcessId(nint hWnd)
+    {
+        if (hWnd == nint.Zero) return 0;
+        GetWindowThreadProcessId(hWnd, out var processId);
+        return (int)processId;
+    }
+
+    /// <summary>
+    /// Top-level windows in Z-order, topmost first. The callback only appends the handle — no
+    /// managed work happens inside the native enumeration.
+    /// </summary>
+    public static unsafe List<nint> GetTopLevelWindows()
+    {
+        var handles = new List<nint>();
+        var gcHandle = GCHandle.Alloc(handles);
+        try { EnumWindows(&CollectHandleCallback, GCHandle.ToIntPtr(gcHandle)); }
+        finally { gcHandle.Free(); }
+        return handles;
+    }
+
+    public static unsafe List<nint> GetChildWindows(nint parent)
+    {
+        var handles = new List<nint>();
+        var gcHandle = GCHandle.Alloc(handles);
+        try { EnumChildWindows(parent, &CollectHandleCallback, GCHandle.ToIntPtr(gcHandle)); }
+        finally { gcHandle.Free(); }
+        return handles;
+    }
+
+    [UnmanagedCallersOnly]
+    private static int CollectHandleCallback(nint hWnd, nint lParam)
+    {
+        var handle = GCHandle.FromIntPtr(lParam);
+        if (handle.Target is List<nint> list) list.Add(hWnd);
+        return 1; // continue enumeration
+    }
+
+    /// <summary>
+    /// True for a window DWM keeps hidden while it still reports itself visible — windows on another
+    /// virtual desktop and suspended Store apps. Without this they count as background windows.
+    /// </summary>
+    public static bool IsCloaked(nint hWnd) =>
+        DwmGetWindowAttribute(hWnd, DWMWA_CLOAKED, out var cloaked, sizeof(int)) == 0 && cloaked != 0;
+
     /// <summary>
     /// Returns true for top-level windows that represent real user-visible apps:
-    /// visible, not minimised, has a title, and not a floating tool window.
+    /// visible, not minimised, not cloaked, has a title, and not a floating tool window.
     /// </summary>
     public static bool IsRealWindow(nint hWnd)
     {
@@ -116,6 +170,8 @@ internal static partial class Win32
 
         var exStyle = GetWindowLong(hWnd, GWL_EXSTYLE);
         if ((exStyle & WS_EX_TOOLWINDOW) != 0 && (exStyle & WS_EX_APPWINDOW) == 0) return false;
+
+        if (IsCloaked(hWnd)) return false;
 
         if (!GetWindowRect(hWnd, out var rect)) return false;
         return rect.Area > 0;

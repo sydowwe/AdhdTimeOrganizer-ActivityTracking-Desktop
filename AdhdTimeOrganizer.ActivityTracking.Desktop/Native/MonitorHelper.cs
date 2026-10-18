@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Native;
@@ -6,9 +5,8 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Native;
 internal readonly record struct MonitorInfo(nint Handle, Win32.RECT Bounds);
 
 internal sealed record BackgroundWindowInfo(
-    string ProcessName,
+    ProcessInfo Process,
     string? WindowTitle,
-    string? ExecutablePath,
     int MonitorIndex,
     int Pid);
 
@@ -28,19 +26,51 @@ internal static partial class MonitorHelper
 
     // ── Public API ───────────────────────────────────────────────────────────
 
-    public static int GetActiveMonitorIndex()
+    /// <summary>
+    /// All monitors in a stable order: the primary first (its top-left corner is always 0,0), then left
+    /// to right, top to bottom. <c>EnumDisplayMonitors</c> order is not guaranteed and changes when a
+    /// laptop docks, which made the reported monitor index mean different screens on different days.
+    /// Fetch once per poll and pass it down — every helper below needs it.
+    /// </summary>
+    public static unsafe List<MonitorInfo> GetMonitors()
     {
-        var hWnd = Win32.GetForegroundWindow();
-        return GetWindowMonitorIndex(hWnd);
+        var monitors = new List<MonitorInfo>();
+        var handle = GCHandle.Alloc(monitors);
+        try { EnumDisplayMonitors(nint.Zero, nint.Zero, &EnumMonitorCallback, GCHandle.ToIntPtr(handle)); }
+        finally { handle.Free(); }
+
+        return monitors
+            .OrderBy(m => m.Bounds.Left == 0 && m.Bounds.Top == 0 ? 0 : 1)
+            .ThenBy(m => m.Bounds.Left)
+            .ThenBy(m => m.Bounds.Top)
+            .ToList();
     }
 
-    public static int GetWindowMonitorIndex(nint hWnd)
+    public static int GetWindowMonitorIndex(nint hWnd, List<MonitorInfo> monitors)
     {
         if (hWnd == nint.Zero) return 0;
         var targetMonitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
-        var monitors = GetAllMonitors();
         var index = monitors.FindIndex(m => m.Handle == targetMonitor);
         return index >= 0 ? index : 0;
+    }
+
+    /// <summary>
+    /// Returns true if the window occupies the full bounds of its monitor
+    /// (fullscreen game, video player, presentation, etc.).
+    /// </summary>
+    public static bool IsWindowFullscreen(nint hWnd, List<MonitorInfo> monitors)
+    {
+        if (hWnd == nint.Zero) return false;
+        if (!Win32.GetWindowRect(hWnd, out var windowRect)) return false;
+
+        var targetMonitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+        var monitor = monitors.FirstOrDefault(m => m.Handle == targetMonitor);
+        if (monitor.Handle == nint.Zero) return false;
+
+        var b = monitor.Bounds;
+        // Use <= / >= to tolerate 1-pixel off-by-one from some apps
+        return windowRect.Left <= b.Left && windowRect.Top <= b.Top
+            && windowRect.Right >= b.Right && windowRect.Bottom >= b.Bottom;
     }
 
     /// <summary>
@@ -49,18 +79,13 @@ internal static partial class MonitorHelper
     /// Windows covering less than <paramref name="minAreaPercent"/>% of the monitor are ignored.
     /// At most <paramref name="maxPerMonitor"/> windows are returned per monitor.
     /// </summary>
-    public static unsafe List<BackgroundWindowInfo> GetBackgroundWindows(
-        nint foregroundHwnd, int minAreaPercent, int maxPerMonitor)
+    public static List<BackgroundWindowInfo> GetBackgroundWindows(
+        nint foregroundHwnd, List<MonitorInfo> monitors, int minAreaPercent, int maxPerMonitor)
     {
-        var monitors = GetAllMonitors();
-        if (monitors.Count == 0) return [];
+        if (monitors.Count == 0 || maxPerMonitor <= 0) return [];
 
-        // Step 1 — collect all HWNDs via EnumWindows (Z-order, topmost first).
-        // Keep the callback minimal: just append the handle, no managed allocation inside.
-        var rawHwnds = new List<nint>();
-        var rawHandle = GCHandle.Alloc(rawHwnds);
-        try { Win32.EnumWindows(&EnumWindowsCallback, GCHandle.ToIntPtr(rawHandle)); }
-        finally { rawHandle.Free(); }
+        // Step 1 — all top-level windows, Z-order, topmost first.
+        var rawHwnds = Win32.GetTopLevelWindows();
 
         // Step 2 — filter to real windows and snapshot their bounding rects.
         var windows = new List<(nint Hwnd, Win32.RECT Rect)>(rawHwnds.Count);
@@ -104,8 +129,9 @@ internal static partial class MonitorHelper
 
             foreach (var (hwnd, _) in candidates.OrderByDescending(c => c.VisibleArea).Take(maxPerMonitor))
             {
-                var info = TryGetWindowInfo(hwnd, mi);
-                if (info is not null) result.Add(info);
+                var process = ProcessInfoCache.GetForWindow(hwnd, out var pid);
+                if (process is not null)
+                    result.Add(new BackgroundWindowInfo(process, Win32.GetWindowTitle(hwnd), mi, pid));
             }
         }
 
@@ -113,15 +139,6 @@ internal static partial class MonitorHelper
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
-
-    private static unsafe List<MonitorInfo> GetAllMonitors()
-    {
-        var monitors = new List<MonitorInfo>();
-        var handle = GCHandle.Alloc(monitors);
-        try { EnumDisplayMonitors(nint.Zero, nint.Zero, &EnumMonitorCallback, GCHandle.ToIntPtr(handle)); }
-        finally { handle.Free(); }
-        return monitors;
-    }
 
     [UnmanagedCallersOnly]
     private static unsafe int EnumMonitorCallback(
@@ -131,14 +148,6 @@ internal static partial class MonitorHelper
         if (handle.Target is List<MonitorInfo> list)
             list.Add(new MonitorInfo(hMonitor, *lprcMonitor));
         return 1;
-    }
-
-    [UnmanagedCallersOnly]
-    private static int EnumWindowsCallback(nint hWnd, nint lParam)
-    {
-        var handle = GCHandle.FromIntPtr(lParam);
-        if (handle.Target is List<nint> list) list.Add(hWnd);
-        return 1; // continue enumeration
     }
 
     /// <summary>
@@ -160,42 +169,5 @@ internal static partial class MonitorHelper
 
         // Cap covered at 100 % to absorb the double-counting approximation error
         return Math.Max(0, clipped.Area - Math.Min(covered, clipped.Area));
-    }
-
-    /// <summary>
-    /// Returns true if the window occupies the full bounds of its monitor
-    /// (fullscreen game, video player, presentation, etc.).
-    /// </summary>
-    public static bool IsWindowFullscreen(nint hWnd)
-    {
-        if (hWnd == nint.Zero) return false;
-        if (!Win32.GetWindowRect(hWnd, out var windowRect)) return false;
-
-        var targetMonitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
-        var monitors = GetAllMonitors();
-        var monitor = monitors.FirstOrDefault(m => m.Handle == targetMonitor);
-        if (monitor.Handle == nint.Zero) return false;
-
-        var b = monitor.Bounds;
-        // Use <= / >= to tolerate 1-pixel off-by-one from some apps
-        return windowRect.Left <= b.Left && windowRect.Top <= b.Top
-            && windowRect.Right >= b.Right && windowRect.Bottom >= b.Bottom;
-    }
-
-    private static BackgroundWindowInfo? TryGetWindowInfo(nint hWnd, int monitorIndex)
-    {
-        try
-        {
-            Win32.GetWindowThreadProcessId(hWnd, out var pid);
-            var process = Process.GetProcessById((int)pid);
-            var title = Win32.GetWindowTitle(hWnd);
-            string? execPath = null;
-            try { execPath = process.MainModule?.FileName; } catch { /* access denied */ }
-            return new BackgroundWindowInfo(process.ProcessName, title, execPath, monitorIndex, (int)pid);
-        }
-        catch
-        {
-            return null;
-        }
     }
 }

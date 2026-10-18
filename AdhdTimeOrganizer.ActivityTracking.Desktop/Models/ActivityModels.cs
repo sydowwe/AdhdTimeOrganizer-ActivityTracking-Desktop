@@ -3,15 +3,25 @@ using System.Text.Json.Serialization;
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 
 /// <summary>
-/// A single poll sample captured every 1-2 seconds.
+/// One window as seen by a single poll.
 /// </summary>
-public sealed class ActivitySample
+public sealed record ActivitySample
 {
     public required string ProcessName { get; init; }
-    public string? WindowTitle { get; init; }
+    public required string WindowTitle { get; init; }
     public string? ExecutablePath { get; init; }
-    public DateTimeOffset Timestamp { get; init; } = DateTimeOffset.UtcNow;
+    public string? ProductName { get; init; }
 }
+
+/// <summary>
+/// A sample plus how it was seen in that poll. A poll yields at most one non-background observation.
+/// </summary>
+public sealed record Observation(
+    ActivitySample Sample,
+    int MonitorIndex,
+    bool IsBackground,
+    bool IsPlayingSound,
+    bool IsFullscreen);
 
 /// <summary>
 /// A single process entry within an aggregated 1-minute window.
@@ -54,9 +64,6 @@ public sealed class ActivityWindow
     [JsonPropertyName("windowStart")]
     public required DateTime WindowStart { get; init; }
 
-    [JsonPropertyName("idleSeconds")]
-    public required int IdleSeconds { get; init; }
-
     [JsonPropertyName("entries")]
     public required List<ActivityEntry> Entries { get; init; }
 }
@@ -73,11 +80,33 @@ public sealed class LoginRequest
     public required string Password { get; init; }
 }
 
+/// <summary>
+/// The extension login answer. When the account has 2FA, the password step returns no tokens — only
+/// <see cref="RequiresTwoFactor"/> and a <see cref="PendingAuthToken"/> to send with the code.
+/// </summary>
 public sealed class TokenResponse
 {
+    [JsonPropertyName("requiresTwoFactor")]
+    public bool RequiresTwoFactor { get; set; }
+
+    [JsonPropertyName("requiresTwoFactorSetup")]
+    public bool RequiresTwoFactorSetup { get; set; }
+
+    [JsonPropertyName("pendingAuthToken")]
+    public string? PendingAuthToken { get; set; }
+
     [JsonPropertyName("accessToken")]
-    public string AccessToken { get; set; } = "";
+    public string? AccessToken { get; set; }
 
     [JsonPropertyName("refreshToken")]
-    public string RefreshToken { get; set; } = "";
+    public string? RefreshToken { get; set; }
+}
+
+public sealed class TwoFactorLoginRequest
+{
+    [JsonPropertyName("token")]
+    public required string Token { get; init; }
+
+    [JsonPropertyName("pendingAuthToken")]
+    public required string PendingAuthToken { get; init; }
 }

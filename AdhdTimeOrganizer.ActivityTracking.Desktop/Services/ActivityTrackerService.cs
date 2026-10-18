@@ -1,38 +1,79 @@
-﻿using System.Collections.Concurrent;
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Native;
+using Microsoft.Win32;
 using Serilog;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
+public sealed record TrackerStatus(
+    bool IsRunning,
+    bool IsLocked,
+    int PendingWindows,
+    DateTime? LastSentUtc,
+    SendResult? LastSendResult,
+    string? LastPollError);
+
+/// <summary>
+/// Polls the desktop, folds polls into minute windows, persists each finished window to the outbox and
+/// sends the outbox.
+/// </summary>
+/// <remarks>
+/// Recording and sending are independent: pausing tracking stops the poll loop only, and the send loop
+/// runs for the app's lifetime, so windows recorded before a pause — or while offline or signed out —
+/// still go out. Nothing here touches UI objects; the tray reads <see cref="GetStatus"/> on its own
+/// thread. (A status event raised from the poll thread used to set <c>NotifyIcon.Text</c> directly,
+/// and an over-long error message there threw out of the poll loop's own catch and ended tracking
+/// silently.)
+/// </remarks>
 public sealed class ActivityTrackerService : IDisposable
 {
+    private static readonly TimeSpan SendInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan OutboxRetention = TimeSpan.FromDays(30);
+    private const int WindowsPerSendPass = 50;
+
     private readonly AppConfig _config;
     private readonly ApiClient _apiClient;
-    private readonly ConcurrentQueue<ActivityWindow> _retryQueue = new();
+    private readonly OutboxStore _outbox;
     private readonly ILogger _log = Log.ForContext<ActivityTrackerService>();
 
-    private CancellationTokenSource? _cts;
+    private readonly Lock _lock = new();
+    private readonly ActivityRecorder _recorder;
+
+    private readonly CancellationTokenSource _lifetimeCts = new();
+    private readonly SemaphoreSlim _sendSignal = new(0, 1);
+    private readonly Task _sendTask;
+    private CancellationTokenSource? _pollCts;
     private Task? _pollTask;
-    private Task? _sendTask;
 
-    private readonly Dictionary<string, ProcessAccumulator> _currentMinute = new();
-    private DateTime _currentWindowStart;
-    private int _currentIdleTotal;
-    private readonly object _lock = new();
+    private volatile bool _isLocked;
+    private volatile string? _lastPollError;
+    private DateTime? _lastSentUtc;
+    private SendResult? _lastSendResult;
 
-    // Cached per exe path — populated on first encounter, kept for the app lifetime
-    private static readonly Dictionary<string, string?> _productNameCache = new();
-
-    public bool IsRunning => _cts is not null && !_cts.IsCancellationRequested;
-    public event Action<string>? StatusChanged;
+    public bool IsRunning => _pollCts is { IsCancellationRequested: false };
 
     public ActivityTrackerService(AppConfig config, ApiClient apiClient)
+        : this(config, apiClient, new OutboxStore(OutboxStore.DefaultDirectory, OutboxRetention))
+    {
+    }
+
+    public ActivityTrackerService(AppConfig config, ApiClient apiClient, OutboxStore outbox)
     {
         _config = config;
         _apiClient = apiClient;
+        _outbox = outbox;
+        _recorder = new ActivityRecorder(MaxCreditedGapFor(PollInterval));
+
+        // Subscribed from the UI thread, whose message loop delivers them.
+        SystemEvents.SessionSwitch += OnSessionSwitch;
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        SystemEvents.SessionEnding += OnSessionEnding;
+
+        _sendTask = Task.Run(() => SendLoopAsync(_lifetimeCts.Token));
     }
+
+    private TimeSpan PollInterval => TimeSpan.FromMilliseconds(Math.Clamp(_config.PollIntervalMs, 250, 60_000));
 
     public void Start()
     {
@@ -40,329 +81,222 @@ public sealed class ActivityTrackerService : IDisposable
 
         _log.Information(
             "Starting tracker (poll: {PollMs}ms, idle threshold: {IdleS}s, " +
-            "min bg window: {MinBg}%, max bg per monitor: {MaxBg})",
+            "min bg window: {MinBg}%, max bg per monitor: {MaxBg}, max passive idle: {PassiveMin}min)",
             _config.PollIntervalMs, _config.IdleThresholdSeconds,
-            _config.MinBackgroundWindowPercent, _config.MaxBackgroundWindowsPerMonitor);
+            _config.MinBackgroundWindowPercent, _config.MaxBackgroundWindowsPerMonitor, _config.MaxPassiveIdleMinutes);
 
-        _cts = new CancellationTokenSource();
-        _currentWindowStart = GetCurrentMinuteStart();
-
-        _pollTask = Task.Run(() => PollLoopAsync(_cts.Token));
-        _sendTask = Task.Run(() => SendLoopAsync(_cts.Token));
-
-        StatusChanged?.Invoke("Tracking active");
+        _pollCts = new CancellationTokenSource();
+        var token = _pollCts.Token;
+        _pollTask = Task.Run(() => PollLoopAsync(token));
     }
 
     public void Stop()
     {
+        if (!IsRunning) return;
         _log.Information("Stopping tracker");
-        _cts?.Cancel();
-        StatusChanged?.Invoke("Tracking paused");
+        _pollCts?.Cancel();
     }
+
+    /// <summary>
+    /// Persists the minute in progress. Called on exit, suspend and session end — the moments after
+    /// which the in-memory part of a minute would otherwise be gone.
+    /// </summary>
+    public void Flush()
+    {
+        ActivityWindow? window;
+        lock (_lock) window = _recorder.Flush();
+        if (window is null) return;
+
+        _outbox.Save(window);
+        _log.Information("Flushed partial window {WindowStart} ({Count} entries)", window.WindowStart, window.Entries.Count);
+    }
+
+    /// <summary>Wakes the send loop now instead of at its next interval — after signing in, for example.</summary>
+    public void RequestSend()
+    {
+        try
+        {
+            if (_sendSignal.CurrentCount == 0) _sendSignal.Release();
+        }
+        catch (SemaphoreFullException) { /* already signalled */ }
+    }
+
+    public TrackerStatus GetStatus()
+    {
+        var pending = _outbox.Count; // disk read — kept outside the lock the poll loop takes
+        lock (_lock)
+            return new TrackerStatus(IsRunning, _isLocked, pending, _lastSentUtc, _lastSendResult, _lastPollError);
+    }
+
+    // ── Polling ──────────────────────────────────────────────────────────────
 
     private async Task PollLoopAsync(CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested)
+        var interval = PollInterval;
+        lock (_lock) _recorder.MaxCreditedGap = MaxCreditedGapFor(interval);
+
+        // A PeriodicTimer ticks on a fixed cadence however long a poll takes, and the time credited is
+        // measured, not assumed — see ActivityRecorder.
+        using var timer = new PeriodicTimer(interval);
+        var clock = Stopwatch.StartNew();
+        var lastTick = TimeSpan.Zero;
+
+        try
         {
-            try
+            while (await timer.WaitForNextTickAsync(ct))
             {
-                var idleSeconds = Win32.GetIdleSeconds();
-                var currentMinuteStart = GetCurrentMinuteStart();
+                var now = clock.Elapsed;
+                var elapsed = now - lastTick;
+                lastTick = now;
 
-                lock (_lock)
+                try
                 {
-                    if (currentMinuteStart > _currentWindowStart)
+                    var observations = _isLocked ? [] : Observe();
+
+                    List<ActivityWindow> closed;
+                    lock (_lock) closed = _recorder.Record(DateTime.UtcNow, elapsed, observations);
+
+                    foreach (var window in closed)
                     {
-                        FinalizeCurrentWindow();
-                        _currentWindowStart = currentMinuteStart;
+                        _outbox.Save(window);
+                        _log.Information(
+                            "Finalized window {WindowStart}: {Count} entries ({Active}s active)",
+                            window.WindowStart, window.Entries.Count, window.Entries.Sum(e => e.ActiveSeconds));
                     }
 
-                    var pollSeconds = _config.PollIntervalMs / 1000;
-
-                    if (idleSeconds >= _config.IdleThresholdSeconds)
-                    {
-                        _currentIdleTotal += pollSeconds;
-                    }
-                    else
-                    {
-                        // Gather audio info once per poll — used for all three sections below
-                        var audio = AudioSessionHelper.GetActiveAudioInfo();
-
-                        var foregroundHwnd = Win32.GetForegroundWindow();
-
-                        // ── Active (foreground) window ────────────────────────────
-                        var activeSample = CaptureWindowSample(foregroundHwnd, out var activePid);
-                        if (activeSample is not null && !ShouldIgnore(activeSample))
-                        {
-                            var activeMonitor = MonitorHelper.GetActiveMonitorIndex();
-                            Accumulate(activeSample, activeMonitor, pollSeconds,
-                                isBackground: false,
-                                isPlayingSound: IsPlayingAudio(audio, activePid, activeSample.ExecutablePath),
-                                isFullscreen: MonitorHelper.IsWindowFullscreen(foregroundHwnd));
-                        }
-                        else
-                        {
-                            activeSample = null; // treat ignored active window as no active sample
-                        }
-
-                        var activeKey = activeSample is not null
-                            ? $"{activeSample.ProcessName}|{activeSample.ExecutablePath}"
-                            : null;
-
-                        var trackedKeys = new HashSet<string>();
-                        if (activeKey is not null) trackedKeys.Add(activeKey);
-
-                        // ── Background windows (other monitors, by visible area) ──
-                        var bgWindows = MonitorHelper.GetBackgroundWindows(
-                            foregroundHwnd,
-                            _config.MinBackgroundWindowPercent,
-                            _config.MaxBackgroundWindowsPerMonitor);
-
-                        foreach (var bg in bgWindows)
-                        {
-                            var bgSample = new ActivitySample
-                            {
-                                ProcessName = bg.ProcessName,
-                                WindowTitle = TrimAppSuffix(bg.ProcessName, bg.WindowTitle ?? string.Empty),
-                                ExecutablePath = bg.ExecutablePath
-                            };
-                            if (ShouldIgnore(bgSample)) continue;
-
-                            var key = $"{bg.ProcessName}|{bg.ExecutablePath}";
-                            if (!trackedKeys.Add(key)) continue;
-
-                            Accumulate(bgSample, bg.MonitorIndex, pollSeconds,
-                                isBackground: true,
-                                isPlayingSound: IsPlayingAudio(audio, bg.Pid, bg.ExecutablePath),
-                                isFullscreen: false);
-                        }
-
-                        // ── Audio-playing processes not yet tracked ───────────────
-                        foreach (var pid in audio.Pids)
-                        {
-                            var audioSample = CaptureProcessSample(pid, out var mainWindowHandle);
-                            if (audioSample is null || ShouldIgnore(audioSample)) continue;
-
-                            var key = $"{audioSample.ProcessName}|{audioSample.ExecutablePath}";
-                            if (!trackedKeys.Add(key)) continue;
-
-                            Accumulate(audioSample,
-                                MonitorHelper.GetWindowMonitorIndex(mainWindowHandle),
-                                pollSeconds,
-                                isBackground: true,
-                                isPlayingSound: true,
-                                isFullscreen: false);
-                        }
-                    }
+                    if (closed.Count > 0) RequestSend();
+                    _lastPollError = null;
                 }
-
-                await Task.Delay(_config.PollIntervalMs, ct);
-            }
-            catch (OperationCanceledException) { break; }
-            catch (Exception ex)
-            {
-                _log.Error(ex, "Poll loop error");
-                StatusChanged?.Invoke($"Poll error: {ex.Message}");
-                await Task.Delay(5000, ct);
+                catch (Exception ex)
+                {
+                    _log.Error(ex, "Poll failed");
+                    _lastPollError = ex.Message;
+                }
             }
         }
+        catch (OperationCanceledException) { }
 
         _log.Debug("Poll loop exited");
     }
 
-    private async Task SendLoopAsync(CancellationToken ct)
+    private List<Observation> Observe()
     {
-        while (!ct.IsCancellationRequested)
+        var idleSeconds = Win32.GetIdleSeconds();
+        var monitors = MonitorHelper.GetMonitors();
+        var audio = AudioSessionHelper.GetActiveAudioInfo();
+        var foregroundHwnd = Win32.GetForegroundWindow();
+
+        // ── Active (foreground) window ────────────────────────────────────────
+        var active = CaptureWindow(foregroundHwnd, out var activePid);
+        var isActivePlayingSound = active is not null && IsPlayingAudio(audio, activePid, active.ExecutablePath);
+
+        if (idleSeconds >= _config.IdleThresholdSeconds)
         {
-            try
-            {
-                var retryCount = _retryQueue.Count;
-                for (var i = 0; i < retryCount; i++)
-                {
-                    if (!_retryQueue.TryDequeue(out var window)) break;
-
-                    if (await _apiClient.SendActivityWindowAsync(window))
-                        _log.Debug("Sent window {WindowStart} ({Count} entries)", window.WindowStart, window.Entries.Count);
-                    else
-                    {
-                        _log.Warning("Failed to send window {WindowStart} — re-queuing", window.WindowStart);
-                        _retryQueue.Enqueue(window);
-                    }
-                }
-
-                await Task.Delay(10_000, ct);
-            }
-            catch (OperationCanceledException) { break; }
-            catch (Exception ex)
-            {
-                _log.Error(ex, "Send loop error");
-                await Task.Delay(30_000, ct);
-            }
+            // No input — but a foreground window playing sound is a film, a talk or a call, and the user
+            // is still there. That time used to be dropped with every other idle minute.
+            return active is not null && IsPassivelyPresent(idleSeconds, isActivePlayingSound, _config.MaxPassiveIdleMinutes)
+                ?
+                [
+                    new Observation(active,
+                        MonitorHelper.GetWindowMonitorIndex(foregroundHwnd, monitors),
+                        IsBackground: false,
+                        IsPlayingSound: true,
+                        IsFullscreen: MonitorHelper.IsWindowFullscreen(foregroundHwnd, monitors))
+                ]
+                : [];
         }
 
-        _log.Debug("Send loop exited");
-    }
+        var observations = new List<Observation>();
+        var trackedKeys = new HashSet<string>();
 
-    private void FinalizeCurrentWindow()
-    {
-        if (_currentMinute.Count == 0) return;
-
-        if (_currentIdleTotal > _config.IdleThresholdSeconds)
+        if (active is not null)
         {
-            _log.Debug("Skipping window {WindowStart} — idle {IdleSeconds}s exceeds threshold",
-                _currentWindowStart, _currentIdleTotal);
-            ResetCurrentWindow();
-            return;
+            observations.Add(new Observation(active,
+                MonitorHelper.GetWindowMonitorIndex(foregroundHwnd, monitors),
+                IsBackground: false,
+                IsPlayingSound: isActivePlayingSound,
+                IsFullscreen: MonitorHelper.IsWindowFullscreen(foregroundHwnd, monitors)));
+            trackedKeys.Add(ProcessKey(active));
         }
 
-        var window = new ActivityWindow
+        // ── Background windows (other monitors, by visible area) ──────────────
+        var backgroundWindows = MonitorHelper.GetBackgroundWindows(
+            foregroundHwnd, monitors, _config.MinBackgroundWindowPercent, _config.MaxBackgroundWindowsPerMonitor);
+
+        foreach (var bg in backgroundWindows)
         {
-            WindowStart = _currentWindowStart,
-            IdleSeconds = _currentIdleTotal,
-            Entries = _currentMinute.Values
-                .OrderByDescending(x => x.ActiveSeconds)
-                .ThenByDescending(x => x.BackgroundSeconds)
-                .Select(x => new ActivityEntry
-                {
-                    ProcessName = x.Sample.ProcessName,
-                    WindowTitle = x.Sample.WindowTitle,
-                    ExecutablePath = x.Sample.ExecutablePath,
-                    ActiveSeconds = x.ActiveSeconds,
-                    BackgroundSeconds = x.BackgroundSeconds,
-                    ActiveMonitor = x.ResolvedMonitor,
-                    IsPlayingSound = x.WasPlayingSound,
-                    IsFullscreen = x.WasFullscreen,
-                    ProductName = GetProductName(x.Sample.ExecutablePath)
-                })
-                .ToList()
-        };
+            var sample = ToSample(bg.Process, bg.WindowTitle);
+            if (ShouldIgnore(sample) || !trackedKeys.Add(ProcessKey(sample))) continue;
 
-        _log.Information(
-            "Finalized window {WindowStart}: {Count} processes ({Active} active / {Bg} background), {IdleSeconds}s idle",
-            window.WindowStart, window.Entries.Count,
-            window.Entries.Count(e => e.ActiveSeconds > 0),
-            window.Entries.Count(e => e.BackgroundSeconds > 0 && e.ActiveSeconds == 0),
-            window.IdleSeconds);
-
-        _retryQueue.Enqueue(window);
-        ResetCurrentWindow();
-    }
-
-    private void ResetCurrentWindow()
-    {
-        _currentMinute.Clear();
-        _currentIdleTotal = 0;
-    }
-
-    private void Accumulate(ActivitySample sample, int monitorIndex, int pollSeconds,
-        bool isBackground, bool isPlayingSound, bool isFullscreen)
-    {
-        var key = $"{sample.ProcessName}|{sample.ExecutablePath}|{sample.WindowTitle}";
-
-        if (!_currentMinute.TryGetValue(key, out var acc))
-        {
-            acc = new ProcessAccumulator { Sample = sample };
-            _currentMinute[key] = acc;
+            observations.Add(new Observation(sample, bg.MonitorIndex,
+                IsBackground: true,
+                IsPlayingSound: IsPlayingAudio(audio, bg.Pid, sample.ExecutablePath),
+                IsFullscreen: false));
         }
 
-        if (isPlayingSound) acc.WasPlayingSound = true;
-        if (isFullscreen) acc.WasFullscreen = true;
+        // ── Audio-playing processes not yet tracked ───────────────────────────
+        foreach (var pid in audio.Pids)
+        {
+            var process = ProcessInfoCache.Get(pid);
+            if (process is null) continue;
 
-        if (isBackground)
-        {
-            acc.BackgroundSeconds += pollSeconds;
-            acc.BackgroundMonitorTotal += monitorIndex;
-            acc.BackgroundMonitorCount++;
+            var mainWindow = GetMainWindow(pid);
+            var sample = ToSample(process, mainWindow != nint.Zero ? Win32.GetWindowTitle(mainWindow) : null);
+            if (ShouldIgnore(sample) || !trackedKeys.Add(ProcessKey(sample))) continue;
+
+            observations.Add(new Observation(sample,
+                MonitorHelper.GetWindowMonitorIndex(mainWindow, monitors),
+                IsBackground: true,
+                IsPlayingSound: true,
+                IsFullscreen: false));
         }
-        else
-        {
-            acc.ActiveSeconds += pollSeconds;
-            acc.ActiveMonitorTotal += monitorIndex;
-            acc.ActiveMonitorCount++;
-        }
+
+        return observations;
     }
 
-    private static readonly HashSet<string> _trimSuffixProcesses =
-        new(StringComparer.OrdinalIgnoreCase) { "rider64", "chrome", "webstorm64", "studio64" };
+    /// <summary>
+    /// Whether an idle user still counts as present: only while the foreground window is audibly playing,
+    /// and only up to <paramref name="maxPassiveIdleMinutes"/> without input, so autoplay left running is
+    /// not a night of "watching". Fullscreen alone is deliberately not enough — a paused fullscreen video or
+    /// game with the user gone looks exactly like one being watched.
+    /// </summary>
+    internal static bool IsPassivelyPresent(int idleSeconds, bool isForegroundPlayingSound, int maxPassiveIdleMinutes) =>
+        isForegroundPlayingSound && idleSeconds < maxPassiveIdleMinutes * 60;
 
-    private static string TrimAppSuffix(string processName, string title)
-    {
-        if (!_trimSuffixProcesses.Contains(processName)) return title;
-        // Rider uses en dash " – " (U+2013), browsers use hyphen " - "
-        var idx = title.LastIndexOf(" \u2013 ", StringComparison.Ordinal);
-        if (idx < 0)
-            idx = title.LastIndexOf(" - ", StringComparison.Ordinal);
-        return idx > 0 ? title[..idx] : title;
-    }
-
-    private static ActivitySample? CaptureWindowSample(nint hWnd, out int pid)
+    private ActivitySample? CaptureWindow(nint hWnd, out int pid)
     {
         pid = 0;
+        if (hWnd == nint.Zero) return null;
+
+        var process = ProcessInfoCache.GetForWindow(hWnd, out pid);
+        if (process is null) return null;
+
+        var sample = ToSample(process, Win32.GetWindowTitle(hWnd));
+        return ShouldIgnore(sample) ? null : sample;
+    }
+
+    private static ActivitySample ToSample(ProcessInfo process, string? rawTitle) => new()
+    {
+        ProcessName = process.ProcessName,
+        WindowTitle = WindowTitleNormalizer.Normalize(process.ProcessName, process.ProductName, rawTitle),
+        ExecutablePath = process.ExecutablePath,
+        ProductName = process.ProductName
+    };
+
+    private static nint GetMainWindow(int pid)
+    {
         try
         {
-            if (hWnd == nint.Zero) return null;
-            Win32.GetWindowThreadProcessId(hWnd, out var processId);
-            pid = (int)processId;
-            if (pid == 0) return null;
-
-            var process = Process.GetProcessById(pid);
-            var rawTitle = Win32.GetWindowTitle(hWnd) ?? string.Empty;
-            return new ActivitySample
-            {
-                ProcessName = process.ProcessName,
-                WindowTitle = TrimAppSuffix(process.ProcessName, rawTitle),
-                ExecutablePath = GetProcessPath(process)
-            };
+            using var process = Process.GetProcessById(pid);
+            return process.MainWindowHandle;
         }
-        catch { return null; }
+        catch { return nint.Zero; }
     }
 
-    private static ActivitySample? CaptureProcessSample(int pid, out nint mainWindowHandle)
-    {
-        mainWindowHandle = nint.Zero;
-        try
-        {
-            var process = Process.GetProcessById(pid);
-            mainWindowHandle = process.MainWindowHandle;
-            var rawTitle = mainWindowHandle != nint.Zero
-                ? Win32.GetWindowTitle(mainWindowHandle) ?? string.Empty
-                : string.Empty;
+    private static string ProcessKey(ActivitySample sample) => $"{sample.ProcessName}|{sample.ExecutablePath}";
 
-            return new ActivitySample
-            {
-                ProcessName = process.ProcessName,
-                WindowTitle = TrimAppSuffix(process.ProcessName, rawTitle),
-                ExecutablePath = GetProcessPath(process)
-            };
-        }
-        catch { return null; }
-    }
-
-    private static string? GetProcessPath(Process process)
-    {
-        try { return process.MainModule?.FileName; }
-        catch { return null; }
-    }
-
-    private static string? GetProductName(string? executablePath)
-    {
-        if (executablePath is null) return null;
-        if (_productNameCache.TryGetValue(executablePath, out var cached)) return cached;
-
-        string? name = null;
-        try { name = FileVersionInfo.GetVersionInfo(executablePath).ProductName; }
-        catch { /* access denied or file gone */ }
-
-        _productNameCache[executablePath] = name;
-        return name;
-    }
-
-    private static bool IsPlayingAudio(ActiveAudioInfo audio, int pid, string? exePath)
-    {
-        if (audio.Pids.Contains(pid)) return true;
-        if (exePath is not null && audio.ExePaths.Contains(exePath)) return true;
-        return false;
-    }
+    private static bool IsPlayingAudio(ActiveAudioInfo audio, int pid, string? exePath) =>
+        audio.Pids.Contains(pid) || (exePath is not null && audio.ExePaths.Contains(exePath));
 
     private bool ShouldIgnore(ActivitySample sample)
     {
@@ -377,36 +311,113 @@ public sealed class ActivityTrackerService : IDisposable
         return false;
     }
 
-    private static DateTime GetCurrentMinuteStart()
+    private static TimeSpan MaxCreditedGapFor(TimeSpan pollInterval) =>
+        TimeSpan.FromTicks(Math.Max(pollInterval.Ticks * 3, TimeSpan.FromSeconds(10).Ticks));
+
+    // ── Sending ──────────────────────────────────────────────────────────────
+
+    private async Task SendLoopAsync(CancellationToken ct)
     {
-        var now = DateTime.UtcNow;
-        return new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc);
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await SendPendingAsync(ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                _log.Error(ex, "Send loop error");
+            }
+
+            try { await _sendSignal.WaitAsync(SendInterval, ct); }
+            catch (OperationCanceledException) { break; }
+        }
+
+        _log.Debug("Send loop exited");
+    }
+
+    /// <summary>
+    /// Sends pending windows oldest first and stops at the first one that has to wait: if the server is
+    /// unreachable or the session is gone, the rest would fail the same way, each after its own timeout.
+    /// </summary>
+    private async Task SendPendingAsync(CancellationToken ct)
+    {
+        foreach (var item in _outbox.Pending(DateTime.UtcNow, WindowsPerSendPass))
+        {
+            var result = await _apiClient.SendActivityWindowAsync(item.Window, ct);
+            lock (_lock) _lastSendResult = result;
+
+            switch (result)
+            {
+                case SendResult.Sent:
+                    _outbox.Remove(item);
+                    lock (_lock) _lastSentUtc = DateTime.UtcNow;
+                    _log.Debug("Sent window {WindowStart} ({Count} entries)", item.Window.WindowStart, item.Window.Entries.Count);
+                    break;
+
+                case SendResult.Rejected:
+                    // Logged with the server's reason by ApiClient. Retrying an identical batch cannot help.
+                    _outbox.Remove(item);
+                    break;
+
+                default:
+                    return;
+            }
+        }
+    }
+
+    // ── System events ────────────────────────────────────────────────────────
+
+    private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
+    {
+        switch (e.Reason)
+        {
+            case SessionSwitchReason.SessionLock:
+                _log.Information("Session locked — not recording");
+                _isLocked = true;
+                break;
+            case SessionSwitchReason.SessionUnlock:
+                _log.Information("Session unlocked");
+                _isLocked = false;
+                break;
+            case SessionSwitchReason.SessionLogoff:
+                Flush();
+                break;
+        }
+    }
+
+    private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Suspend)
+        {
+            _log.Information("Suspending — flushing the minute in progress");
+            Flush();
+        }
+    }
+
+    private void OnSessionEnding(object sender, SessionEndingEventArgs e)
+    {
+        _log.Information("Session ending ({Reason}) — flushing the minute in progress", e.Reason);
+        Flush();
     }
 
     public void Dispose()
     {
-        _cts?.Cancel();
-        _cts?.Dispose();
-    }
+        SystemEvents.SessionSwitch -= OnSessionSwitch;
+        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        SystemEvents.SessionEnding -= OnSessionEnding;
 
-    // ── Accumulator ──────────────────────────────────────────────────────────
+        // Let an in-flight poll finish before flushing, so nothing it records lands after the flush.
+        _pollCts?.Cancel();
+        try { _pollTask?.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
+        Flush();
 
-    private sealed class ProcessAccumulator
-    {
-        public required ActivitySample Sample { get; set; }
-        public int ActiveSeconds { get; set; }
-        public int BackgroundSeconds { get; set; }
-        public int ActiveMonitorTotal { get; set; }
-        public int ActiveMonitorCount { get; set; }
-        public int BackgroundMonitorTotal { get; set; }
-        public int BackgroundMonitorCount { get; set; }
-        public bool WasPlayingSound { get; set; }
-        public bool WasFullscreen { get; set; }
+        _lifetimeCts.Cancel();
+        try { _sendTask.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
 
-        public int ResolvedMonitor => ActiveMonitorCount > 0
-            ? (int)Math.Round((double)ActiveMonitorTotal / ActiveMonitorCount)
-            : BackgroundMonitorCount > 0
-                ? (int)Math.Round((double)BackgroundMonitorTotal / BackgroundMonitorCount)
-                : 0;
+        _pollCts?.Dispose();
+        _lifetimeCts.Dispose();
+        _sendSignal.Dispose();
     }
 }

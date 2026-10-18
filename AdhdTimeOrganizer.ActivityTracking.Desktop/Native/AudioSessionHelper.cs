@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using Serilog;
@@ -14,6 +13,11 @@ internal static class AudioSessionHelper
     // Treat anything above this as "actually playing" — filters out paused/silent sessions
     private const float MinPeakValue = 0.001f;
 
+    // One enumerator for the app's lifetime rather than a COM object per poll. Only the poll loop calls
+    // this, and its thread-pool threads are all MTA, so sharing it is safe. Dropped on failure so a
+    // broken audio stack gets a fresh one next poll.
+    private static MMDeviceEnumerator? _enumerator;
+
     /// <summary>
     /// Returns the PIDs and executable paths of all processes currently producing audible audio.
     /// Executable paths enable matching browser audio subprocesses back to their parent exe.
@@ -26,8 +30,9 @@ internal static class AudioSessionHelper
         var exePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            using var enumerator = new MMDeviceEnumerator();
-            using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            _enumerator ??= new MMDeviceEnumerator();
+            // Fetched every time: the default device changes when headphones are plugged in.
+            using var device = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
 
             var sessions = device.AudioSessionManager.Sessions;
             for (var i = 0; i < sessions.Count; i++)
@@ -42,17 +47,15 @@ internal static class AudioSessionHelper
 
                 pids.Add(pid);
 
-                try
-                {
-                    var exePath = Process.GetProcessById(pid).MainModule?.FileName;
-                    if (!string.IsNullOrEmpty(exePath)) exePaths.Add(exePath);
-                }
-                catch { /* process may have exited */ }
+                var exePath = ProcessInfoCache.Get(pid)?.ExecutablePath;
+                if (!string.IsNullOrEmpty(exePath)) exePaths.Add(exePath);
             }
         }
         catch (Exception ex)
         {
             _log.Debug(ex, "Failed to enumerate audio sessions");
+            _enumerator?.Dispose();
+            _enumerator = null;
         }
         return new ActiveAudioInfo(pids, exePaths);
     }

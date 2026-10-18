@@ -16,8 +16,10 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
-        <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.3" />
+        <InternalsVisibleTo Include="AdhdTimeOrganizer.ActivityTracking.Desktop.Tests" />
+    </ItemGroup>
+
+    <ItemGroup>
         <PackageReference Include="Serilog" Version="4.*" />
         <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
         <PackageReference Include="Serilog.Sinks.Debug" Version="3.*" />
