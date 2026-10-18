@@ -35,6 +35,7 @@ public sealed class ActivityTrackerService : IDisposable
     private readonly AppConfig _config;
     private readonly ApiClient _apiClient;
     private readonly OutboxStore _outbox;
+    private readonly NudgeService? _nudges;
     private readonly ILogger _log = Log.ForContext<ActivityTrackerService>();
 
     private readonly Lock _lock = new();
@@ -53,16 +54,17 @@ public sealed class ActivityTrackerService : IDisposable
 
     public bool IsRunning => _pollCts is { IsCancellationRequested: false };
 
-    public ActivityTrackerService(AppConfig config, ApiClient apiClient)
-        : this(config, apiClient, new OutboxStore(OutboxStore.DefaultDirectory, OutboxRetention))
+    public ActivityTrackerService(AppConfig config, ApiClient apiClient, NudgeService? nudges)
+        : this(config, apiClient, new OutboxStore(OutboxStore.DefaultDirectory, OutboxRetention), nudges)
     {
     }
 
-    public ActivityTrackerService(AppConfig config, ApiClient apiClient, OutboxStore outbox)
+    public ActivityTrackerService(AppConfig config, ApiClient apiClient, OutboxStore outbox, NudgeService? nudges = null)
     {
         _config = config;
         _apiClient = apiClient;
         _outbox = outbox;
+        _nudges = nudges;
         _recorder = new ActivityRecorder(MaxCreditedGapFor(PollInterval));
 
         // Subscribed from the UI thread, whose message loop delivers them.
@@ -133,7 +135,8 @@ public sealed class ActivityTrackerService : IDisposable
     private async Task PollLoopAsync(CancellationToken ct)
     {
         var interval = PollInterval;
-        lock (_lock) _recorder.MaxCreditedGap = MaxCreditedGapFor(interval);
+        var maxCreditedGap = MaxCreditedGapFor(interval);
+        lock (_lock) _recorder.MaxCreditedGap = maxCreditedGap;
 
         // A PeriodicTimer ticks on a fixed cadence however long a poll takes, and the time credited is
         // measured, not assumed — see ActivityRecorder.
@@ -151,10 +154,15 @@ public sealed class ActivityTrackerService : IDisposable
 
                 try
                 {
-                    var observations = _isLocked ? [] : Observe();
+                    var isLocked = _isLocked;
+                    var poll = isLocked ? PollResult.Locked : Observe();
+                    var nowUtc = DateTime.UtcNow;
 
                     List<ActivityWindow> closed;
-                    lock (_lock) closed = _recorder.Record(DateTime.UtcNow, elapsed, observations);
+                    lock (_lock) closed = _recorder.Record(nowUtc, elapsed, poll.Observations);
+
+                    // Catches its own failures: a nudge going wrong must not show up as a poll error.
+                    _nudges?.OnPoll(nowUtc, maxCreditedGap, isLocked, poll.IsPresent, poll.Foreground);
 
                     foreach (var window in closed)
                     {
@@ -179,7 +187,16 @@ public sealed class ActivityTrackerService : IDisposable
         _log.Debug("Poll loop exited");
     }
 
-    private List<Observation> Observe()
+    /// <summary>
+    /// What one poll saw. <see cref="IsPresent"/> is the user being there at all — input, or sound in the
+    /// foreground — which an ignored foreground window doesn't change; <see cref="Foreground"/> is null then.
+    /// </summary>
+    private sealed record PollResult(List<Observation> Observations, bool IsPresent, ActivitySample? Foreground)
+    {
+        public static PollResult Locked { get; } = new([], false, null);
+    }
+
+    private PollResult Observe()
     {
         var idleSeconds = Win32.GetIdleSeconds();
         var monitors = MonitorHelper.GetMonitors();
@@ -195,15 +212,15 @@ public sealed class ActivityTrackerService : IDisposable
             // No input — but a foreground window playing sound is a film, a talk or a call, and the user
             // is still there. That time used to be dropped with every other idle minute.
             return active is not null && IsPassivelyPresent(idleSeconds, isActivePlayingSound, _config.MaxPassiveIdleMinutes)
-                ?
+                ? new PollResult(
                 [
                     new Observation(active,
                         MonitorHelper.GetWindowMonitorIndex(foregroundHwnd, monitors),
                         IsBackground: false,
                         IsPlayingSound: true,
                         IsFullscreen: MonitorHelper.IsWindowFullscreen(foregroundHwnd, monitors))
-                ]
-                : [];
+                ], IsPresent: true, active)
+                : new PollResult([], IsPresent: false, null);
         }
 
         var observations = new List<Observation>();
@@ -251,7 +268,7 @@ public sealed class ActivityTrackerService : IDisposable
                 IsFullscreen: false));
         }
 
-        return observations;
+        return new PollResult(observations, IsPresent: true, active);
     }
 
     /// <summary>

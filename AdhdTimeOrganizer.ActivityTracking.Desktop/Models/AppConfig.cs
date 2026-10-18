@@ -50,6 +50,29 @@ public sealed class AppConfig
     /// </summary>
     public int MaxPassiveIdleMinutes { get; set; } = 150;
 
+    // ── Hyperfocus nudges (see HyperfocusPolicy) ──────────────────────────────
+
+    /// <summary>Off from a nudge's own "Turn off" button too. A break timer already running still ends with its nudge.</summary>
+    public bool HyperfocusNudgesEnabled { get; set; } = true;
+
+    /// <summary>At the computer this long without a break → "you've been at it for 1 h 30 m".</summary>
+    public int HyperfocusNudgeMinutes { get; set; } = 90;
+
+    /// <summary>Foreground time in one app without a break from it → "2 h straight in Rider". 0 turns it off.</summary>
+    public int AppHyperfocusNudgeMinutes { get; set; } = 120;
+
+    /// <summary>Away this long — no input, no sound in the foreground, no call — ends a stretch.</summary>
+    public int BreakMinutes { get; set; } = 5;
+
+    /// <summary>How long "Taking a break" lasts before the nudge that says the break is over.</summary>
+    public int BreakTimerMinutes { get; set; } = 10;
+
+    /// <summary>Hold nudges while an app is full screen or presenting (Windows' own definition).</summary>
+    public bool QuietWhenFullscreen { get; set; } = true;
+
+    /// <summary>Hold nudges while any app has the microphone open — a call, even a muted one.</summary>
+    public bool QuietWhenMicrophoneInUse { get; set; } = true;
+
     /// <summary>
     /// The refresh token, encrypted with DPAPI for the current Windows user. It used to sit in this file
     /// in plain text, readable by anything that can read the user's profile.

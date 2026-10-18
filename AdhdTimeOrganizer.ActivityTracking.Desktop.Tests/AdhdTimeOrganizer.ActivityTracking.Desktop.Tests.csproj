@@ -1,7 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net10.0-windows</TargetFramework>
+        <!-- Must match the app: its target framework and architecture come with the Windows App SDK. -->
+        <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+        <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+        <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
+        <WindowsPackageType>None</WindowsPackageType>
+        <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+        <!-- The app assembly's own module initializer sets the runtime up; a second copy here clashes with it. -->
+        <WindowsAppSdkUndockedRegFreeWinRTInitialize>false</WindowsAppSdkUndockedRegFreeWinRTInitialize>
+        <!-- See the app's project file. -->
+        <NoWarn>$(NoWarn);NU1603</NoWarn>
         <UseWindowsForms>true</UseWindowsForms>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>

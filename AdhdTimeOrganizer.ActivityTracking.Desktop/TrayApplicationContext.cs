@@ -13,6 +13,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly NotifyIcon _trayIcon;
     private readonly AppConfig _config;
     private readonly ApiClient _apiClient;
+    private readonly NudgeService _nudges;
     private readonly ActivityTrackerService _tracker;
     private readonly System.Windows.Forms.Timer _statusTimer;
 
@@ -28,7 +29,10 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _config = config;
         _apiClient = new ApiClient(config);
-        _tracker = new ActivityTrackerService(config, _apiClient);
+
+        // Button presses on a nudge are handed to this, the UI, thread.
+        _nudges = new NudgeService(config, new WindowsFormsSynchronizationContext());
+        _tracker = new ActivityTrackerService(config, _apiClient, _nudges);
 
         _statusItem = new ToolStripMenuItem("Status: Starting…") { Enabled = false };
         _toggleItem = new ToolStripMenuItem("Start Tracking", null, OnToggleTracking);
@@ -48,6 +52,13 @@ public sealed class TrayApplicationContext : ApplicationContext
         contextMenu.Items.Add("Settings…", null, OnSettings);
         contextMenu.Items.Add("Open log folder", null, OnOpenLogFolder);
         contextMenu.Items.Add(_signInOutItem);
+#if DEBUG
+        var testNudge = new ToolStripMenuItem("Show test nudge");
+        testNudge.DropDownItems.Add("Hyperfocus", null, (_, _) => _nudges.ShowTest(NudgeKind.Stretch));
+        testNudge.DropDownItems.Add("Same app", null, (_, _) => _nudges.ShowTest(NudgeKind.AppStretch));
+        testNudge.DropDownItems.Add("Break over", null, (_, _) => _nudges.ShowTest(NudgeKind.BreakOver));
+        contextMenu.Items.Add(testNudge);
+#endif
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Exit", null, OnExit);
 
@@ -118,19 +129,24 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
         _hadSession = hasSession;
 
-        var text = DescribeStatus(status, hasSession);
+        var breakLeft = _nudges.GetStatus().BreakEndsUtc - DateTime.UtcNow;
+        var text = DescribeStatus(status, hasSession, breakLeft);
         _statusItem.Text = $"Status: {text}";
         _trayIcon.Text = Truncate($"Activity Tracker — {text}", MaxTrayTextLength);
         _toggleItem.Text = status.IsRunning ? "Pause Tracking" : "Start Tracking";
         _signInOutItem.Text = hasSession ? "Sign out" : "Sign in…";
     }
 
-    internal static string DescribeStatus(TrackerStatus status, bool hasSession)
+    internal static string DescribeStatus(TrackerStatus status, bool hasSession, TimeSpan? breakLeft = null)
     {
         var state = !status.IsRunning ? "Paused"
             : status.IsLocked ? "Locked — not recording"
             : status.LastPollError is { } error ? $"Error: {error}"
             : "Tracking";
+
+        // Put first after the state: with a long error the tooltip is truncated from the end.
+        if (breakLeft is { } left && left > TimeSpan.Zero)
+            state += $" · on a break, {Math.Ceiling(left.TotalMinutes):0} min left";
 
         // One file per finished minute; the one just written is normally sent within seconds.
         var queued = status.PendingWindows > 1 ? $" · {status.PendingWindows} min unsent" : "";
@@ -221,6 +237,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _statusTimer.Stop();
         _tracker.Dispose(); // flushes the minute in progress to the outbox
+        _nudges.Dispose();  // after the poll loop, which feeds it; clears its toasts
         _apiClient.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();

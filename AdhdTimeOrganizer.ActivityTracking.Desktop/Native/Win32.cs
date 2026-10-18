@@ -38,6 +38,9 @@ internal static partial class Win32
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool IsIconic(nint hWnd);
 
+    [LibraryImport("shell32.dll")]
+    internal static partial int SHQueryUserNotificationState(out UserNotificationState state);
+
     [LibraryImport("user32.dll", EntryPoint = "GetWindowLongW")]
     internal static partial int GetWindowLong(nint hWnd, int nIndex);
 
@@ -70,6 +73,18 @@ internal static partial class Win32
     internal const int WS_EX_APPWINDOW = 0x00040000;
     internal const int DWMWA_CLOAKED = 14;
     internal const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+    /// <summary><c>QUERY_USER_NOTIFICATION_STATE</c> — what the shell itself uses to hold back notifications.</summary>
+    internal enum UserNotificationState
+    {
+        NotPresent = 1,          // QUNS_NOT_PRESENT: screen saver, locked, or another user's session
+        Busy = 2,                // QUNS_BUSY: a full-screen app, or presentation settings applied
+        RunningD3DFullScreen = 3,
+        PresentationMode = 4,
+        AcceptsNotifications = 5,
+        QuietTime = 6,           // the first hour after a new user signs in on this machine
+        App = 7                  // a Store app running full screen
+    }
 
     // ── Structs ──────────────────────────────────────────────────────────────
 
@@ -113,6 +128,22 @@ internal static partial class Win32
         if (!GetLastInputInfo(ref info)) return 0;
         return (int)((GetTickCount() - info.dwTime) / 1000);
     }
+
+    /// <summary>
+    /// True while the shell itself holds notifications back: a full-screen app or game, presentation mode,
+    /// a locked or screen-saver session. This is Windows' own "full screen" — a rectangle check on the
+    /// foreground window would also catch a maximised window behind an auto-hiding taskbar, and the desktop.
+    /// A failed call or a state this code doesn't know is "not holding": a wrong "yes" would hold every
+    /// nudge back with no sign of why.
+    /// </summary>
+    public static bool IsShellHoldingNotifications() =>
+        SHQueryUserNotificationState(out var state) == 0
+        && state is UserNotificationState.Busy
+            or UserNotificationState.RunningD3DFullScreen
+            or UserNotificationState.PresentationMode
+            or UserNotificationState.App
+            or UserNotificationState.NotPresent
+            or UserNotificationState.QuietTime;
 
     public static int GetWindowProcessId(nint hWnd)
     {

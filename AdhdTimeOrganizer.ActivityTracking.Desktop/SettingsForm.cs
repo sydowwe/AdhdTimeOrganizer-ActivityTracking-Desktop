@@ -16,6 +16,13 @@ public sealed class SettingsForm : Form
     private readonly NumericUpDown _passiveIdleBox;
     private readonly NumericUpDown _minBackgroundBox;
     private readonly NumericUpDown _maxBackgroundBox;
+    private readonly CheckBox _nudgesEnabledBox;
+    private readonly NumericUpDown _nudgeAfterBox;
+    private readonly NumericUpDown _appNudgeAfterBox;
+    private readonly NumericUpDown _breakLengthBox;
+    private readonly NumericUpDown _breakTimerBox;
+    private readonly CheckBox _quietFullscreenBox;
+    private readonly CheckBox _quietMicrophoneBox;
     private readonly Label _errorLabel;
 
     public SettingsForm(AppConfig config)
@@ -54,6 +61,24 @@ public sealed class SettingsForm : Form
             "How long a foreground window playing sound keeps you present without input. 0 turns it off.");
         AddRow(layout, "Background window min area (%):", _minBackgroundBox, null);
         AddRow(layout, "Background windows per monitor:", _maxBackgroundBox, null);
+
+        _nudgesEnabledBox = new CheckBox { Text = "On", Checked = config.HyperfocusNudgesEnabled, AutoSize = true };
+        _nudgeAfterBox = Number(config.HyperfocusNudgeMinutes, 15, 600, increment: 15);
+        _appNudgeAfterBox = Number(config.AppHyperfocusNudgeMinutes, 0, 600, increment: 15);
+        _breakLengthBox = Number(config.BreakMinutes, 1, 60);
+        _breakTimerBox = Number(config.BreakTimerMinutes, 1, 120);
+        _quietFullscreenBox = new CheckBox { Text = "Full screen or presenting", Checked = config.QuietWhenFullscreen, AutoSize = true };
+        _quietMicrophoneBox = new CheckBox { Text = "Microphone in use (a call)", Checked = config.QuietWhenMicrophoneInUse, AutoSize = true };
+
+        AddRow(layout, "Hyperfocus nudges:", _nudgesEnabledBox, null);
+        AddRow(layout, "Nudge after (min):", _nudgeAfterBox, "At the computer this long without a break.");
+        AddRow(layout, "Same app, nudge after (min):", _appNudgeAfterBox,
+            "In one app this long without a break from it. 0 turns it off.");
+        AddRow(layout, "A break is away for (min):", _breakLengthBox,
+            "No input, no sound in the foreground and no call for this long ends a stretch.");
+        AddRow(layout, "Break timer (min):", _breakTimerBox, "How long \"Taking a break\" lasts before the back-to-it nudge.");
+        AddRow(layout, "Stay quiet while:", _quietFullscreenBox, null);
+        AddRow(layout, "", _quietMicrophoneBox, null);
 
         var ignoreRulesLink = new LinkLabel { Text = "Edit ignore rules (config.json)…", AutoSize = true };
         ignoreRulesLink.LinkClicked += OnEditIgnoreRules;
@@ -114,6 +139,13 @@ public sealed class SettingsForm : Form
         _config.MaxPassiveIdleMinutes = (int)_passiveIdleBox.Value;
         _config.MinBackgroundWindowPercent = (int)_minBackgroundBox.Value;
         _config.MaxBackgroundWindowsPerMonitor = (int)_maxBackgroundBox.Value;
+        _config.HyperfocusNudgesEnabled = _nudgesEnabledBox.Checked;
+        _config.HyperfocusNudgeMinutes = (int)_nudgeAfterBox.Value;
+        _config.AppHyperfocusNudgeMinutes = (int)_appNudgeAfterBox.Value;
+        _config.BreakMinutes = (int)_breakLengthBox.Value;
+        _config.BreakTimerMinutes = (int)_breakTimerBox.Value;
+        _config.QuietWhenFullscreen = _quietFullscreenBox.Checked;
+        _config.QuietWhenMicrophoneInUse = _quietMicrophoneBox.Checked;
 
         DialogResult = DialogResult.OK;
         Close();

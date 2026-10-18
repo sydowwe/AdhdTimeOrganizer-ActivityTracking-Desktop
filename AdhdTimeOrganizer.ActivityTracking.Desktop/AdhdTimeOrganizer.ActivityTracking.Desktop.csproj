@@ -2,7 +2,9 @@
 
     <PropertyGroup>
         <OutputType>WinExe</OutputType>
-        <TargetFramework>net10.0-windows</TargetFramework>
+        <!-- The Windows 10 SDK target is what lets the app use the Windows App SDK's notifications. -->
+        <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+        <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
         <UseWindowsForms>true</UseWindowsForms>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
@@ -11,8 +13,23 @@
         <AssemblyName>AdhdTimeOrganizer</AssemblyName>
     </PropertyGroup>
 
+    <!--
+        Windows App SDK, unpackaged and self-contained: its runtime is copied next to the exe, so nothing has
+        to be installed on the user's machine. Self-contained needs a concrete architecture; the default is
+        the one of the SDK doing the build (pass -r win-arm64 to cross-build).
+    -->
+    <PropertyGroup>
+        <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
+        <WindowsPackageType>None</WindowsPackageType>
+        <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+        <!-- NU1603: Foundation asks for InteractiveExperiences 2.1.8, which was never published; 2.1.9 resolves. -->
+        <NoWarn>$(NoWarn);NU1603</NoWarn>
+    </PropertyGroup>
+
     <ItemGroup>
         <EmbeddedResource Include="timeorganizer-icon.ico" />
+        <!-- AppNotificationManager.Register takes the icon as a file path, not a resource. -->
+        <Content Include="timeorganizer-icon.ico" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
     <ItemGroup>
@@ -24,5 +41,33 @@
         <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
         <PackageReference Include="Serilog.Sinks.Debug" Version="3.*" />
         <PackageReference Include="NAudio.Wasapi" Version="2.*" />
+        <!-- Foundation holds AppNotifications; the full Microsoft.WindowsAppSDK would add WinUI, AI and ML (~150 MB). -->
+        <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="2.3.12" />
+        <!-- Only the source of the file extracted below; none of its assets are used. -->
+        <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.5.1" ExcludeAssets="all" GeneratePathProperty="true" />
     </ItemGroup>
+
+    <!--
+        The self-contained deployment of Windows App SDK 2.x leaves out Microsoft.WindowsAppRuntime.Insights.Resource.dll,
+        which ships only inside the framework MSIX. Without it AppNotificationManager.Register throws
+        "Unable to load resource dll" and no notification can be shown. Take it from the MSIX of the matching
+        architecture. NativeSmokeTests fails if it goes missing; drop this target once the SDK ships it.
+    -->
+    <Target Name="ExtractWindowsAppRuntimeInsightsResource" BeforeTargets="AssignTargetPaths">
+        <PropertyGroup>
+            <_InsightsArch>x64</_InsightsArch>
+            <_InsightsArch Condition="$(RuntimeIdentifier.EndsWith('-arm64'))">arm64</_InsightsArch>
+            <_InsightsArch Condition="$(RuntimeIdentifier.EndsWith('-x86'))">x86</_InsightsArch>
+            <_InsightsDir>$(IntermediateOutputPath)winappsdk-insights\</_InsightsDir>
+        </PropertyGroup>
+        <Unzip SourceFiles="$(PkgMicrosoft_WindowsAppSDK_Runtime)\tools\MSIX\win10-$(_InsightsArch)\Microsoft.WindowsAppRuntime.2.msix"
+               DestinationFolder="$(_InsightsDir)"
+               Include="Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+               SkipUnchangedFiles="true" />
+        <ItemGroup>
+            <None Include="$(_InsightsDir)Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+                  Link="Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+                  CopyToOutputDirectory="PreserveNewest" />
+        </ItemGroup>
+    </Target>
 </Project>

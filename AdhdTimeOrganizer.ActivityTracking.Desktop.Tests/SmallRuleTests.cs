@@ -46,8 +46,38 @@ public class ProcessNameTests
         Assert.Equal(expected, ProcessInfoCache.ProcessNameFromPath(path));
 }
 
+public class MicrophoneUsageTests
+{
+    public static TheoryData<object?, object?, bool> Values => new()
+    {
+        { 133791285319274277L, 0L, true },                    // started, not stopped: in use
+        { 133791285319274277L, 133791285419274277L, false },  // stopped
+        { null, null, false },                                // never used
+        { 133791285319274277L, null, false },                 // half-written: not in use (fail closed)
+        { 0L, 0L, false },
+        { "garbage", 0L, false }
+    };
+
+    [Theory]
+    [MemberData(nameof(Values))]
+    public void IsHolding(object? start, object? stop, bool expected) =>
+        Assert.Equal(expected, MicrophoneUsage.IsHolding(start, stop));
+
+    [Fact]
+    public void ExecutablePathFromKeyName() =>
+        Assert.Equal(@"C:\Program Files\Zoom\bin\Zoom.exe",
+            MicrophoneUsage.ExecutablePathFromKeyName("C:#Program Files#Zoom#bin#Zoom.exe"));
+}
+
 public class TrayStatusTests
 {
+    [Fact]
+    public void DescribeStatus_SaysABreakIsRunning_AndHowLongIsLeft() =>
+        Assert.Equal("Tracking · on a break, 7 min left",
+            TrayApplicationContext.DescribeStatus(
+                new TrackerStatus(true, false, 0, null, null, null), hasSession: true,
+                breakLeft: TimeSpan.FromMinutes(6.2)));
+
     [Fact]
     public void DescribeStatus_SaysOfflineAndHowMuchIsQueued() =>
         Assert.Equal("Tracking · offline · 14 min unsent",
