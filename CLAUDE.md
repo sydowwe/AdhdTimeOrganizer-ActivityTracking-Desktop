@@ -151,6 +151,14 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   truncated.)
 - A session ends only when the server refuses the refresh token (400/401/403). Being offline or getting
   a 5xx keeps it. While signed out, tracking continues into the outbox.
+- **A refresh whose answer may have been lost is not sent again for 6 s** (`ApiClient.ReplayDelay`). That
+  covers a refresh that failed after it was sent, a timeout, a 5xx or a 2xx without both tokens. The server
+  rotates on every refresh. For a token client it exchanges a replay of the rotated token again when the
+  successor was never used and the rotation is 5 s – 72 h old (`RefreshTokenService`, lost-response recovery).
+  Inside the 5 s it answers 401, which would end the session, and any caller (send loop, rules, coverage)
+  could be the one replaying. While held back, a refresh reports `Unavailable` without sending. A rotated pair
+  is saved (`config.Save()`) before it is used. This needs a server with the recovery: an older one revokes
+  every session of the account on such a replay.
 
 ### Native code
 - `[LibraryImport]` with `StringMarshalling.Utf16` for anything taking `char[]`. Enumeration callbacks

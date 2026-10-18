@@ -64,16 +64,28 @@ public sealed record LoginOutcome(LoginStatus Status, string? PendingAuthToken =
 /// which is not safe to mutate while the send loop has a request in flight.
 /// </remarks>
 /// <param name="handler">Null for the real network; tests pass one that answers for the server.</param>
-public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = null) : IDisposable
+/// <param name="time">Null for the system clock; tests pass one they can move.</param>
+public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = null, TimeProvider? time = null) : IDisposable
 {
     private const string HeartbeatPath = "/api/activity-tracking/desktop/heartbeat";
     private const string AgentRulesPath = "/api/activity-tracking/desktop/agent-rules";
     private const string AgentCoveragePath = "/api/activity-tracking/desktop/agent-coverage";
 
+    /// <summary>
+    /// How long a refresh token whose answer may have been lost is held back. The server exchanges such a
+    /// replay again only once the rotation is more than 5 s old (its lost-response recovery); inside those 5 s
+    /// it answers 401, which ends the session. One more second for a request that arrives late.
+    /// </summary>
+    internal static readonly TimeSpan ReplayDelay = TimeSpan.FromSeconds(6);
+
     private readonly HttpClient _http = new(handler ?? new HttpClientHandler()) { Timeout = TimeSpan.FromSeconds(30) };
+    private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private readonly ILogger _log = Log.ForContext<ApiClient>();
     private volatile string? _accessToken;
+
+    /// <summary>When the last refresh that may have rotated the token without us seeing the answer ended; only under the gate.</summary>
+    private long? _uncertainSince;
 
     /// <summary>
     /// True while a refresh token is saved. A session survives being offline; it ends only when the
@@ -384,10 +396,15 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     /// during a deploy signed the user out for good — silently, while the tray kept saying "tracking".</para>
     /// <para>Serialized, and skipped when another caller already replaced <paramref name="staleAccessToken"/>:
     /// the server rotates refresh tokens, so two concurrent refreshes would race on the same one.</para>
+    /// <para>A refresh that failed after it was sent, or answered 5xx (rotation commits before the access token
+    /// is minted), may have rotated the token with the answer lost. The server exchanges that token again when
+    /// it comes back — but only after its 5 s grace, so no caller sends it again until <see cref="ReplayDelay"/>
+    /// has passed. A lost answer never ends the session.</para>
     /// </remarks>
     private async Task<RefreshOutcome> RefreshTokenAsync(string? staleAccessToken, CancellationToken ct)
     {
         await _refreshGate.WaitAsync(ct);
+        var sent = false;
         try
         {
             if (_accessToken is not null && _accessToken != staleAccessToken)
@@ -396,14 +413,26 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
             var refreshToken = config.RefreshToken;
             if (string.IsNullOrEmpty(refreshToken)) return RefreshOutcome.Rejected;
 
+            if (_uncertainSince is { } since && _time.GetElapsedTime(since) < ReplayDelay)
+            {
+                _log.Debug("Holding the refresh back — the last one may have rotated the token");
+                return RefreshOutcome.Unavailable;
+            }
+
             _log.Debug("Refreshing access token");
+            sent = true;
             var response = await _http.PostAsJsonAsync(
                 BuildUri("/api/auth/extension/refresh"), new { refreshToken }, ct);
+            _uncertainSince = (int)response.StatusCode >= 500 ? _time.GetTimestamp() : null;
 
             if (response.IsSuccessStatusCode)
             {
                 var tokens = await response.Content.ReadFromJsonAsync<TokenResponse>(ct);
-                if (tokens is not { AccessToken.Length: > 0, RefreshToken.Length: > 0 }) return RefreshOutcome.Unavailable;
+                if (tokens is not { AccessToken.Length: > 0, RefreshToken.Length: > 0 })
+                {
+                    _uncertainSince = _time.GetTimestamp();
+                    return RefreshOutcome.Unavailable;
+                }
 
                 StoreTokens(tokens);
                 _log.Information("Token refreshed successfully");
@@ -422,10 +451,12 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            if (sent) _uncertainSince = _time.GetTimestamp();
             throw;
         }
         catch (Exception ex)
         {
+            if (sent && !NeverReachedTheServer(ex)) _uncertainSince = _time.GetTimestamp();
             _log.Warning(ex, "Token refresh failed — keeping the session, will retry");
             return RefreshOutcome.Unavailable;
         }
@@ -434,6 +465,16 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
             _refreshGate.Release();
         }
     }
+
+    /// <summary>
+    /// A failure before the request could be written: no DNS answer, no connection, no TLS. Anything else — a
+    /// timeout, a dropped connection — may have reached the server after it was written.
+    /// </summary>
+    private static bool NeverReachedTheServer(Exception ex) =>
+        ex is HttpRequestException
+        {
+            HttpRequestError: HttpRequestError.NameResolutionError or HttpRequestError.ConnectionError or HttpRequestError.SecureConnectionError
+        };
 
     private void StoreTokens(TokenResponse tokens)
     {
