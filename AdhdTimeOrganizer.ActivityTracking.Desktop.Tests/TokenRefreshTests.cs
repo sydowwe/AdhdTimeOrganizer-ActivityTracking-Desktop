@@ -9,8 +9,8 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Tests;
 /// <summary>
 /// The refresh against a fake server. The server rotates on every refresh; a refresh answer lost after the rotation
 /// committed leaves the agent holding the old token. The server exchanges that token again once the rotation is
-/// more than 5 s old, and answers 401 inside those 5 s — so the agent must hold it back until then, and never end
-/// the session over it.
+/// more than 5 s old, and answers 409 inside those 5 s (401 from a server older than that) — so the agent must hold
+/// it back until then, and never end the session over it. The decisions themselves are <c>RefreshPolicyTests</c>.
 /// </summary>
 public sealed class TokenRefreshTests : IDisposable
 {
@@ -31,7 +31,8 @@ public sealed class TokenRefreshTests : IDisposable
         _api = new ApiClient(_config, _server, _clock);
     }
 
-    public static TheoryData<string> LostAnswers => ["500", "timeout", "dropped connection", "200 without tokens"];
+    /// <summary>"409": the server saying the token was rotated moments ago — by the refresh whose answer we lost.</summary>
+    public static TheoryData<string> LostAnswers => ["500", "409", "timeout", "dropped connection", "200 without tokens"];
 
     [Theory]
     [MemberData(nameof(LostAnswers))]
@@ -40,6 +41,7 @@ public sealed class TokenRefreshTests : IDisposable
         _server.Answers.Enqueue(lostAnswer switch
         {
             "500" => () => new HttpResponseMessage(HttpStatusCode.InternalServerError),
+            "409" => () => new HttpResponseMessage(HttpStatusCode.Conflict),
             "timeout" => () => throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout"),
             "dropped connection" => () => throw new HttpRequestException(HttpRequestError.ResponseEnded, "The response ended prematurely"),
             _ => () => Json("""{ "accessToken": "", "refreshToken": "" }""")
@@ -47,7 +49,7 @@ public sealed class TokenRefreshTests : IDisposable
 
         Assert.True(await _api.TryRestoreSessionAsync(), "a lost answer keeps the session");
 
-        _clock.Advance(ApiClient.ReplayDelay - TimeSpan.FromMilliseconds(1));
+        _clock.Advance(RefreshPolicy.ReplayDelay - TimeSpan.FromMilliseconds(1));
         Assert.True(await _api.TryRestoreSessionAsync());
         Assert.Single(_server.Requests);
 
@@ -85,6 +87,28 @@ public sealed class TokenRefreshTests : IDisposable
         Assert.Null(_config.RefreshToken);
     }
 
+    /// <summary>
+    /// Exiting while a refresh is on the wire: the server has rotated, and the answer is on its way back. Cancelling
+    /// the request outright threw that answer away and left the next start to replay the old token; now it is waited
+    /// for and saved.
+    /// </summary>
+    [Fact]
+    public async Task AnExitMidRefresh_StillSavesTheAnswer()
+    {
+        var answer = new TaskCompletionSource();
+        _server.InFlight = ct => answer.Task.WaitAsync(ct);
+        using var exit = new CancellationTokenSource();
+        var window = new ActivityWindow { WindowStart = DateTime.UtcNow, Entries = [] };
+
+        var send = Task.Run(() => _api.SendActivityWindowAsync(window, exit.Token), TestContext.Current.CancellationToken);
+        while (_server.Requests.Count == 0) await Task.Delay(10, TestContext.Current.CancellationToken);
+        await exit.CancelAsync();
+        answer.SetResult();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => send);
+        Assert.Equal("refresh-2", _config.RefreshToken);
+    }
+
     public void Dispose()
     {
         _api.Dispose();
@@ -102,6 +126,9 @@ public sealed class TokenRefreshTests : IDisposable
         /// <summary>The refresh token each request carried.</summary>
         public List<string> Requests { get; } = [];
 
+        /// <summary>Awaited once a refresh is received, before it is answered; cancelling aborts it, like a socket.</summary>
+        public Func<CancellationToken, Task>? InFlight { get; set; }
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             if (request.RequestUri!.AbsolutePath != "/api/auth/extension/refresh")
@@ -109,6 +136,7 @@ public sealed class TokenRefreshTests : IDisposable
 
             var body = await request.Content!.ReadAsStringAsync(ct);
             Requests.Add(body.Contains("\"refresh\"") ? "refresh" : body);
+            if (InFlight is { } inFlight) await inFlight(ct);
 
             return Answers.TryDequeue(out var answer)
                 ? answer()

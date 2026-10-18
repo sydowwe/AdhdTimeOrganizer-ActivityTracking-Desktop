@@ -22,6 +22,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/WindowTitleNormalizer.cs` | Strips counters, unsaved markers and app-name suffixes from titles |
 | `Services/OutboxStore.cs` | Finished windows as JSON files under `%LOCALAPPDATA%\…Desktop\outbox` until sent |
 | `Services/ApiClient.cs` | Login, 2FA, token refresh, heartbeat (and its answer), the server-rules and mapping-coverage downloads; `Classify` decides retry vs. drop per status code |
+| `Services/RefreshPolicy.cs` | **Pure** refresh decisions: save / sign out / keep, whether an attempt left the token possibly rotated, how long to hold it back |
 | `Services/TodayTotal.cs` | Today's recorded foreground time on this PC, for the tray glance; saved to `today.json` |
 | `Services/PrivacyFilter.cs` | Recording-time privacy: local rules and private browser windows → keep, hide the title, or drop |
 | `Services/AgentRules.cs` | Send-time privacy: the user's server rules (in memory) and the filter that drops entries an ignore rule wins |
@@ -149,16 +150,22 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   timer. A status event that set `NotifyIcon.Text` from the poll thread once threw out of the loop's own
   catch and silently ended tracking. (`NotifyIcon.Text` also throws past 127 characters, so it's
   truncated.)
-- A session ends only when the server refuses the refresh token (400/401/403). Being offline or getting
-  a 5xx keeps it. While signed out, tracking continues into the outbox.
-- **A refresh whose answer may have been lost is not sent again for 6 s** (`ApiClient.ReplayDelay`). That
-  covers a refresh that failed after it was sent, a timeout, a 5xx or a 2xx without both tokens. The server
-  rotates on every refresh. For a token client it exchanges a replay of the rotated token again when the
-  successor was never used and the rotation is 5 s – 72 h old (`RefreshTokenService`, lost-response recovery).
-  Inside the 5 s it answers 401, which would end the session, and any caller (send loop, rules, coverage)
-  could be the one replaying. While held back, a refresh reports `Unavailable` without sending. A rotated pair
-  is saved (`config.Save()`) before it is used. This needs a server with the recovery: an older one revokes
-  every session of the account on such a replay.
+- A session ends only when the server refuses the refresh token (400/401/403). Being offline, a throttle,
+  a 409 or a 5xx keeps it. While signed out, tracking continues into the outbox. The decisions are the
+  **pure** `Services/RefreshPolicy.cs`; `ApiClient` only sends and keeps the clock.
+- **A refresh whose answer may have been lost is not sent again for 6 s** (`RefreshPolicy.ReplayDelay`). That
+  covers a refresh that failed after it was sent, a timeout, a 409, a 5xx or a 2xx without both tokens; a
+  request that never left (DNS, connect, TLS) can go again at once. The server rotates on every refresh. For a
+  token client it exchanges a replay of the rotated token again when the successor was never used and the
+  latest rotation is 5 s – 72 h old (`RefreshTokenService`, lost-response recovery). Inside the 5 s it answers
+  409, "rotated moments ago" — a server from before 409 answers 401 there, which ends the session — and any
+  caller (send loop, rules, coverage) could be the one replaying. While held back, a refresh reports
+  `Unavailable` without sending. A rotated pair is saved (`config.Save()`) before it is used.
+- **Exit doesn't abandon a refresh on the wire.** Once sent, it may finish for `ApiClient.ExitGrace` (3 s) after
+  its caller is cancelled, and `ActivityTrackerService.Dispose` waits longer than that for the send loop.
+  Abandoning it throws away the pair the server already rotated to.
+- **Deploy the server before a client build that relies on the recovery.** A server without it revokes every
+  session of the account on a replay of a rotated token, so against one a lost answer still signs everything out.
 
 ### Native code
 - `[LibraryImport]` with `StringMarshalling.Utf16` for anything taking `char[]`. Enumeration callbacks

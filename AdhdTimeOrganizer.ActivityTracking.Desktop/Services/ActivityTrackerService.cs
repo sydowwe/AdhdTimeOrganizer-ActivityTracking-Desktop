@@ -811,8 +811,9 @@ public sealed class ActivityTrackerService : IDisposable
         try { _pollTask?.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
         Flush();
 
+        // Longer than a sent refresh is allowed to outlive the cancel: abandoning it loses the rotated pair.
         _lifetimeCts.Cancel();
-        try { _sendTask.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
+        try { _sendTask.Wait(ApiClient.ExitGrace + TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
 
         _pollCts?.Dispose();
         _lifetimeCts.Dispose();
