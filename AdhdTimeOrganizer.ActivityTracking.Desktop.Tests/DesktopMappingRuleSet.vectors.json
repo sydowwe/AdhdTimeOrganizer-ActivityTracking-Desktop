@@ -1,0 +1,151 @@
+{
+  "about": "Shared test cases for DesktopMappingRuleSet (server) and its port in the desktop agent (MappingRuleSet). Both test suites resolve every case and each checks the other repo's copy of this file is byte-identical. Rules have the shape of GET /activity-tracking/desktop/agent-rules; entries carry what the heartbeat resolves after its own normalization, so a product or title the agent could not read is an empty string, never null. Change matching on the server, change this file, copy it to AdhdTimeOrganizer.ActivityTracking.Desktop.Tests/, port the change.",
+  "cases": [
+    {
+      "name": "exact matches the whole value, ignoring case",
+      "rules": [
+        { "id": 1, "processName": "Chrome", "processNameMatchType": "Exact", "isIgnored": true }
+      ],
+      "entry": { "processName": "chrome", "productName": "Google Chrome", "windowTitle": "New Tab" },
+      "expectedRuleId": 1
+    },
+    {
+      "name": "exact does not match a longer value",
+      "rules": [
+        { "id": 1, "processName": "chrome", "processNameMatchType": "Exact", "isIgnored": true }
+      ],
+      "entry": { "processName": "chrome_proxy", "productName": "Google Chrome", "windowTitle": "New Tab" },
+      "expectedRuleId": null
+    },
+    {
+      "name": "exact folds case beyond ASCII",
+      "rules": [
+        { "id": 1, "windowTitle": "DEŇ PLÁNOVANIA", "windowTitleMatchType": "Exact", "isIgnored": false }
+      ],
+      "entry": { "processName": "notepad", "productName": "Notepad", "windowTitle": "deň plánovania" },
+      "expectedRuleId": 1
+    },
+    {
+      "name": "exact on the product name",
+      "rules": [
+        { "id": 1, "productName": "Visual Studio Code", "productNameMatchType": "Exact", "isIgnored": false }
+      ],
+      "entry": { "processName": "Code", "productName": "visual studio code", "windowTitle": "main.ts" },
+      "expectedRuleId": 1
+    },
+    {
+      "name": "contains matches a substring, ignoring case",
+      "rules": [
+        { "id": 1, "windowTitle": "github", "windowTitleMatchType": "Contains", "isIgnored": true }
+      ],
+      "entry": { "processName": "firefox", "productName": "Firefox", "windowTitle": "sydowwe/AdhdTimeOrganizer · GitHub" },
+      "expectedRuleId": 1
+    },
+    {
+      "name": "contains treats an underscore as a literal",
+      "rules": [
+        { "id": 1, "windowTitle": "e_a", "windowTitleMatchType": "Contains", "isIgnored": true }
+      ],
+      "entry": { "processName": "chrome", "productName": "Google Chrome", "windowTitle": "chromeXabc" },
+      "expectedRuleId": null
+    },
+    {
+      "name": "wildcard is anchored at both ends",
+      "rules": [
+        { "id": 1, "windowTitle": "GitHub*", "windowTitleMatchType": "Wildcard", "isIgnored": true }
+      ],
+      "entry": { "processName": "firefox", "productName": "Firefox", "windowTitle": "sydowwe - GitHub" },
+      "expectedRuleId": null
+    },
+    {
+      "name": "wildcard star and question mark, ignoring case",
+      "rules": [
+        { "id": 1, "windowTitle": "*git?ub*", "windowTitleMatchType": "Wildcard", "isIgnored": true }
+      ],
+      "entry": { "processName": "firefox", "productName": "Firefox", "windowTitle": "Repo · GITHUB · Issues" },
+      "expectedRuleId": 1
+    },
+    {
+      "name": "wildcard treats a dot as a literal",
+      "rules": [
+        { "id": 1, "processName": "a.b*", "processNameMatchType": "Wildcard", "isIgnored": true }
+      ],
+      "entry": { "processName": "axbc", "productName": "", "windowTitle": "x" },
+      "expectedRuleId": null
+    },
+    {
+      "name": "wildcard star matches an empty product name",
+      "rules": [
+        { "id": 1, "productName": "*", "productNameMatchType": "Wildcard", "isIgnored": true }
+      ],
+      "entry": { "processName": "elevated", "productName": "", "windowTitle": "Admin console" },
+      "expectedRuleId": 1
+    },
+    {
+      "name": "regex is not anchored",
+      "rules": [
+        { "id": 1, "windowTitle": "hub", "windowTitleMatchType": "Regex", "isIgnored": true }
+      ],
+      "entry": { "processName": "firefox", "productName": "Firefox", "windowTitle": "GitHub" },
+      "expectedRuleId": 1
+    },
+    {
+      "name": "regex ignores case",
+      "rules": [
+        { "id": 1, "processName": "^CHROME$", "processNameMatchType": "Regex", "isIgnored": true }
+      ],
+      "entry": { "processName": "chrome", "productName": "Google Chrome", "windowTitle": "New Tab" },
+      "expectedRuleId": 1
+    },
+    {
+      "name": "every column a rule sets must match",
+      "rules": [
+        { "id": 1, "processName": "chrome", "processNameMatchType": "Exact", "windowTitle": "*GitHub*", "windowTitleMatchType": "Wildcard", "isIgnored": true }
+      ],
+      "entry": { "processName": "firefox", "productName": "Firefox", "windowTitle": "GitHub" },
+      "expectedRuleId": null
+    },
+    {
+      "name": "the more specific rule wins over a lower id",
+      "rules": [
+        { "id": 1, "windowTitle": "*GitHub*", "windowTitleMatchType": "Wildcard", "isIgnored": true },
+        { "id": 2, "processName": "chrome", "processNameMatchType": "Exact", "windowTitle": "*GitHub*", "windowTitleMatchType": "Wildcard", "isIgnored": false }
+      ],
+      "entry": { "processName": "chrome", "productName": "Google Chrome", "windowTitle": "sydowwe - GitHub" },
+      "expectedRuleId": 2
+    },
+    {
+      "name": "the broad rule still covers what only it matches",
+      "rules": [
+        { "id": 1, "windowTitle": "*GitHub*", "windowTitleMatchType": "Wildcard", "isIgnored": true },
+        { "id": 2, "processName": "chrome", "processNameMatchType": "Exact", "windowTitle": "*GitHub*", "windowTitleMatchType": "Wildcard", "isIgnored": false }
+      ],
+      "entry": { "processName": "firefox", "productName": "Firefox", "windowTitle": "sydowwe - GitHub" },
+      "expectedRuleId": 1
+    },
+    {
+      "name": "three columns beat two",
+      "rules": [
+        { "id": 1, "processName": "Code", "processNameMatchType": "Exact", "windowTitle": "*", "windowTitleMatchType": "Wildcard", "isIgnored": true },
+        { "id": 2, "processName": "Code", "processNameMatchType": "Exact", "productName": "Visual Studio Code", "productNameMatchType": "Exact", "windowTitle": "*", "windowTitleMatchType": "Wildcard", "isIgnored": false }
+      ],
+      "entry": { "processName": "Code", "productName": "Visual Studio Code", "windowTitle": "main.ts" },
+      "expectedRuleId": 2
+    },
+    {
+      "name": "equally specific rules go to the lower id, whatever order they arrive in",
+      "rules": [
+        { "id": 5, "processName": "chrom", "processNameMatchType": "Contains", "isIgnored": true },
+        { "id": 3, "processName": "chrome", "processNameMatchType": "Exact", "isIgnored": false }
+      ],
+      "entry": { "processName": "chrome", "productName": "Google Chrome", "windowTitle": "New Tab" },
+      "expectedRuleId": 3
+    },
+    {
+      "name": "no rules, no match",
+      "rules": [],
+      "entry": { "processName": "chrome", "productName": "Google Chrome", "windowTitle": "New Tab" },
+      "expectedRuleId": null
+    }
+  ]
+}

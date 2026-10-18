@@ -1,11 +1,10 @@
-using System.Diagnostics;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop;
 
 /// <summary>
 /// Edits the tracker's settings in place on <see cref="AppConfig"/>. The caller saves and applies them.
-/// Ignore rules are a list, so they stay in config.json — the form links to it.
+/// Ignore and hide-title rules live in <see cref="PrivacyForm"/>, which the form links to.
 /// </summary>
 public sealed class SettingsForm : Form
 {
@@ -80,8 +79,8 @@ public sealed class SettingsForm : Form
         AddRow(layout, "Stay quiet while:", _quietFullscreenBox, null);
         AddRow(layout, "", _quietMicrophoneBox, null);
 
-        var ignoreRulesLink = new LinkLabel { Text = "Edit ignore rules (config.json)…", AutoSize = true };
-        ignoreRulesLink.LinkClicked += OnEditIgnoreRules;
+        var ignoreRulesLink = new LinkLabel { Text = "Ignore rules and private windows…", AutoSize = true };
+        ignoreRulesLink.LinkClicked += OnEditPrivacy;
         layout.Controls.Add(ignoreRulesLink);
         layout.SetColumnSpan(ignoreRulesLink, 2);
 
@@ -151,11 +150,11 @@ public sealed class SettingsForm : Form
         Close();
     }
 
-    private void OnEditIgnoreRules(object? sender, LinkLabelLinkClickedEventArgs e)
+    /// <summary>The privacy form saves on its own Save: its changes do not wait for, or depend on, this form's.</summary>
+    private void OnEditPrivacy(object? sender, LinkLabelLinkClickedEventArgs e)
     {
-        _config.Save(); // make sure the file exists
-        Process.Start(new ProcessStartInfo { FileName = AppConfig.ConfigPath, UseShellExecute = true });
-        MessageBox.Show(this, "Restart the tracker after editing config.json for the ignore rules to apply.",
-            "Ignore rules", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        using var privacyForm = new PrivacyForm(_config);
+        if (privacyForm.ShowDialog(this) == DialogResult.OK)
+            _config.Save();
     }
 }

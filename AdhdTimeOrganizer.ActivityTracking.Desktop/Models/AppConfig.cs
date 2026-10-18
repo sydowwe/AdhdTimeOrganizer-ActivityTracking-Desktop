@@ -2,23 +2,62 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Services.Matching;
 using Serilog;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 
-/// <summary>
-/// A rule that suppresses tracking for a process.
-/// WindowTitle = null  → ignore the process regardless of its window title.
-/// WindowTitle = ""    → ignore only when the window title is empty/whitespace.
-/// WindowTitle = "Foo" → ignore only when the window title equals "Foo" (case-insensitive).
-/// </summary>
-public sealed class IgnoreRule
+public enum LocalRuleAction
 {
+    /// <summary>Not recorded at all — system noise, or an app the user wants no trace of.</summary>
+    Ignore,
+    /// <summary>Recorded, but the title never leaves the machine (see <see cref="PrivateWindowHandling"/>).</summary>
+    HideTitle
+}
+
+/// <summary>What a private browser window or a <see cref="LocalRuleAction.HideTitle"/> window turns into.</summary>
+public enum PrivateWindowHandling
+{
+    /// <summary>Sent with the title replaced by "&lt;app&gt; - PRIVATE", so the time still adds up.</summary>
+    KeepTimeAsAppName,
+    /// <summary>Not recorded, like an ignored window.</summary>
+    Drop
+}
+
+/// <summary>
+/// One of the user's own rules, applied when a window is recorded — before anything is written to the outbox.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <see cref="ProcessName"/> null or empty → any process. <see cref="WindowTitle"/> null → any title; <c>""</c> →
+/// only an empty title; otherwise matched with <see cref="WindowTitleMatchType"/> against the raw title <em>and</em>
+/// the normalized one, so a rule written from what the dashboards show still catches the window, and a rule
+/// written against a part normalization strips does too. A rule that names neither matches nothing.
+/// </para>
+/// <para>
+/// The JSON is the old ignore rule's (<c>processName</c>, <c>windowTitle</c>, exact) plus three optional fields,
+/// so a config.json written before them reads unchanged.
+/// </para>
+/// </remarks>
+public sealed class LocalRule
+{
+    [JsonPropertyName("action")]
+    [JsonConverter(typeof(JsonStringEnumConverter<LocalRuleAction>))]
+    public LocalRuleAction Action { get; set; } = LocalRuleAction.Ignore;
+
     [JsonPropertyName("processName")]
-    public string ProcessName { get; set; } = "";
+    public string? ProcessName { get; set; }
+
+    [JsonPropertyName("processNameMatchType")]
+    [JsonConverter(typeof(JsonStringEnumConverter<PatternMatchType>))]
+    public PatternMatchType ProcessNameMatchType { get; set; } = PatternMatchType.Exact;
 
     [JsonPropertyName("windowTitle")]
     public string? WindowTitle { get; set; }
+
+    [JsonPropertyName("windowTitleMatchType")]
+    [JsonConverter(typeof(JsonStringEnumConverter<PatternMatchType>))]
+    public PatternMatchType WindowTitleMatchType { get; set; } = PatternMatchType.Exact;
 }
 
 public sealed class AppConfig
@@ -73,6 +112,20 @@ public sealed class AppConfig
     /// <summary>Hold nudges while any app has the microphone open — a call, even a muted one.</summary>
     public bool QuietWhenMicrophoneInUse { get; set; } = true;
 
+    // ── Privacy (see PrivacyFilter) ───────────────────────────────────────────
+
+    /// <summary>Firefox Private Browsing and Edge InPrivate windows are handled like a hide-title rule.</summary>
+    public bool HidePrivateWindows { get; set; } = true;
+
+    [JsonConverter(typeof(JsonStringEnumConverter<PrivateWindowHandling>))]
+    public PrivateWindowHandling PrivateWindowHandling { get; set; } = PrivateWindowHandling.KeepTimeAsAppName;
+
+    /// <summary>
+    /// Tracking is paused until then: a time from "Pause for…", <see cref="DateTime.MaxValue"/> for "until I
+    /// resume", null when not paused. Saved, so a restart during a pause does not quietly start recording again.
+    /// </summary>
+    public DateTime? PausedUntilUtc { get; set; }
+
     /// <summary>
     /// The refresh token, encrypted with DPAPI for the current Windows user. It used to sit in this file
     /// in plain text, readable by anything that can read the user's profile.
@@ -118,10 +171,12 @@ public sealed class AppConfig
     private bool _isRefreshTokenDecrypted;
 
     /// <summary>
-    /// Processes/windows suppressed from tracking.
-    /// Add entries here for any process you consider system noise.
+    /// The user's own rules (see <see cref="LocalRule"/>), edited in the Privacy form. Still stored under the old
+    /// <c>IgnoreRules</c> key, which configs written before hide-title rules carry. Replaced as a whole on save,
+    /// never mutated, because the poll loop reads it on its own thread.
     /// </summary>
-    public List<IgnoreRule> IgnoreRules { get; set; } =
+    [JsonPropertyName("IgnoreRules")]
+    public List<LocalRule> LocalRules { get; set; } =
     [
         // ── Explorer shell noise ──────────────────────────────────────────────
         // "Program Manager" is the hidden desktop host window; empty title = taskbar focus.

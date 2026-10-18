@@ -13,14 +13,17 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | Path | What lives there |
 |---|---|
 | `Program.cs` | Logging (Serilog → `%LOCALAPPDATA%\AdhdTimeOrganizer\logs`), single-instance mutex, tray startup |
-| `TrayApplicationContext.cs` | Tray icon and menu; pulls status from the tracker on a UI timer |
-| `LoginForm.cs`, `SettingsForm.cs` | Password + 2FA sign-in; settings editor (ignore rules stay in `config.json`) |
+| `TrayApplicationContext.cs` | Tray icon and menu (incl. "Pause for…"); pulls status from the tracker on a UI timer |
+| `LoginForm.cs`, `SettingsForm.cs`, `PrivacyForm.cs` | Password + 2FA sign-in; settings editor; the user's ignore / hide-title rules and private-window handling |
 | `Services/ActivityTrackerService.cs` | Poll loop (observes the desktop), send loop (drains the outbox), lock/suspend/session-end handling |
 | `Services/ActivityRecorder.cs` | **Pure** minute accounting: measured elapsed time, split at minute boundaries, gap cap |
 | `Services/WindowLimits.cs` | The server's validation rules, applied before a window is queued |
 | `Services/WindowTitleNormalizer.cs` | Strips counters, unsaved markers and app-name suffixes from titles |
 | `Services/OutboxStore.cs` | Finished windows as JSON files under `%LOCALAPPDATA%\…Desktop\outbox` until sent |
-| `Services/ApiClient.cs` | Login, 2FA, token refresh, heartbeat; `Classify` decides retry vs. drop per status code |
+| `Services/ApiClient.cs` | Login, 2FA, token refresh, heartbeat, the server-rules download; `Classify` decides retry vs. drop per status code |
+| `Services/PrivacyFilter.cs` | Recording-time privacy: local rules and private browser windows → keep, hide the title, or drop |
+| `Services/AgentRules.cs` | Send-time privacy: the user's server rules (in memory) and the filter that drops entries an ignore rule wins |
+| `Services/Matching/` | **Port of the server's matcher** (`PatternMatcher`, `MappingRuleSet`) — see "Rule matching" below |
 | `Services/HyperfocusPolicy.cs` | **Pure** nudge decisions: stretches, breaks, app stretches, snooze / repeat / "not now", the break timer |
 | `Services/NudgeService.cs` | Feeds polls to the policy, checks quiet conditions, shows and withdraws toasts, handles button presses |
 | `Services/NudgeNotifier.cs`, `NudgeToast.cs` | Windows App SDK notifications: registration, toast text and buttons, parsing a press |
@@ -66,11 +69,22 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   Users' mapping rules on the server match on them. Changing a process name or the title
   normalization changes which rules match and splits the distinct-entries grid. Do it deliberately and
   say so.
-- **Rule matching belongs to the server.** `DesktopMappingRuleSet` is the only matcher, and the slice
-  docs forbid a second one. If the agent needs to know which activity a window maps to (nudges, tray
-  glance), the server has to tell it, e.g. in the heartbeat response. Don't port the matcher here.
-  The local `IgnoreRules` in `config.json` are a separate, deliberately simple list (exact process,
-  optional exact title).
+- **Rule matching: the server is authoritative; `Services/Matching/` is its one sanctioned port.** The
+  agent downloads the user's active rules (`GET /api/activity-tracking/desktop/agent-rules`, ETag → 304,
+  at most every 5 min, memory only, forgotten on sign-out) and, just before sending a window, drops the
+  entries whose winning rule ignores — so an ignored title never leaves the machine. It needs *every*
+  rule, not only the ignore ones: first match wins after the specificity sort, so a narrower activity rule
+  shadows a broad ignore rule. The heartbeat still applies the same rules (stale cache, old agents).
+  - **Must answer exactly what the server answers.** `Tests/DesktopMappingRuleSet.vectors.json` is a copy
+    of the server's `AdhdTimeOrganizer.Tracking/domain/helper/mapping/DesktopMappingRuleSet.vectors.json`;
+    both test suites resolve it and each fails when the other repo's copy differs. Matching changes start
+    on the server: change it, its vectors, copy the file here, port. Never edit only this copy.
+  - Resolve on what the heartbeat resolves on: a missing product or blank title is `""`, not null.
+  - If nothing is known yet and the download fails, the send pass **waits** rather than upload unfiltered.
+    A 404 (server older than the route) counts as "no rules": it filters on arrival, and waiting would
+    hold the outbox forever.
+  - The port only decides drop / keep. Which *activity* a window maps to (nudges, tray glance) still has
+    to come from the server, e.g. in the heartbeat response.
 
 ### Time accounting
 - All of it lives in `ActivityRecorder`, which has no clock and no Win32, so it's unit-testable. Keep it
@@ -87,7 +101,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 - Every finished window goes to the **outbox on disk** before anything tries to send it. Exit, suspend,
   logoff and session end call `ActivityTrackerService.Flush()`. Don't add an in-memory-only queue.
 - The send loop runs for the app's lifetime, independent of pausing, and stops a pass at the first
-  window that has to wait (offline, signed out). The poll loop stops when tracking is paused.
+  window that has to wait (offline, signed out, server rules not known yet). The poll loop stops when
+  tracking is paused.
 - **Never touch WinForms objects from the poll or send loop.** The tray pulls `GetStatus()` on a UI
   timer. A status event that set `NotifyIcon.Text` from the poll thread once threw out of the loop's own
   catch and silently ended tracking. (`NotifyIcon.Text` also throws past 127 characters, so it's
@@ -127,6 +142,23 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     `NudgeToast.Button` swaps it for `’`; `NudgeToastTests` builds every kind and parses the XML.
 - Button presses arrive on a thread-pool thread and are posted to the UI thread ("Turn off" saves the
   config). On exit every toast is removed and the app unregistered, so a stale toast can't relaunch it.
+
+### Privacy before upload
+- Two layers. **At recording** (`PrivacyFilter`, poll loop): the user's `LocalRules` (stored under the old
+  `IgnoreRules` key — old configs read unchanged) and private browser windows. Ignore beats hide-title. A
+  hidden title becomes `"<product or process> - PRIVATE"` or the window is dropped
+  (`PrivateWindowHandling`); process and product stay, so process-level server rules still map the time.
+  The raw title goes no further than `ToSample`, so it never reaches the outbox. **At sending**
+  (`AgentRules`, send loop): the server's rules, as above.
+- A local title rule matches the raw title **and** the normalized one: normalization strips the browser
+  suffix, and with it a localized private-browsing marker.
+- Private windows are recognised by title only: Firefox ends it with "Private Browsing", Edge writes
+  "[InPrivate]". Chrome Incognito has no title marker and is not detected. A localized Firefox needs a
+  hide-title rule on its own wording.
+- `LocalRules` is **replaced, never mutated**: the poll loop iterates it on its own thread. That is also
+  why edits apply from the next poll without a restart.
+- A pause (`PausedUntilUtc`, `DateTime.MaxValue` = until resumed) is saved, so a restart in the middle of
+  one doesn't start recording early. The tray's timer resumes a timed one.
 
 ### Privacy and logging
 - No email, name or other personal data in logs. Log files outlive an account deletion. Ids, process

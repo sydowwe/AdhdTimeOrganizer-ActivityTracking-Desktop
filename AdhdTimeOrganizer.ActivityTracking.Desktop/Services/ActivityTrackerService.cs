@@ -12,7 +12,8 @@ public sealed record TrackerStatus(
     int PendingWindows,
     DateTime? LastSentUtc,
     SendResult? LastSendResult,
-    string? LastPollError);
+    string? LastPollError,
+    DateTime? PausedUntilUtc = null);
 
 /// <summary>
 /// Polls the desktop, folds polls into minute windows, persists each finished window to the outbox and
@@ -30,6 +31,7 @@ public sealed class ActivityTrackerService : IDisposable
 {
     private static readonly TimeSpan SendInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan OutboxRetention = TimeSpan.FromDays(30);
+    private static readonly TimeSpan AgentRulesRefreshInterval = TimeSpan.FromMinutes(5);
     private const int WindowsPerSendPass = 50;
 
     private readonly AppConfig _config;
@@ -40,6 +42,8 @@ public sealed class ActivityTrackerService : IDisposable
 
     private readonly Lock _lock = new();
     private readonly ActivityRecorder _recorder;
+    private readonly PrivacyFilter _privacy = new();      // poll loop only
+    private readonly AgentRules _agentRules = new();      // filtered on the send loop only
 
     private readonly CancellationTokenSource _lifetimeCts = new();
     private readonly SemaphoreSlim _sendSignal = new(0, 1);
@@ -66,6 +70,9 @@ public sealed class ActivityTrackerService : IDisposable
         _outbox = outbox;
         _nudges = nudges;
         _recorder = new ActivityRecorder(MaxCreditedGapFor(PollInterval));
+
+        // The server rules are one user's on one server; a sign-out (or a new server URL, which signs out) forgets them.
+        _apiClient.SignedOut += _agentRules.Clear;
 
         // Subscribed from the UI thread, whose message loop delivers them.
         SystemEvents.SessionSwitch += OnSessionSwitch;
@@ -99,6 +106,38 @@ public sealed class ActivityTrackerService : IDisposable
         _pollCts?.Cancel();
     }
 
+    /// <summary>Whether a pause is in force at <paramref name="utcNow"/> (one past its end has not been resumed yet).</summary>
+    public bool IsPaused(DateTime utcNow) => _config.PausedUntilUtc is { } until && until > utcNow;
+
+    /// <summary>
+    /// Stops recording until <paramref name="untilUtc"/> (<see cref="DateTime.MaxValue"/>: until <see cref="Resume"/>).
+    /// Saved, so a restart in the middle does not start recording early. Sending carries on, as with any pause.
+    /// </summary>
+    public void Pause(DateTime untilUtc)
+    {
+        _log.Information("Pausing until {Until}", untilUtc == DateTime.MaxValue ? "resumed" : untilUtc.ToString("O"));
+        _config.PausedUntilUtc = untilUtc;
+        _config.Save();
+        Stop();
+    }
+
+    public void Resume()
+    {
+        _config.PausedUntilUtc = null;
+        _config.Save();
+        Start();
+    }
+
+    /// <summary>Resumes when a timed pause has run out. Called from the tray's timer; true when it resumed.</summary>
+    public bool ResumeIfPauseOver(DateTime utcNow)
+    {
+        if (_config.PausedUntilUtc is not { } until || until > utcNow) return false;
+
+        _log.Information("Pause over — resuming");
+        Resume();
+        return true;
+    }
+
     /// <summary>
     /// Persists the minute in progress. Called on exit, suspend and session end — the moments after
     /// which the in-memory part of a minute would otherwise be gone.
@@ -127,7 +166,7 @@ public sealed class ActivityTrackerService : IDisposable
     {
         var pending = _outbox.Count; // disk read — kept outside the lock the poll loop takes
         lock (_lock)
-            return new TrackerStatus(IsRunning, _isLocked, pending, _lastSentUtc, _lastSendResult, _lastPollError);
+            return new TrackerStatus(IsRunning, _isLocked, pending, _lastSentUtc, _lastSendResult, _lastPollError, _config.PausedUntilUtc);
     }
 
     // ── Polling ──────────────────────────────────────────────────────────────
@@ -243,7 +282,7 @@ public sealed class ActivityTrackerService : IDisposable
         foreach (var bg in backgroundWindows)
         {
             var sample = ToSample(bg.Process, bg.WindowTitle);
-            if (ShouldIgnore(sample) || !trackedKeys.Add(ProcessKey(sample))) continue;
+            if (sample is null || !trackedKeys.Add(ProcessKey(sample))) continue;
 
             observations.Add(new Observation(sample, bg.MonitorIndex,
                 IsBackground: true,
@@ -259,7 +298,7 @@ public sealed class ActivityTrackerService : IDisposable
 
             var mainWindow = GetMainWindow(pid);
             var sample = ToSample(process, mainWindow != nint.Zero ? Win32.GetWindowTitle(mainWindow) : null);
-            if (ShouldIgnore(sample) || !trackedKeys.Add(ProcessKey(sample))) continue;
+            if (sample is null || !trackedKeys.Add(ProcessKey(sample))) continue;
 
             observations.Add(new Observation(sample,
                 MonitorHelper.GetWindowMonitorIndex(mainWindow, monitors),
@@ -288,17 +327,27 @@ public sealed class ActivityTrackerService : IDisposable
         var process = ProcessInfoCache.GetForWindow(hWnd, out pid);
         if (process is null) return null;
 
-        var sample = ToSample(process, Win32.GetWindowTitle(hWnd));
-        return ShouldIgnore(sample) ? null : sample;
+        return ToSample(process, Win32.GetWindowTitle(hWnd));
     }
 
-    private static ActivitySample ToSample(ProcessInfo process, string? rawTitle) => new()
+    /// <summary>
+    /// The window as it may be recorded, or null when it may not be — an ignore rule, or a private / hide-title
+    /// window under <see cref="PrivateWindowHandling.Drop"/>. The raw title goes no further than this.
+    /// </summary>
+    private ActivitySample? ToSample(ProcessInfo process, string? rawTitle)
     {
-        ProcessName = process.ProcessName,
-        WindowTitle = WindowTitleNormalizer.Normalize(process.ProcessName, process.ProductName, rawTitle),
-        ExecutablePath = process.ExecutablePath,
-        ProductName = process.ProductName
-    };
+        var normalized = WindowTitleNormalizer.Normalize(process.ProcessName, process.ProductName, rawTitle);
+        var title = _privacy.Apply(_config, process.ProcessName, process.ProductName, rawTitle, normalized);
+        if (title is null) return null;
+
+        return new ActivitySample
+        {
+            ProcessName = process.ProcessName,
+            WindowTitle = title,
+            ExecutablePath = process.ExecutablePath,
+            ProductName = process.ProductName
+        };
+    }
 
     private static nint GetMainWindow(int pid)
     {
@@ -314,19 +363,6 @@ public sealed class ActivityTrackerService : IDisposable
 
     private static bool IsPlayingAudio(ActiveAudioInfo audio, int pid, string? exePath) =>
         audio.Pids.Contains(pid) || (exePath is not null && audio.ExePaths.Contains(exePath));
-
-    private bool ShouldIgnore(ActivitySample sample)
-    {
-        foreach (var rule in _config.IgnoreRules)
-        {
-            if (!sample.ProcessName.Equals(rule.ProcessName, StringComparison.OrdinalIgnoreCase))
-                continue;
-            if (rule.WindowTitle is null) return true;
-            if (rule.WindowTitle == "" && string.IsNullOrWhiteSpace(sample.WindowTitle)) return true;
-            if (sample.WindowTitle.Equals(rule.WindowTitle, StringComparison.OrdinalIgnoreCase)) return true;
-        }
-        return false;
-    }
 
     private static TimeSpan MaxCreditedGapFor(TimeSpan pollInterval) =>
         TimeSpan.FromTicks(Math.Max(pollInterval.Ticks * 3, TimeSpan.FromSeconds(10).Ticks));
@@ -358,11 +394,30 @@ public sealed class ActivityTrackerService : IDisposable
     /// Sends pending windows oldest first and stops at the first one that has to wait: if the server is
     /// unreachable or the session is gone, the rest would fail the same way, each after its own timeout.
     /// </summary>
+    /// <remarks>
+    /// Each window first loses the entries the user's server rules ignore (<see cref="AgentRules"/>), with rules
+    /// fetched at most <see cref="AgentRulesRefreshInterval"/> ago — a backlog sent after a day offline is
+    /// filtered with today's rules, not with the ones it was recorded under. A window nothing is left of is
+    /// removed here: the heartbeat refuses an empty one.
+    /// </remarks>
     private async Task SendPendingAsync(CancellationToken ct)
     {
-        foreach (var item in _outbox.Pending(DateTime.UtcNow, WindowsPerSendPass))
+        var pending = _outbox.Pending(DateTime.UtcNow, WindowsPerSendPass);
+        if (pending.Count == 0) return;
+
+        if (!await RefreshAgentRulesAsync(ct)) return;
+
+        foreach (var item in pending)
         {
-            var result = await _apiClient.SendActivityWindowAsync(item.Window, ct);
+            var window = _agentRules.Filter(item.Window);
+            if (window is null)
+            {
+                _outbox.Remove(item);
+                _log.Debug("Window {WindowStart}: every entry is ignored by a server rule — not sent", item.Window.WindowStart);
+                continue;
+            }
+
+            var result = await _apiClient.SendActivityWindowAsync(window, ct);
             lock (_lock) _lastSendResult = result;
 
             switch (result)
@@ -370,7 +425,8 @@ public sealed class ActivityTrackerService : IDisposable
                 case SendResult.Sent:
                     _outbox.Remove(item);
                     lock (_lock) _lastSentUtc = DateTime.UtcNow;
-                    _log.Debug("Sent window {WindowStart} ({Count} entries)", item.Window.WindowStart, item.Window.Entries.Count);
+                    _log.Debug("Sent window {WindowStart} ({Count} entries, {Dropped} ignored by a server rule)",
+                        window.WindowStart, window.Entries.Count, item.Window.Entries.Count - window.Entries.Count);
                     break;
 
                 case SendResult.Rejected:
@@ -381,6 +437,40 @@ public sealed class ActivityTrackerService : IDisposable
                 default:
                     return;
             }
+        }
+    }
+
+    /// <summary>
+    /// Brings the server rules up to date when they are due. False when nothing is known yet and the download
+    /// failed: the pass then waits rather than upload what a rule might cover. A server without the route counts
+    /// as known-empty — it still filters on the heartbeat, and waiting for it would hold the outbox for good.
+    /// Once a set is held, a failed download keeps using it and tries again on the next pass.
+    /// </summary>
+    private async Task<bool> RefreshAgentRulesAsync(CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        if (!_agentRules.IsDue(now, AgentRulesRefreshInterval)) return true;
+
+        var fetch = await _apiClient.FetchAgentRulesAsync(_agentRules.ETag, ct);
+        switch (fetch.Status)
+        {
+            case AgentRulesFetch.Updated:
+                _agentRules.Replace(fetch.Rules ?? [], fetch.ETag, now);
+                _log.Information("Server rules updated: {Count} active", _agentRules.Count);
+                return true;
+
+            case AgentRulesFetch.Unchanged:
+                _agentRules.MarkChecked(now);
+                return true;
+
+            case AgentRulesFetch.NotSupported:
+                if (!_agentRules.IsKnown)
+                    _log.Information("The server has no agent-rules route — sending unfiltered; it applies its rules on arrival");
+                _agentRules.Replace([], null, now);
+                return true;
+
+            default:
+                return _agentRules.IsKnown;
         }
     }
 
@@ -424,6 +514,7 @@ public sealed class ActivityTrackerService : IDisposable
         SystemEvents.SessionSwitch -= OnSessionSwitch;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         SystemEvents.SessionEnding -= OnSessionEnding;
+        _apiClient.SignedOut -= _agentRules.Clear;
 
         // Let an in-flight poll finish before flushing, so nothing it records lands after the flush.
         _pollCts?.Cancel();

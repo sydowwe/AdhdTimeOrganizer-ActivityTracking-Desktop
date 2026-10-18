@@ -5,10 +5,15 @@ using AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop;
 
+public enum PauseChoice { FifteenMinutes, OneHour, UntilTomorrowMorning, UntilResumed }
+
 public sealed class TrayApplicationContext : ApplicationContext
 {
     // NotifyIcon.Text throws past 127 characters.
     private const int MaxTrayTextLength = 127;
+
+    // "Until tomorrow morning" ends here, local time.
+    private static readonly TimeSpan MorningResumeTime = TimeSpan.FromHours(6);
 
     private readonly NotifyIcon _trayIcon;
     private readonly AppConfig _config;
@@ -36,6 +41,12 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _statusItem = new ToolStripMenuItem("Status: Starting…") { Enabled = false };
         _toggleItem = new ToolStripMenuItem("Start Tracking", null, OnToggleTracking);
+
+        var pauseForItem = new ToolStripMenuItem("Pause for");
+        pauseForItem.DropDownItems.Add("15 minutes", null, (_, _) => PauseFor(PauseChoice.FifteenMinutes));
+        pauseForItem.DropDownItems.Add("1 hour", null, (_, _) => PauseFor(PauseChoice.OneHour));
+        pauseForItem.DropDownItems.Add("Until tomorrow morning", null, (_, _) => PauseFor(PauseChoice.UntilTomorrowMorning));
+        pauseForItem.DropDownItems.Add("Until I resume", null, (_, _) => PauseFor(PauseChoice.UntilResumed));
         _autoStartItem = new ToolStripMenuItem("Start with Windows", null, OnToggleAutoStart)
         {
             Checked = AutoStartHelper.IsEnabled(),
@@ -47,9 +58,11 @@ public sealed class TrayApplicationContext : ApplicationContext
         contextMenu.Items.Add(_statusItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(_toggleItem);
+        contextMenu.Items.Add(pauseForItem);
         contextMenu.Items.Add(_autoStartItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Settings…", null, OnSettings);
+        contextMenu.Items.Add("Privacy…", null, OnPrivacy);
         contextMenu.Items.Add("Open log folder", null, OnOpenLogFolder);
         contextMenu.Items.Add(_signInOutItem);
 #if DEBUG
@@ -92,11 +105,30 @@ public sealed class TrayApplicationContext : ApplicationContext
         _hadSession = hasSession;
 
         if (hasSession)
-            _tracker.Start();
+            StartUnlessPaused();
         else
             ShowLogin();
 
         RefreshStatus();
+    }
+
+    /// <summary>
+    /// Starts tracking, unless the user paused it and the pause has not run out — a pause is saved, so it
+    /// outlives a restart. Says so once, since nothing else would.
+    /// </summary>
+    private void StartUnlessPaused()
+    {
+        var now = DateTime.UtcNow;
+        if (_tracker.ResumeIfPauseOver(now)) return;
+
+        if (!_tracker.IsPaused(now))
+        {
+            _tracker.Start();
+            return;
+        }
+
+        _trayIcon.ShowBalloonTip(10_000, "Activity Tracker — paused",
+            $"{DescribePause(_config.PausedUntilUtc)}. Double-click the tray icon to resume.", ToolTipIcon.Info);
     }
 
     private void ShowLogin()
@@ -106,7 +138,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         if (loginForm.ShowDialog() == DialogResult.OK)
         {
             _hadSession = true;
-            _tracker.Start();
+            StartUnlessPaused();
             _tracker.RequestSend();
         }
 
@@ -116,6 +148,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     private void RefreshStatus()
     {
         if (_isInitializing) return;
+
+        _tracker.ResumeIfPauseOver(DateTime.UtcNow);
 
         var status = _tracker.GetStatus();
         var hasSession = _apiClient.HasSession;
@@ -133,13 +167,13 @@ public sealed class TrayApplicationContext : ApplicationContext
         var text = DescribeStatus(status, hasSession, breakLeft);
         _statusItem.Text = $"Status: {text}";
         _trayIcon.Text = Truncate($"Activity Tracker — {text}", MaxTrayTextLength);
-        _toggleItem.Text = status.IsRunning ? "Pause Tracking" : "Start Tracking";
+        _toggleItem.Text = status.IsRunning ? "Pause Tracking" : status.PausedUntilUtc is not null ? "Resume Tracking" : "Start Tracking";
         _signInOutItem.Text = hasSession ? "Sign out" : "Sign in…";
     }
 
     internal static string DescribeStatus(TrackerStatus status, bool hasSession, TimeSpan? breakLeft = null)
     {
-        var state = !status.IsRunning ? "Paused"
+        var state = !status.IsRunning ? DescribePause(status.PausedUntilUtc)
             : status.IsLocked ? "Locked — not recording"
             : status.LastPollError is { } error ? $"Error: {error}"
             : "Tracking";
@@ -159,6 +193,48 @@ public sealed class TrayApplicationContext : ApplicationContext
         return state + connection + queued;
     }
 
+    internal static string DescribePause(DateTime? pausedUntilUtc)
+    {
+        if (pausedUntilUtc is not { } until || until == DateTime.MaxValue) return "Paused";
+
+        var local = DateTime.SpecifyKind(until, DateTimeKind.Utc).ToLocalTime();
+        var day = local.Date == DateTime.Now.Date ? "" : local.Date == DateTime.Now.Date.AddDays(1) ? "tomorrow " : $"{local:ddd} ";
+        return $"Paused until {day}{local:HH:mm}";
+    }
+
+    /// <summary>When a pause chosen at <paramref name="utcNow"/> ends; <see cref="DateTime.MaxValue"/> for "until I resume".</summary>
+    internal static DateTime PauseEnd(PauseChoice choice, DateTime utcNow, TimeZoneInfo zone)
+    {
+        switch (choice)
+        {
+            case PauseChoice.FifteenMinutes:
+                return utcNow.AddMinutes(15);
+            case PauseChoice.OneHour:
+                return utcNow.AddHours(1);
+            case PauseChoice.UntilTomorrowMorning:
+                // The next 06:00 on the user's clock: tonight's pause ends tomorrow, one at 02:00 later today.
+                var local = TimeZoneInfo.ConvertTimeFromUtc(utcNow, zone);
+                var morning = local.Date + MorningResumeTime;
+                if (morning <= local) morning = morning.AddDays(1);
+                return TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(morning, DateTimeKind.Unspecified), zone);
+            default:
+                return DateTime.MaxValue;
+        }
+    }
+
+    private void PauseFor(PauseChoice choice)
+    {
+        _tracker.Pause(PauseEnd(choice, DateTime.UtcNow, TimeZoneInfo.Local));
+        RefreshStatus();
+    }
+
+    private void OnPrivacy(object? sender, EventArgs e)
+    {
+        using var privacyForm = new PrivacyForm(_config);
+        if (privacyForm.ShowDialog() == DialogResult.OK)
+            _config.Save(); // the poll loop reads the rules live, so they apply from its next poll
+    }
+
     private static string Truncate(string value, int maxLength) =>
         value.Length <= maxLength ? value : value[..(maxLength - 1)] + "…";
 
@@ -173,9 +249,9 @@ public sealed class TrayApplicationContext : ApplicationContext
     private void OnToggleTracking(object? sender, EventArgs e)
     {
         if (_tracker.IsRunning)
-            _tracker.Stop();
+            _tracker.Pause(DateTime.MaxValue);
         else
-            _tracker.Start();
+            _tracker.Resume();
 
         RefreshStatus();
     }

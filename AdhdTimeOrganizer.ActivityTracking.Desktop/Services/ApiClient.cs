@@ -22,6 +22,20 @@ internal enum RefreshOutcome { Refreshed, Rejected, Unavailable }
 
 public enum LoginStatus { SignedIn, TwoFactorRequired, TwoFactorSetupRequired, Failed }
 
+public enum AgentRulesFetch
+{
+    /// <summary>A new set, in <see cref="AgentRulesResult.Rules"/>.</summary>
+    Updated,
+    /// <summary>304: the set already held is current.</summary>
+    Unchanged,
+    /// <summary>The server predates the route. It still filters on the heartbeat; the agent sends unfiltered.</summary>
+    NotSupported,
+    /// <summary>Offline, signed out, refused or failed — keep what is held and try again.</summary>
+    Unavailable
+}
+
+public sealed record AgentRulesResult(AgentRulesFetch Status, IReadOnlyList<AgentRule>? Rules = null, string? ETag = null);
+
 /// <param name="PendingAuthToken">Set with <see cref="LoginStatus.TwoFactorRequired"/>; goes back with the code.</param>
 /// <param name="Message">What to tell the user when it did not work.</param>
 public sealed record LoginOutcome(LoginStatus Status, string? PendingAuthToken = null, string? Message = null);
@@ -37,6 +51,7 @@ public sealed record LoginOutcome(LoginStatus Status, string? PendingAuthToken =
 public sealed class ApiClient(AppConfig config) : IDisposable
 {
     private const string HeartbeatPath = "/api/activity-tracking/desktop/heartbeat";
+    private const string AgentRulesPath = "/api/activity-tracking/desktop/agent-rules";
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
@@ -133,11 +148,15 @@ public sealed class ApiClient(AppConfig config) : IDisposable
         return await RefreshTokenAsync(staleAccessToken: null, CancellationToken.None) != RefreshOutcome.Rejected;
     }
 
+    /// <summary>Raised after every sign-out, including the server refusing the refresh token. Any thread.</summary>
+    public event Action? SignedOut;
+
     public void SignOut()
     {
         _accessToken = null;
         config.RefreshToken = null;
         config.Save();
+        SignedOut?.Invoke();
     }
 
     /// <summary>
@@ -149,24 +168,10 @@ public sealed class ApiClient(AppConfig config) : IDisposable
 
         try
         {
-            var token = _accessToken;
-            if (token is null)
-            {
-                var outcome = await RefreshTokenAsync(null, ct);
-                if (outcome != RefreshOutcome.Refreshed) return ToSendResult(outcome);
-                token = _accessToken;
-            }
-
-            var response = await PostWindowAsync(window, token, ct);
-
-            if (response.StatusCode == HttpStatusCode.Unauthorized)
-            {
-                _log.Information("Got 401 sending activity window — refreshing the access token");
-                var outcome = await RefreshTokenAsync(token, ct);
-                if (outcome != RefreshOutcome.Refreshed) return ToSendResult(outcome);
-
-                response = await PostWindowAsync(window, _accessToken, ct);
-            }
+            var (response, outcome) = await SendAuthorizedAsync(
+                () => new HttpRequestMessage(HttpMethod.Post, BuildUri(HeartbeatPath)) { Content = JsonContent.Create(window) }, ct);
+            if (response is null) return ToSendResult(outcome);
+            using var owned = response;
 
             var result = Classify(response.StatusCode);
             if (result != SendResult.Sent)
@@ -206,12 +211,94 @@ public sealed class ApiClient(AppConfig config) : IDisposable
         _ => SendResult.RetryLater
     };
 
-    private async Task<HttpResponseMessage> PostWindowAsync(ActivityWindow window, string? token, CancellationToken ct)
+    /// <summary>
+    /// Downloads the user's active server rules for the before-upload filter (<see cref="AgentRules"/>), sending
+    /// <paramref name="etag"/> so an unchanged set costs a 304 and no body.
+    /// </summary>
+    public async Task<AgentRulesResult> FetchAgentRulesAsync(string? etag, CancellationToken ct)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, BuildUri(HeartbeatPath))
+        if (!HasSession) return new AgentRulesResult(AgentRulesFetch.Unavailable);
+
+        try
         {
-            Content = JsonContent.Create(window)
-        };
+            var (response, _) = await SendAuthorizedAsync(() =>
+            {
+                var request = new HttpRequestMessage(HttpMethod.Get, BuildUri(AgentRulesPath));
+                if (etag is not null && EntityTagHeaderValue.TryParse(etag, out var tag))
+                    request.Headers.IfNoneMatch.Add(tag);
+                return request;
+            }, ct);
+            if (response is null) return new AgentRulesResult(AgentRulesFetch.Unavailable);
+            using var owned = response;
+
+            var status = ClassifyAgentRules(response.StatusCode);
+            if (status == AgentRulesFetch.Unavailable)
+                _log.Warning("Agent rules answered {StatusCode} — keeping the rules already held", (int)response.StatusCode);
+            if (status != AgentRulesFetch.Updated)
+                return new AgentRulesResult(status);
+
+            var rules = await response.Content.ReadFromJsonAsync<List<AgentRule>>(ct) ?? [];
+            return new AgentRulesResult(AgentRulesFetch.Updated, rules, response.Headers.ETag?.ToString());
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Agent rules download failed — will retry");
+            return new AgentRulesResult(AgentRulesFetch.Unavailable);
+        }
+    }
+
+    /// <remarks>
+    /// A 404 is a server from before the route existed: it has rules but cannot hand them out, and it still
+    /// applies them on the heartbeat, so sending goes on unfiltered rather than waiting for a route that is not
+    /// coming. Everything else that is not a 200 or a 304 is "try again", like a heartbeat.
+    /// </remarks>
+    internal static AgentRulesFetch ClassifyAgentRules(HttpStatusCode statusCode) => statusCode switch
+    {
+        HttpStatusCode.OK => AgentRulesFetch.Updated,
+        HttpStatusCode.NotModified => AgentRulesFetch.Unchanged,
+        HttpStatusCode.NotFound => AgentRulesFetch.NotSupported,
+        _ => AgentRulesFetch.Unavailable
+    };
+
+    /// <summary>
+    /// Sends a request with the session's access token, refreshing it first when there is none and once more on a
+    /// 401. The response is null when no usable token could be had; the outcome then says why.
+    /// </summary>
+    /// <remarks><paramref name="createRequest"/> is called once per attempt: a request message cannot be sent twice.</remarks>
+    private async Task<(HttpResponseMessage? Response, RefreshOutcome Outcome)> SendAuthorizedAsync(
+        Func<HttpRequestMessage> createRequest, CancellationToken ct)
+    {
+        var token = _accessToken;
+        if (token is null)
+        {
+            var outcome = await RefreshTokenAsync(null, ct);
+            if (outcome != RefreshOutcome.Refreshed) return (null, outcome);
+            token = _accessToken;
+        }
+
+        var response = await SendWithTokenAsync(createRequest, token, ct);
+
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            _log.Information("Got 401 from {Path} — refreshing the access token", response.RequestMessage?.RequestUri?.AbsolutePath);
+            response.Dispose();
+
+            var outcome = await RefreshTokenAsync(token, ct);
+            if (outcome != RefreshOutcome.Refreshed) return (null, outcome);
+
+            response = await SendWithTokenAsync(createRequest, _accessToken, ct);
+        }
+
+        return (response, RefreshOutcome.Refreshed);
+    }
+
+    private async Task<HttpResponseMessage> SendWithTokenAsync(Func<HttpRequestMessage> createRequest, string? token, CancellationToken ct)
+    {
+        using var request = createRequest();
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return await _http.SendAsync(request, ct);
     }
