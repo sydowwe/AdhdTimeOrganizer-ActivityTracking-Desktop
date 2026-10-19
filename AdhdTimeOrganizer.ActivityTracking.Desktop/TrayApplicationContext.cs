@@ -70,14 +70,15 @@ public sealed class TrayApplicationContext : ApplicationContext
         pauseForItem.DropDownItems.Add("1 hour", null, (_, _) => PauseFor(PauseChoice.OneHour));
         pauseForItem.DropDownItems.Add("Until tomorrow morning", null, (_, _) => PauseFor(PauseChoice.UntilTomorrowMorning));
         pauseForItem.DropDownItems.Add("Until I resume", null, (_, _) => PauseFor(PauseChoice.UntilResumed));
-        _autoStartItem = new ToolStripMenuItem("Start with Windows", null, OnToggleAutoStart)
-        {
-            Checked = AutoStartHelper.IsEnabled(),
-            CheckOnClick = true
-        };
+        // Before the item reads the state: moves an entry an older build left, and repoints one whose exe has gone.
+        AutoStartHelper.Current.Reconcile();
+        _autoStartItem = new ToolStripMenuItem("Start with Windows", null, OnToggleAutoStart) { CheckOnClick = true };
+        RefreshAutoStartItem();
         _signInOutItem = new ToolStripMenuItem("Sign in…", null, OnSignInOut);
 
         var contextMenu = new ContextMenuStrip();
+        // Windows' own startup settings can change it while the tracker runs.
+        contextMenu.Opening += (_, _) => RefreshAutoStartItem();
         contextMenu.Items.Add(_glanceItem);
         contextMenu.Items.Add(_statusItem);
         contextMenu.Items.Add(_mapAppsItem);
@@ -376,8 +377,20 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private void OnToggleAutoStart(object? sender, EventArgs e)
     {
-        AutoStartHelper.SetEnabled(_autoStartItem.Checked);
+        AutoStartHelper.Current.SetEnabled(_autoStartItem.Checked);
+        RefreshAutoStartItem();
     }
+
+    /// <summary>Ticked only when Windows will really start the tracker; says so when the user switched it off in Windows.</summary>
+    private void RefreshAutoStartItem()
+    {
+        var state = AutoStartHelper.Current.GetState();
+        _autoStartItem.Checked = state == AutoStartState.On;
+        _autoStartItem.Text = DescribeAutoStart(state);
+    }
+
+    internal static string DescribeAutoStart(AutoStartState state) =>
+        state == AutoStartState.DisabledInWindows ? "Start with Windows (turned off in Windows settings)" : "Start with Windows";
 
     private void OnSettings(object? sender, EventArgs e)
     {

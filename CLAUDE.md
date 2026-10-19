@@ -15,6 +15,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Program.cs` | Logging (Serilog → `%LOCALAPPDATA%\AdhdTimeOrganizer\logs`), single-instance mutex, tray startup |
 | `TrayApplicationContext.cs` | Tray icon and menu (incl. "Pause for…", the today/now glance and the "map these apps" prompt); pulls status from the tracker on a UI timer |
 | `LoginForm.cs`, `SettingsForm.cs`, `PrivacyForm.cs` | Password + 2FA sign-in; settings editor; the user's ignore / hide-title rules and private-window handling |
+| `Helpers/AutoStartHelper.cs` | "Start with Windows": the tracker's own `Run` entry (`AdhdTimeOrganizer.ActivityTracking.Desktop` — never `AdhdTimeOrganizer`, which the separate desktop app uses), Windows' `StartupApproved` verdict, repair of a moved exe; the registry sits behind `IAutoStartStore` so tests never touch it |
 | `Services/ActivityTrackerService.cs` | Poll loop (foreground changes as they happen, plus a poll for the rest of the desktop), send loop (drains the outbox), lock/suspend/session-end handling |
 | `Services/ActivityRecorder.cs` | **Pure** minute accounting: measured elapsed time, split at minute boundaries, gap cap, switch counts, the hold-back that idle backdating retracts from |
 | `Services/ScreenState.cs` | **Pure** "what is on screen now": which observations a span is credited to, what counts as a switch, when idleness starts a backdate |
