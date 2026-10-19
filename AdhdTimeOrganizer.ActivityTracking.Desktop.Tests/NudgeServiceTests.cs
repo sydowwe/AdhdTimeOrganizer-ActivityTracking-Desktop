@@ -27,6 +27,8 @@ public sealed class NudgeServiceTests : IDisposable
 
     private readonly string _dir = Path.Combine(Path.GetTempPath(), $"nudge-service-{Guid.NewGuid():N}");
     private readonly List<NudgeService> _services = [];
+    private readonly List<string> _folders = [];
+    private int _signIns;
 
     private DateTime _start = DateTime.UtcNow.AddHours(-2);
     private AppConfig _config = null!; // the latest Create()'s
@@ -148,6 +150,74 @@ public sealed class NudgeServiceTests : IDisposable
         Assert.Equal(TimeSpan.FromMinutes(19), drift.Length);
     }
 
+    // ---- upload notices ---------------------------------------------------
+
+    /// <summary>A stall reaches the notifier as a notice of its own kind, once, and leaves when the outbox drains.</summary>
+    [Fact]
+    public void AStall_IsShownOnce_AndWithdrawnWhenItResolves()
+    {
+        var (service, notifier, _) = Create();
+        var now = DateTime.UtcNow;
+
+        service.OnUploadStatus(now, Stalled(now));
+        service.OnUploadStatus(now.AddSeconds(2), Stalled(now.AddSeconds(2)));
+
+        var shown = Assert.Single(notifier.Shown);
+        Assert.Equal(NudgeKind.UploadHealth, shown.Kind);
+        Assert.Equal(UploadProblem.Stalled, shown.Upload!.Problem);
+
+        service.OnUploadStatus(now.AddMinutes(1), new UploadSnapshot(true, false, 0, null, 0));
+
+        Assert.Equal([NudgeKind.UploadHealth], notifier.Removed);
+    }
+
+    /// <summary>
+    /// "Turn off" on an upload notice is its own switch: the nudges stay on, and what follows is silence. And the other
+    /// way round — a nudge's "Turn off" must not silence the notice that tells you the tracker has stopped delivering.
+    /// </summary>
+    [Fact]
+    public void TurnOff_OnAnUploadNotice_SwitchesOffOnlyThose_AndSavesIt()
+    {
+        var (service, notifier, _) = Create();
+        var now = DateTime.UtcNow;
+        service.OnUploadStatus(now, Stalled(now));
+
+        service.OnActivated(new NudgeActivation(NudgeKind.UploadHealth, 1, NudgeResponse.TurnOff));
+
+        Assert.False(_config.UploadNoticesEnabled);
+        Assert.True(_config.HyperfocusNudgesEnabled);
+        Assert.True(_config.DriftNudgesEnabled);
+        Assert.False(JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(_config.FilePath))!.UploadNoticesEnabled);
+        Assert.Contains(NudgeKind.UploadHealth, notifier.Removed);
+
+        notifier.Shown.Clear();
+        service.OnUploadStatus(now.AddDays(3), Stalled(now.AddDays(3)));
+        Assert.Empty(notifier.Shown);
+    }
+
+    [Fact]
+    public void TurnOff_OnANudge_LeavesUploadNoticesOn()
+    {
+        var (service, _, _) = Create();
+
+        service.OnActivated(new NudgeActivation(NudgeKind.Stretch, 1, NudgeResponse.TurnOff));
+        service.OnActivated(new NudgeActivation(NudgeKind.Drift, 1, NudgeResponse.TurnOff));
+
+        Assert.True(_config.UploadNoticesEnabled);
+    }
+
+    [Fact]
+    public void TheButtons_OpenTheSignInForm_AndTheLogFolder()
+    {
+        var (service, _, _) = Create();
+
+        service.OnActivated(new NudgeActivation(NudgeKind.UploadHealth, 1, NudgeResponse.SignIn));
+        service.OnActivated(new NudgeActivation(NudgeKind.UploadHealth, 1, NudgeResponse.OpenLogs));
+
+        Assert.Equal(1, _signIns);
+        Assert.Equal(Program.LogDirectory, Assert.Single(_folders));
+    }
+
     // ---- helpers ---------------------------------------------------------
 
     private (NudgeService Service, FakeNotifier Notifier, List<Uri> Opened) Create()
@@ -162,10 +232,14 @@ public sealed class NudgeServiceTests : IDisposable
         };
         var notifier = new FakeNotifier();
         var opened = new List<Uri>();
-        var service = new NudgeService(config, uiContext: null, _ => notifier, opened.Add, Path.Combine(_dir, "drift.json"));
+        var service = new NudgeService(config, uiContext: null, _ => notifier, opened.Add, Path.Combine(_dir, "drift.json"),
+            signIn: () => _signIns++, openFolder: _folders.Add);
         _services.Add(service);
         return (service, notifier, opened);
     }
+
+    private static UploadSnapshot Stalled(DateTime nowUtc) =>
+        new(HasSession: true, IsPaused: false, PendingWindows: 90, OldestPendingUtc: nowUtc.AddHours(-25), RejectedWindows: 0);
 
     private void OffPlan(NudgeService service, int minutes) => Minutes(service, minutes, onPlan: false);
 

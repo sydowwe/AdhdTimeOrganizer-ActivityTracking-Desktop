@@ -9,6 +9,8 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 /// <param name="TodayOnThisPc">Today's recorded foreground time on this machine (<see cref="TodayTotal"/>).</param>
 /// <param name="LastResolved">The newest minute the server stored, with what it resolved to; null before the first, or from an old server.</param>
 /// <param name="Coverage">The mapping coverage behind the "map these apps" prompt; null unless drift nudges are on and it has been fetched.</param>
+/// <param name="OldestPendingUtc">When the oldest unsent window began; null with an empty outbox. Unlike <paramref name="LastSentUtc"/> it survives a restart.</param>
+/// <param name="RejectedWindows">Windows the server refused and the tracker dropped since it started — each one a lost minute.</param>
 public sealed record TrackerStatus(
     bool IsRunning,
     bool IsLocked,
@@ -19,7 +21,9 @@ public sealed record TrackerStatus(
     DateTime? PausedUntilUtc = null,
     TimeSpan TodayOnThisPc = default,
     ResolvedMinute? LastResolved = null,
-    AgentCoverage? Coverage = null);
+    AgentCoverage? Coverage = null,
+    DateTime? OldestPendingUtc = null,
+    int RejectedWindows = 0);
 
 /// <summary>A minute the server stored and what it said about it.</summary>
 public sealed record ResolvedMinute(DateTime WindowStartUtc, HeartbeatResponse Response);
@@ -77,6 +81,7 @@ public sealed class ActivityTrackerService : IDisposable
     private DateTime? _lastSentUtc;
     private SendResult? _lastSendResult;
     private ResolvedMinute? _lastResolved;
+    private int _rejectedWindows;
 
     // Send loop only, except the reset on sign-out / a settings change (both just make the next pass fetch).
     private AgentCoverage? _coverage;
@@ -229,12 +234,12 @@ public sealed class ActivityTrackerService : IDisposable
 
     public TrackerStatus GetStatus()
     {
-        var pending = _outbox.Count; // disk read — kept outside the lock the poll loop takes
+        var pending = _outbox.Summary(); // disk read — kept outside the lock the poll loop takes
         var today = _today.On(DateTime.UtcNow);
         var coverage = _config.DriftNudgesEnabled ? _coverage : null;
         lock (_lock)
-            return new TrackerStatus(IsRunning, _isLocked, pending, _lastSentUtc, _lastSendResult, _lastPollError, _config.PausedUntilUtc,
-                today, _lastResolved, coverage);
+            return new TrackerStatus(IsRunning, _isLocked, pending.Count, _lastSentUtc, _lastSendResult, _lastPollError, _config.PausedUntilUtc,
+                today, _lastResolved, coverage, pending.OldestStartUtc, Volatile.Read(ref _rejectedWindows));
     }
 
     // ── Polling ──────────────────────────────────────────────────────────────
@@ -664,7 +669,11 @@ public sealed class ActivityTrackerService : IDisposable
 
                 case SendResult.Rejected:
                     // Logged with the server's reason by ApiClient. Retrying an identical batch cannot help.
-                    if (_outbox.Remove(item)) TakeBackUnstored(item.Window, null);
+                    if (_outbox.Remove(item))
+                    {
+                        TakeBackUnstored(item.Window, null);
+                        Interlocked.Increment(ref _rejectedWindows); // settled, so counted once: a rewritten window goes again
+                    }
                     break;
 
                 default:

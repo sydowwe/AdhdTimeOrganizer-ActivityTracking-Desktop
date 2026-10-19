@@ -43,6 +43,14 @@ internal static class NudgeToast
                 .AddButton(Button("Snooze 30 min", nudge, NudgeResponse.Snooze))
                 .AddButton(Button("Turn off", nudge, NudgeResponse.TurnOff));
         }
+        else if (nudge.Kind == NudgeKind.UploadHealth)
+        {
+            builder.SetDuration(AppNotificationDuration.Long);
+            builder.AddButton(nudge.Upload?.Problem == UploadProblem.SignedOut
+                ? Button("Sign in", nudge, NudgeResponse.SignIn)
+                : Button("Open log folder", nudge, NudgeResponse.OpenLogs));
+            builder.AddButton(Button("Turn off these notices", nudge, NudgeResponse.TurnOff));
+        }
         else
         {
             builder.SetDuration(AppNotificationDuration.Long)
@@ -78,8 +86,24 @@ internal static class NudgeToast
         NudgeKind.Drift when nudge.Drift is { } drift =>
             ($"Planned: {drift.PlannedName} (until {TimeZoneInfo.ConvertTimeFromUtc(drift.PlannedEndsUtc, TimeZoneInfo.Local):HH:mm})",
                 $"Last {FormatLength(nudge.Length)}: {nudge.AppName}."),
+        NudgeKind.UploadHealth when nudge.Upload is { } upload => UploadText(upload),
         _ => ("Break's over", $"That was {FormatLength(nudge.Length)}. Ready to get back to it?")
     };
+
+    /// <summary>What went wrong and what to do about it. Counts and durations only.</summary>
+    private static (string Title, string Body) UploadText(UploadNotice upload)
+    {
+        var waiting = FormatLength(TimeSpan.FromMinutes(upload.PendingWindows));
+        return upload.Problem switch
+        {
+            UploadProblem.SignedOut => ("Activity Tracker is signed out",
+                $"{waiting} of tracked time is waiting to be sent. Tracking carries on; sign in to upload it."),
+            UploadProblem.Stalled => ($"Nothing has been uploaded for {FormatLength(upload.StalledFor)}",
+                $"{waiting} of tracked time is waiting on this PC. Check the connection; the log folder says what the server answered."),
+            _ => ($"{FormatLength(TimeSpan.FromMinutes(upload.Dropped))} of tracked time was refused",
+                "The server turned those minutes down and they are gone. A tracker older than the server is the usual cause: update it.")
+        };
+    }
 
     internal static string FormatLength(TimeSpan length)
     {

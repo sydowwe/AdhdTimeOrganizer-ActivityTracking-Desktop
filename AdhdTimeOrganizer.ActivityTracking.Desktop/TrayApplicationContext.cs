@@ -38,7 +38,6 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _signInOutItem;
 
     private bool _isInitializing = true;
-    private bool _hadSession;
 
     // The mapping prompt is a balloon once, right after drift nudges are turned on — not on every start while they
     // stay on; the menu item stays while it applies.
@@ -51,7 +50,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _apiClient = new ApiClient(config);
 
         // Button presses on a nudge are handed to this, the UI, thread.
-        _nudges = new NudgeService(config, new WindowsFormsSynchronizationContext());
+        _nudges = new NudgeService(config, new WindowsFormsSynchronizationContext(), signIn: SignInFromNotice);
         _tracker = new ActivityTrackerService(config, _apiClient, _nudges);
 
         // Opens today's breakdown. A submenu rather than a left-click flyout: double-click already pauses and resumes,
@@ -94,6 +93,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         testNudge.DropDownItems.Add("Same app", null, (_, _) => _nudges.ShowTest(NudgeKind.AppStretch));
         testNudge.DropDownItems.Add("Break over", null, (_, _) => _nudges.ShowTest(NudgeKind.BreakOver));
         testNudge.DropDownItems.Add("Drift", null, (_, _) => _nudges.ShowTest(NudgeKind.Drift));
+        testNudge.DropDownItems.Add("Upload problem", null, (_, _) => _nudges.ShowTest(NudgeKind.UploadHealth));
         contextMenu.Items.Add(testNudge);
 #endif
         contextMenu.Items.Add(new ToolStripSeparator());
@@ -132,7 +132,6 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         var hasSession = await _apiClient.TryRestoreSessionAsync();
         _isInitializing = false;
-        _hadSession = hasSession;
 
         if (hasSession)
             StartUnlessPaused();
@@ -168,7 +167,6 @@ public sealed class TrayApplicationContext : ApplicationContext
         using var loginForm = new LoginForm(_apiClient);
         if (loginForm.ShowDialog() == DialogResult.OK)
         {
-            _hadSession = true;
             StartUnlessPaused();
             _tracker.RequestSend();
         }
@@ -184,18 +182,14 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         var status = _tracker.GetStatus();
         var hasSession = _apiClient.HasSession;
-
-        if (_hadSession && !hasSession)
-        {
-            // The server refused the refresh token. Tracking carries on into the outbox; say so once.
-            _balloonOpensMapping = false;
-            _trayIcon.ShowBalloonTip(10_000, "Activity Tracker — signed out",
-                "Your session ended. Tracking continues offline; double-click the tray icon to sign in.",
-                ToolTipIcon.Warning);
-        }
-        _hadSession = hasSession;
-
         var nowUtc = DateTime.UtcNow;
+
+        // A session ended by the server, uploads stuck for a day, windows refused: a toast, once, and a repeat at most
+        // daily. It replaces the "signed out" balloon, which could not be withdrawn or switched off.
+        _nudges.OnUploadStatus(nowUtc, new UploadSnapshot(
+            hasSession, status.PausedUntilUtc is { } pausedUntil && pausedUntil > nowUtc,
+            status.PendingWindows, status.OldestPendingUtc, status.RejectedWindows));
+
         var breakLeft = _nudges.GetStatus().BreakEndsUtc - nowUtc;
         var text = DescribeStatus(status, hasSession, breakLeft);
         var glance = DescribeGlance(status, nowUtc);
@@ -296,12 +290,15 @@ public sealed class TrayApplicationContext : ApplicationContext
         // One file per finished minute; the one just written is normally sent within seconds.
         var queued = status.PendingWindows > 1 ? $" · {status.PendingWindows} min unsent" : "";
 
+        // Minutes the server refused: gone for good, and the one stall that never shows as "offline".
+        var dropped = status.RejectedWindows > 0 ? $" · {status.RejectedWindows} min dropped" : "";
+
         var connection = !hasSession ? " · signed out"
             : status.LastSendResult == SendResult.RetryLater && status.PendingWindows > 0 ? " · offline"
             : status.LastSentUtc is { } sent ? $" · sent {sent.ToLocalTime():HH:mm}"
             : "";
 
-        return state + connection + queued;
+        return state + connection + queued + dropped;
     }
 
     internal static string DescribePause(DateTime? pausedUntilUtc)
@@ -357,6 +354,12 @@ public sealed class TrayApplicationContext : ApplicationContext
             OnToggleTracking(sender, e);
     }
 
+    /// <summary>"Sign in" on an upload notice. A notice can outlive the problem, so it does nothing once signed in.</summary>
+    private void SignInFromNotice()
+    {
+        if (!_apiClient.HasSession) ShowLogin();
+    }
+
     private void OnToggleTracking(object? sender, EventArgs e)
     {
         if (_tracker.IsRunning)
@@ -400,7 +403,6 @@ public sealed class TrayApplicationContext : ApplicationContext
         if (!string.Equals(previousUrl, _config.ApiBaseUrl, StringComparison.OrdinalIgnoreCase))
         {
             _apiClient.SignOut();
-            _hadSession = false;
             ShowLogin();
         }
 
@@ -423,7 +425,6 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         // Signing out keeps tracking into the outbox; it is sent after the next sign-in.
         _apiClient.SignOut();
-        _hadSession = false;
         RefreshStatus();
         ShowLogin();
     }

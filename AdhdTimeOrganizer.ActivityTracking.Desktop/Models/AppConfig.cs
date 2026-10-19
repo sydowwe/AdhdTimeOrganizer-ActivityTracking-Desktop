@@ -140,6 +140,14 @@ public sealed class AppConfig
     /// <summary>Off-plan minutes inside one planned block before the nudge. At least 10.</summary>
     public int DriftNudgeMinutes { get; set; } = 10;
 
+    // ── Upload problems (see UploadHealthPolicy) ──────────────────────────────
+
+    /// <summary>
+    /// Tell me when tracked time isn't arriving: signed out, uploads stuck for a day, windows the server refused.
+    /// A switch of its own: operational notices are not nudges, and "Turn off" on a nudge must not silence them.
+    /// </summary>
+    public bool UploadNoticesEnabled { get; set; } = true;
+
     // ── Privacy (see PrivacyFilter) ───────────────────────────────────────────
 
     /// <summary>Firefox Private Browsing and Edge InPrivate windows are handled like a hide-title rule.</summary>

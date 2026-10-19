@@ -26,6 +26,23 @@ public sealed class OutboxStoreTests : IDisposable
         Assert.Equal(10, pending[0].Window.Entries.Single().ActiveSeconds);
     }
 
+    /// <summary>The upload-health notice measures a stall by this, so it has to survive a restart like the files do.</summary>
+    [Fact]
+    public void Summary_NamesTheOldestWindow_FromTheFileNamesAlone()
+    {
+        Assert.Equal(new OutboxSummary(0, null), _store.Summary());
+
+        _store.Save(Window(NineAm.AddMinutes(7), Entry("b", 20)));
+        _store.Save(Window(NineAm, Entry("a", 10)));
+        File.WriteAllText(Path.Combine(_directory, "not-a-window.json"), "{}");
+
+        var summary = new OutboxStore(_directory, TimeSpan.FromDays(30)).Summary();
+
+        Assert.Equal(3, summary.Count);
+        Assert.Equal(NineAm, summary.OldestStartUtc);
+        Assert.Equal(DateTimeKind.Utc, summary.OldestStartUtc!.Value.Kind);
+    }
+
     [Fact]
     public void Remove_DeletesASentWindow()
     {

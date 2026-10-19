@@ -29,6 +29,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/Matching/` | **Port of the server's matcher** (`PatternMatcher`, `MappingRuleSet`) — see "Rule matching" below |
 | `Services/HyperfocusPolicy.cs` | **Pure** nudge decisions: stretches, breaks, app stretches, snooze / repeat / "not now", the break timer |
 | `Services/DriftPolicy.cs` | **Pure** drift-nudge decisions over the server's per-minute plan verdicts (`MinuteVerdict`) |
+| `Services/UploadHealthPolicy.cs` | **Pure** "is tracked time arriving?" decisions: signed out, stalled a day, windows the server refused → show / withdraw a notice |
 | `Services/NudgeService.cs` | Feeds polls to the policy, checks quiet conditions, shows and withdraws toasts, handles button presses |
 | `Services/NudgeNotifier.cs`, `NudgeToast.cs` | Windows App SDK notifications: registration, toast text and buttons, parsing a press |
 | `Native/` | P/Invoke (`Win32`, `MonitorHelper`), `ProcessInfoCache`, `AudioSessionHelper` (NAudio), `MicrophoneUsage` (registry: whether, and which apps), `ForegroundEvents` (the WinEvent hook) |
@@ -201,7 +202,17 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 - Today's total and its top-5 breakdown (`TodayTotal`, `today.json`) count a window **once, when settled**: the total
   at queue time less what was never stored, the breakdown from the heartbeat's answer. The breakdown is the tray
   glance's submenu, not a left-click flyout — double-click already pauses.
-- They're fed by the poll loop, so pausing tracking pauses them. A paused, asleep or hung gap as long as a
+- **Upload notices are not nudges** (`UploadHealthPolicy`, toast kind `NudgeKind.UploadHealth`, switch
+  `UploadNoticesEnabled`). Three problems, one toast at a time, in this order: signed out (minutes waiting for 10 min —
+  it replaced the old "signed out" balloon), stalled (the **oldest unsent minute** is a day old), dropped (3+ windows
+  refused since the last notice). A stall is measured by `OutboxStore.Summary().OldestStartUtc`, never by `LastSentUtc`:
+  the outbox is on disk, "last sent" is not. They are fed by the tray's 2 s timer (`NudgeService.OnUploadStatus`), not
+  the poll loop, so they keep running through a pause — the policy itself shows nothing while paused. No quiet
+  conditions (Windows holds toasts itself). Once per episode, again at most daily, withdrawn when the condition clears;
+  a dropped-windows toast is not withdrawn (those minutes are gone) and leaves on exit. State is in memory: a restart
+  while still stalled shows the notice again. Counts and durations only in the text and the log. "Turn off" on one
+  switches off only these, and a nudge's "Turn off" leaves them on.
+- Nudges are fed by the poll loop, so pausing tracking pauses them. A paused, asleep or hung gap as long as a
   break counts as a break.
 - A call (any app holding the microphone) counts as presence **for nudges only**. It must not change what
   the tracker credits; passive presence stays the only idle exception there. What the tracker does with a call is

@@ -88,6 +88,28 @@ public sealed class SendLoopTests : IDisposable
         Assert.Null(status.LastResolved);
     }
 
+    /// <summary>The upload-health notice counts these: each is a lost minute, and nothing else says so.</summary>
+    [Fact]
+    public async Task ARefusedWindow_IsCounted_AndAnUnsentOneNamesTheOldestMinute()
+    {
+        _server.HeartbeatStatus = HttpStatusCode.BadRequest;
+        Queue(("code", 40));
+
+        using var tracker = Start();
+        var status = await WaitFor(tracker, s => s.PendingWindows == 0 && s.RejectedWindows == 1);
+
+        Assert.Null(status.OldestPendingUtc);
+
+        _server.HeartbeatStatus = HttpStatusCode.ServiceUnavailable; // a retry, not a loss
+        Queue(("code", 40));
+        tracker.RequestSend();
+        var waiting = await WaitFor(tracker, s => s.LastSendResult == SendResult.RetryLater);
+
+        Assert.Equal(1, waiting.PendingWindows);
+        Assert.Equal(_windowStart, waiting.OldestPendingUtc);
+        Assert.Equal(1, waiting.RejectedWindows);
+    }
+
     /// <summary>A server from before the answer: the window is sent and counted, there is just nothing to resolve it by.</summary>
     [Fact]
     public async Task AnOldServersBareCount_SendsTheWindow_WithoutAnAnswer()

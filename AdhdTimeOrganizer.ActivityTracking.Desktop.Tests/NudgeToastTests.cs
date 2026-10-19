@@ -71,6 +71,45 @@ public class NudgeToastTests
     private static Dictionary<string, string> Arguments(string encoded) =>
         encoded.Split(';').Select(pair => pair.Split('=', 2)).ToDictionary(kv => kv[0], kv => kv[1]);
 
+    /// <summary>
+    /// The upload notice is a toast kind of its own, so it gets the same proof as the nudges: it builds (the SDK throws
+    /// on an unescaped label), it says the cause and what to do, and each button reads back as the answer it carries.
+    /// </summary>
+    [Theory]
+    [InlineData(UploadProblem.SignedOut, NudgeResponse.SignIn)]
+    [InlineData(UploadProblem.Stalled, NudgeResponse.OpenLogs)]
+    [InlineData(UploadProblem.Dropped, NudgeResponse.OpenLogs)]
+    public void Build_UploadHealth_OffersTheFixForItsProblem_AndItsOwnSwitch(UploadProblem problem, NudgeResponse fix)
+    {
+        var notice = new UploadNotice(problem, 90, TimeSpan.FromHours(26), 4);
+        var nudge = new Nudge(1, NudgeKind.UploadHealth, notice.StalledFor, null, Upload: notice);
+        var notification = NudgeToast.Build(nudge);
+        var toast = XDocument.Parse(notification.Payload).Root!;
+
+        Assert.Equal("UploadHealth", notification.Tag);
+        Assert.Equal(NudgeToast.Group, notification.Group);
+        Assert.Equal(NudgeToast.Text(nudge).Title, toast.Descendants("text").First().Value);
+        Assert.Equal(
+            new[] { fix, NudgeResponse.TurnOff }.Select(r => new NudgeActivation(NudgeKind.UploadHealth, 1, r)),
+            toast.Descendants("action").Select(a => NudgeToast.Parse(Arguments((string)a.Attribute("arguments")!))));
+        Assert.Equal("Turn off these notices", (string?)toast.Descendants("action").Last().Attribute("content"));
+    }
+
+    [Fact]
+    public void Text_UploadHealth_SaysWhatIsWrong_InCountsAndDurations()
+    {
+        Assert.Equal(("Activity Tracker is signed out",
+                "1 h 30 m of tracked time is waiting to be sent. Tracking carries on; sign in to upload it."),
+            NudgeToast.Text(Upload(UploadProblem.SignedOut)));
+        Assert.Equal("Nothing has been uploaded for 26 h", NudgeToast.Text(Upload(UploadProblem.Stalled)).Title);
+        Assert.Equal("4 min of tracked time was refused", NudgeToast.Text(Upload(UploadProblem.Dropped)).Title);
+        Assert.Contains("update it", NudgeToast.Text(Upload(UploadProblem.Dropped)).Body);
+    }
+
+    private static Nudge Upload(UploadProblem problem) =>
+        new(1, NudgeKind.UploadHealth, TimeSpan.Zero, null,
+            Upload: new UploadNotice(problem, 90, TimeSpan.FromHours(26), 4));
+
     [Fact]
     public void Build_BreakOver_IsAReminder_ThatStaysUntilAnswered()
     {

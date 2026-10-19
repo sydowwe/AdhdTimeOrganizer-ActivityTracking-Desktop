@@ -42,6 +42,8 @@ public sealed class NudgeService : IDisposable
     private readonly SynchronizationContext? _uiContext;
     private readonly INudgeNotifier _notifier;
     private readonly Action<Uri> _openInBrowser;
+    private readonly Action? _signIn;
+    private readonly Action<string> _openFolder;
     private readonly string _driftStatePath;
     private readonly ILogger _log = Log.ForContext<NudgeService>();
 
@@ -49,6 +51,7 @@ public sealed class NudgeService : IDisposable
     private readonly Lock _driftSaveGate = new();
     private readonly HyperfocusPolicy _policy = new(TimeSpan.FromSeconds(10));
     private readonly DriftPolicy _drift = new();
+    private readonly UploadHealthPolicy _upload = new();
     private readonly System.Threading.Timer _breakTimer;
 
     private DateTime _microphoneCheckedUtc = DateTime.MinValue;
@@ -61,20 +64,26 @@ public sealed class NudgeService : IDisposable
     private bool _driftChanged;
 
     /// <param name="uiContext">Where button presses are handled; the tray's.</param>
-    public NudgeService(AppConfig config, SynchronizationContext? uiContext)
-        : this(config, uiContext, onActivated => new NudgeNotifier(onActivated), OpenInBrowser, DefaultDriftStatePath)
+    /// <param name="signIn">"Sign in" on an upload notice; opens the sign-in form on the UI thread. Null does nothing.</param>
+    public NudgeService(AppConfig config, SynchronizationContext? uiContext, Action? signIn = null)
+        : this(config, uiContext, onActivated => new NudgeNotifier(onActivated), OpenInBrowser, DefaultDriftStatePath, signIn)
     {
     }
 
     /// <param name="createNotifier">Given the button-press handler; tests pass a fake, so nothing registers with Windows.</param>
     /// <param name="openInBrowser">"Switch plan"; tests record it instead.</param>
     /// <param name="driftStatePath">Where <see cref="DriftState"/> is kept across restarts.</param>
+    /// <param name="signIn">"Sign in"; tests count it.</param>
+    /// <param name="openFolder">"Open log folder"; tests record the path instead.</param>
     internal NudgeService(AppConfig config, SynchronizationContext? uiContext,
-        Func<Action<NudgeActivation>, INudgeNotifier> createNotifier, Action<Uri> openInBrowser, string driftStatePath)
+        Func<Action<NudgeActivation>, INudgeNotifier> createNotifier, Action<Uri> openInBrowser, string driftStatePath,
+        Action? signIn = null, Action<string>? openFolder = null)
     {
         _config = config;
         _uiContext = uiContext;
         _openInBrowser = openInBrowser;
+        _signIn = signIn;
+        _openFolder = openFolder ?? OpenFolder;
         _driftStatePath = driftStatePath;
         if (LoadDriftState() is { } state) _drift.Restore(state);
         _breakTimer = new System.Threading.Timer(_ => Evaluate(DateTime.UtcNow));
@@ -133,6 +142,31 @@ public sealed class NudgeService : IDisposable
         }
     }
 
+    /// <summary>
+    /// How the tracker is doing at getting minutes to the server, from the tray's timer (the UI thread). Not a nudge:
+    /// it is not fed by the poll loop, so it keeps working through a pause — the policy itself holds the notice back
+    /// while paused — and it ignores the quiet conditions (Windows holds toasts under full screen on its own).
+    /// </summary>
+    public void OnUploadStatus(DateTime nowUtc, UploadSnapshot snapshot)
+    {
+        try
+        {
+            UploadHealthChange change;
+            lock (_lock) change = _upload.Evaluate(nowUtc, snapshot, _config.UploadNoticesEnabled);
+
+            if (change.Withdraw) _notifier.Remove(NudgeKind.UploadHealth);
+            if (change.Show is not { } notice) return;
+
+            // Counts only: nothing the user wrote is ever in an upload notice, or in its log line.
+            _log.Information("Upload notice {Problem}: {Pending} min waiting, {Dropped} dropped", notice.Problem, notice.PendingWindows, notice.Dropped);
+            _notifier.Show(new Nudge(1, NudgeKind.UploadHealth, notice.StalledFor, null, Upload: notice));
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Upload health evaluation failed");
+        }
+    }
+
     public NudgeStatus GetStatus()
     {
         lock (_lock) return _policy.GetStatus(DateTime.UtcNow);
@@ -143,7 +177,13 @@ public sealed class NudgeService : IDisposable
     {
         Nudge nudge;
         lock (_lock)
-            nudge = kind == NudgeKind.Drift ? _drift.IssueForTest(DateTime.UtcNow) : _policy.IssueForTest(kind, DateTime.UtcNow);
+            nudge = kind switch
+            {
+                NudgeKind.Drift => _drift.IssueForTest(DateTime.UtcNow),
+                NudgeKind.UploadHealth => new Nudge(1, kind, TimeSpan.FromHours(26), null,
+                    Upload: new UploadNotice(UploadProblem.Stalled, 90, TimeSpan.FromHours(26), 0)),
+                _ => _policy.IssueForTest(kind, DateTime.UtcNow)
+            };
         _notifier.Show(nudge);
     }
 
@@ -260,6 +300,12 @@ public sealed class NudgeService : IDisposable
     {
         try
         {
+            if (activation.Kind == NudgeKind.UploadHealth)
+            {
+                HandleUploadResponse(activation.Response);
+                return;
+            }
+
             var isDrift = activation.Kind == NudgeKind.Drift;
             if (activation.Response == NudgeResponse.TurnOff)
                 TurnOff(isDrift);
@@ -284,6 +330,29 @@ public sealed class NudgeService : IDisposable
         catch (Exception ex)
         {
             _log.Error(ex, "Handling a nudge response failed");
+        }
+    }
+
+    /// <summary>
+    /// An upload notice has no policy state to answer to, so a press is acted on whatever notice it came from: a stale
+    /// "Sign in" finds the tray already signed in and does nothing, and "Turn off" is the switch it says it is.
+    /// </summary>
+    private void HandleUploadResponse(NudgeResponse response)
+    {
+        switch (response)
+        {
+            case NudgeResponse.SignIn:
+                _signIn?.Invoke();
+                break;
+            case NudgeResponse.OpenLogs:
+                _openFolder(Program.LogDirectory);
+                break;
+            case NudgeResponse.TurnOff when _config.UploadNoticesEnabled:
+                _config.UploadNoticesEnabled = false;
+                _config.Save();
+                _notifier.Remove(NudgeKind.UploadHealth);
+                _log.Information("Upload notices turned off from a notice");
+                break;
         }
     }
 
@@ -312,6 +381,12 @@ public sealed class NudgeService : IDisposable
 
     private static void OpenInBrowser(Uri uri) =>
         Process.Start(new ProcessStartInfo { FileName = uri.AbsoluteUri, UseShellExecute = true });
+
+    private static void OpenFolder(string path)
+    {
+        Directory.CreateDirectory(path);
+        Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+    }
 
     private static bool IsWithinGap(DateTime? shownUtc, DateTime nowUtc) =>
         shownUtc is { } shown && nowUtc - shown < HyperfocusPolicy.MinGapBetweenKinds;

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 using Serilog;
@@ -5,6 +6,9 @@ using Serilog;
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
 public sealed record OutboxItem(string Path, ActivityWindow Window, DateTime LastWriteUtc);
+
+/// <param name="OldestStartUtc">When the oldest waiting window began (UTC); null when none, or none with a readable name.</param>
+public sealed record OutboxSummary(int Count, DateTime? OldestStartUtc);
 
 /// <summary>
 /// Finished windows waiting to be sent, one JSON file per window under LocalAppData. They used to live
@@ -98,17 +102,36 @@ public sealed class OutboxStore(string directory, TimeSpan retention)
         }
     }
 
-    public int Count
+    public int Count => Summary().Count;
+
+    /// <summary>
+    /// How many windows are waiting and when the oldest began, from the file names alone — no file is opened, so the
+    /// tray can ask every couple of seconds.
+    /// </summary>
+    public OutboxSummary Summary()
     {
-        get
+        lock (_gate)
         {
-            lock (_gate)
-                return Directory.Exists(directory) ? Directory.GetFiles(directory, "*.json").Length : 0;
+            if (!Directory.Exists(directory)) return new OutboxSummary(0, null);
+
+            var count = 0;
+            DateTime? oldest = null;
+            foreach (var path in Directory.EnumerateFiles(directory, "*.json"))
+            {
+                count++;
+                if (DateTime.TryParseExact(Path.GetFileNameWithoutExtension(path), FileNameFormat, CultureInfo.InvariantCulture,
+                        DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var start)
+                    && (oldest is null || start < oldest))
+                    oldest = start;
+            }
+            return new OutboxSummary(count, oldest);
         }
     }
 
+    private const string FileNameFormat = "yyyyMMdd'T'HHmm";
+
     private string PathFor(DateTime windowStart) =>
-        Path.Combine(directory, $"{windowStart:yyyyMMdd'T'HHmm}.json");
+        Path.Combine(directory, $"{windowStart.ToString(FileNameFormat, CultureInfo.InvariantCulture)}.json");
 
     private static ActivityWindow? TryRead(string path)
     {

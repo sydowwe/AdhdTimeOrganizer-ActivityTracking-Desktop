@@ -91,6 +91,13 @@ public class TrayStatusTests
                 new TrackerStatus(true, false, 3, null, SendResult.SignedOut, null), hasSession: false));
 
     [Fact]
+    public void DescribeStatus_CountsMinutesTheServerRefused() =>
+        Assert.Equal("Tracking · sent 12:00 · 4 min dropped",
+            TrayApplicationContext.DescribeStatus(
+                new TrackerStatus(true, false, 0, DateTime.Today.AddHours(12).ToUniversalTime(), SendResult.Sent, null, RejectedWindows: 4),
+                hasSession: true));
+
+    [Fact]
     public void DescribeStatus_SurfacesAPollError() =>
         Assert.StartsWith("Error: boom",
             TrayApplicationContext.DescribeStatus(

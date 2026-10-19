@@ -14,7 +14,13 @@ public enum NudgeKind
     BreakOver,
 
     /// <summary>Off the planned block for too long (<see cref="DriftPolicy"/>).</summary>
-    Drift
+    Drift,
+
+    /// <summary>
+    /// Not a nudge: uploads are stuck, the session ended or the server refused windows (<see cref="UploadHealthPolicy"/>).
+    /// It shares the toast plumbing and has a switch of its own.
+    /// </summary>
+    UploadHealth
 }
 
 public enum NudgeResponse
@@ -25,7 +31,11 @@ public enum NudgeResponse
     TurnOff,
     Dismiss,
     /// <summary>Drift only: open the planner to change the plan.</summary>
-    SwitchPlan
+    SwitchPlan,
+    /// <summary>Upload health only: open the sign-in form.</summary>
+    SignIn,
+    /// <summary>Upload health only: open the log folder.</summary>
+    OpenLogs
 }
 
 /// <summary>What a drift nudge says about the plan. <see cref="PlannedName"/> is user-authored: never log it.</summary>
@@ -34,9 +44,9 @@ public sealed record DriftDetails(string PlannedName, DateTime PlannedEndsUtc);
 /// <summary>
 /// A nudge to show. <see cref="Id"/> ties the toast's buttons back to it; ids are per kind's policy, so a press is
 /// routed by <see cref="Kind"/> first. For a drift nudge <see cref="Length"/> is the off-plan time and
-/// <see cref="AppName"/> what it went to.
+/// <see cref="AppName"/> what it went to. An upload-health notice carries <see cref="Upload"/> instead.
 /// </summary>
-public sealed record Nudge(int Id, NudgeKind Kind, TimeSpan Length, string? AppName, DriftDetails? Drift = null);
+public sealed record Nudge(int Id, NudgeKind Kind, TimeSpan Length, string? AppName, DriftDetails? Drift = null, UploadNotice? Upload = null);
 
 public sealed record NudgeStatus(TimeSpan? StretchLength, DateTime? BreakEndsUtc);
 
