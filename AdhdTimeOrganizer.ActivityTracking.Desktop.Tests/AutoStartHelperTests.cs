@@ -154,6 +154,72 @@ public class AutoStartHelperTests
         Assert.Equal($"\"{release}\" --minimized", _store.Run[AutoStartHelper.AppName]);
     }
 
+    /// <summary>Installing is choosing that copy: the entry a build from source left moves to it, Windows' verdict kept.</summary>
+    [Fact]
+    public void Reconcile_TheInstalledBuild_TakesTheEntryOverFromABuildFromSource()
+    {
+        const string fromSource = @"C:\src\tracker\bin\Release\tracker.exe";
+        const string installed = @"C:\Users\someone\AppData\Local\AdhdTimeOrganizer.Tracker\current\AdhdTimeOrganizer.exe";
+        _existing.Add(fromSource);
+        _existing.Add(installed);
+        _store.Run[AutoStartHelper.AppName] = $"\"{fromSource}\" --minimized";
+        _store.Approved[AutoStartHelper.AppName] = Disabled;
+
+        new AutoStartHelper(_store, installed, _existing.Contains, installed: true).Reconcile();
+
+        Assert.Equal($"\"{installed}\" --minimized", _store.Run[AutoStartHelper.AppName]);
+        Assert.Equal(Disabled, _store.Approved[AutoStartHelper.AppName]);
+    }
+
+    /// <summary>Its own entry, in another case, is not a takeover — nothing is written.</summary>
+    [Fact]
+    public void Reconcile_TheInstalledBuild_LeavesItsOwnEntryAlone()
+    {
+        const string installed = @"C:\Users\someone\AppData\Local\AdhdTimeOrganizer.Tracker\current\AdhdTimeOrganizer.exe";
+        _existing.Add(installed);
+        _existing.Add(installed.ToUpperInvariant()); // the file system is case-insensitive; the stand-in is not
+        var command = $"\"{installed.ToUpperInvariant()}\" --minimized";
+        _store.Run[AutoStartHelper.AppName] = command;
+
+        new AutoStartHelper(_store, installed, _existing.Contains, installed: true).Reconcile();
+
+        Assert.Equal(command, _store.Run[AutoStartHelper.AppName]);
+    }
+
+    /// <summary>The installer deleted the exe or a build folder was cleaned: Windows will start nothing, so it is off.</summary>
+    [Fact]
+    public void AnEntryWhoseExeIsGone_IsOff()
+    {
+        _store.Run[AutoStartHelper.AppName] = @"""C:\gone\tracker.exe"" --minimized";
+
+        Assert.Equal(AutoStartState.Off, Helper().GetState());
+    }
+
+    [Fact]
+    public void Uninstall_RemovesTheEntry_WhenItStartsTheInstalledExe()
+    {
+        _store.Run[AutoStartHelper.AppName] = $"\"{Exe}\" --minimized";
+        _store.Approved[AutoStartHelper.AppName] = Disabled;
+        _store.Run[OtherApp] = OtherAppCommand;
+
+        Helper().RemoveIfOwn();
+
+        Assert.DoesNotContain(AutoStartHelper.AppName, _store.Run.Keys);
+        Assert.DoesNotContain(AutoStartHelper.AppName, _store.Approved.Keys);
+        Assert.Equal(OtherAppCommand, _store.Run[OtherApp]);
+    }
+
+    [Fact]
+    public void Uninstall_LeavesAnEntryThatStartsAnotherBuild()
+    {
+        const string fromSource = @"C:\src\tracker\bin\Release\tracker.exe";
+        _store.Run[AutoStartHelper.AppName] = $"\"{fromSource}\" --minimized";
+
+        Helper().RemoveIfOwn();
+
+        Assert.Equal($"\"{fromSource}\" --minimized", _store.Run[AutoStartHelper.AppName]);
+    }
+
     [Fact]
     public void Reconcile_WithNothingThere_DoesNothing()
     {
@@ -174,6 +240,7 @@ public class AutoStartHelperTests
         helper.Enable();
         helper.Disable();
         helper.Reconcile();
+        helper.RemoveIfOwn();
     }
 
     // ---- reading the command ---------------------------------------------

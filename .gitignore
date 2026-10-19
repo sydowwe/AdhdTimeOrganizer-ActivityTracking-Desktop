@@ -12,6 +12,8 @@ x86/
 bin/
 obj/
 artifacts-cli/
+# scripts/release.ps1: the publish folder, installer and update packages
+artifacts-release/
 logs/
 temp/
 

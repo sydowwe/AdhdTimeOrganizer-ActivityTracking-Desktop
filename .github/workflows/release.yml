@@ -1,0 +1,33 @@
+# Packs and publishes a release when a tag v<version> is pushed; the version must match the csproj's <Version>.
+# See "Releasing" in CLAUDE.md. The upload uses the workflow's own GITHUB_TOKEN — no release token is stored anywhere.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore vpk
+        run: dotnet tool restore
+
+      # The pure suites only: NativeSmokeTests want a signed-in desktop and the wire/vector tests the server repo beside
+      # this one, neither of which a runner has. release.ps1 checks the published files the smoke test would.
+      - name: Test
+        shell: pwsh
+        run: ./scripts/test.ps1 -Class '*AutoStartHelperTests','*ClientVersionHeaderTests','*UpdatePolicyTests','*ActivityRecorderTests','*SendLoopTests','*RefreshPolicyTests'
+
+      - name: Pack and upload
+        shell: pwsh
+        run: ./scripts/release.ps1 -Upload -Token "${{ secrets.GITHUB_TOKEN }}"

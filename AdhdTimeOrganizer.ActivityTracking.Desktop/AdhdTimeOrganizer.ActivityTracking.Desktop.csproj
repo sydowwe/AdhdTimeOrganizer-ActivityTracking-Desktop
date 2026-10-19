@@ -11,6 +11,11 @@
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <ApplicationIcon>timeorganizer-icon.ico</ApplicationIcon>
         <AssemblyName>AdhdTimeOrganizer</AssemblyName>
+        <!--
+            The one version: the tray shows it, every request names it (X-Client-Version), and scripts/release.ps1 packs
+            the installer under it. Raise it for every release — Velopack only offers a higher one. See "Releasing" in CLAUDE.md.
+        -->
+        <Version>1.1.0</Version>
     </PropertyGroup>
 
     <!--
@@ -41,6 +46,8 @@
         <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
         <PackageReference Include="Serilog.Sinks.Debug" Version="3.*" />
         <PackageReference Include="NAudio.Wasapi" Version="2.*" />
+        <!-- Installer and updates: see Services/UpdateService.cs and "Releasing" in CLAUDE.md. -->
+        <PackageReference Include="Velopack" Version="1.2.161" />
         <!-- Foundation holds AppNotifications; the full Microsoft.WindowsAppSDK would add WinUI, AI and ML (~150 MB). -->
         <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="2.3.12" />
         <!-- Only the source of the file extracted below; none of its assets are used. -->

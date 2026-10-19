@@ -1,6 +1,16 @@
 using AdhdTimeOrganizer.ActivityTracking.Desktop;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Helpers;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 using Serilog;
+using Velopack;
+
+// First, before anything else: the installer and the updater start the exe with hook arguments, and Run() handles them
+// and exits. It also applies a downloaded update at start (the "apply at the next start" half of UpdateService).
+// The uninstall hook removes the Run entry if it starts this exe; the data folder (config, outbox, state) is not in the
+// install folder and is left alone, so a reinstall picks up where it stopped.
+VelopackApp.Build()
+    .OnBeforeUninstallFastCallback(_ => AutoStartHelper.Current.RemoveIfOwn())
+    .Run();
 
 Directory.CreateDirectory(Program.LogDirectory);
 

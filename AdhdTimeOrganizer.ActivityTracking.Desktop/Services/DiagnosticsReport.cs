@@ -6,7 +6,7 @@ using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
-/// <param name="AppVersion">The assembly's informational version. 1.0.0 until the tracker gets real versions.</param>
+/// <param name="AppVersion">The assembly's informational version: the csproj's version and the commit it was built from.</param>
 public sealed record DiagnosticsEnvironment(string AppVersion, string Windows, string Architecture)
 {
     public static DiagnosticsEnvironment Current() => new(

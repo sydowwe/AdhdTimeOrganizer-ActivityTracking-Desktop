@@ -12,12 +12,15 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 
 | Path | What lives there |
 |---|---|
-| `Program.cs` | Logging (Serilog → `%LOCALAPPDATA%\AdhdTimeOrganizer\logs`), single-instance mutex, tray startup |
+| `Program.cs` | Velopack's hooks (first line — see "Releasing"), logging (Serilog → `%LOCALAPPDATA%\AdhdTimeOrganizer\logs`), single-instance mutex, tray startup |
 | `TrayApplicationContext.cs` | Tray icon and menu (incl. "Pause for…", the today/now glance and the "map these apps" prompt); pulls status from the tracker on a UI timer |
 | `LoginForm.cs`, `SettingsForm.cs`, `PrivacyForm.cs` | Sign-in (the browser by default; password + 2FA behind "Use a password instead"); settings editor; the user's ignore / hide-title rules and private-window handling |
 | `Services/BrowserSignIn.cs` | **Pure** browser sign-in: PKCE (S256), state, the `/connect/tracker` URL, and whether a request reaching the listener is our redirect |
 | `Services/LoopbackRedirectListener.cs`, `Services/BrowserSignInFlow.cs` | The loopback listener (`TcpListener` on `127.0.0.1`, free port, one redirect, the handler testable on a stream) and the run: listen → open the browser → wait → exchange |
-| `Helpers/AutoStartHelper.cs` | "Start with Windows": the tracker's own `Run` entry (`AdhdTimeOrganizer.ActivityTracking.Desktop` — never `AdhdTimeOrganizer`, which the separate desktop app uses), Windows' `StartupApproved` verdict, repair of a moved exe; the registry sits behind `IAutoStartStore` so tests never touch it |
+| `Helpers/AutoStartHelper.cs` | "Start with Windows": the tracker's own `Run` entry (`AdhdTimeOrganizer.ActivityTracking.Desktop` — never `AdhdTimeOrganizer`, which the separate desktop app uses), Windows' `StartupApproved` verdict, repair of a moved exe, the installed build taking the entry over and the uninstaller removing it; an entry whose exe is gone reads as off; the registry sits behind `IAutoStartStore` so tests never touch it |
+| `Services/AppVersion.cs` | The csproj's `<Version>` and the `X-Client-Version: desktop/<version>` header `ApiClient` puts on every request |
+| `Services/UpdatePolicy.cs`, `Services/UpdateService.cs` | **Pure** update decisions (when to look, the tray's version line and restart item) and the Velopack side: check GitHub Releases, download, hand a waiting release to the updater |
+| `scripts/release.ps1`, `.github/workflows/release.yml` | Publish self-contained, check the files, `vpk pack` (and upload on a `v*` tag) — see "Releasing" |
 | `Services/ActivityTrackerService.cs` | Poll loop (foreground changes as they happen, plus a poll for the rest of the desktop), send loop (drains the outbox), lock/suspend/session-end handling |
 | `Services/ActivityRecorder.cs` | **Pure** minute accounting: measured elapsed time, split at minute boundaries, gap cap, switch counts, the hold-back that idle backdating retracts from |
 | `Services/ScreenState.cs` | **Pure** "what is on screen now": which observations a span is credited to, what counts as a switch, when idleness starts a backdate |
@@ -79,6 +82,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   ≤ 120 switches per entry (clamped, not refused).
   When the server's `DesktopActivityHeartbeatValidator` or `TrackingIngestLimits` change, change
   `WindowLimits` with them.
+- **Every request names the build**: `X-Client-Version: desktop/<csproj Version>`, set once on the `HttpClient`
+  (`AppVersion`). The server keeps the last one per tracker kind with "last seen" and calls a silent tracker "out of date"
+  below its configured minimum. Keep the `desktop/` prefix and a plain SemVer after it — the server parses it.
 - **Never send null or a blank title.** Missing product names and paths go out as `""`, and an untitled
   window takes its product or process name (`ActivityRecorder`). The current server accepts nulls, but
   servers from before 2026-10-18 answer a null with a 500 and a blank title with a 400, and a user's
@@ -321,6 +327,51 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   file open, so the tail is read with `FileShare.ReadWrite`.
 - The refresh token is DPAPI-encrypted in `config.json` (`ProtectedRefreshToken`). Never write it in plain
   text.
+
+## Releasing
+
+The tracker is distributed with **Velopack**: a `Setup.exe` that installs per user without admin rights, and quiet
+updates from this repo's **GitHub Releases** (public, so no token ships in the app).
+
+**Cutting a release.**
+1. Raise `<Version>` in the app's csproj (SemVer; Velopack only ever offers a higher version).
+2. Commit, then tag `v<version>` and push the tag. `.github/workflows/release.yml` runs the pure tests and
+   `scripts/release.ps1 -Upload` with the workflow's own `GITHUB_TOKEN`. The script refuses a tag that disagrees with the csproj.
+3. Deploy the server first if the release relies on a server change (as with the refresh recovery above).
+4. To make the server's tracker-silence notification say "out of date" for older builds, raise
+   `TrackerMinimumClientVersion:Desktop` in its config. It is advisory only: nothing is refused.
+
+Locally: `dotnet tool restore` (vpk, pinned to the Velopack package's version in `.config/dotnet-tools.json`), then
+`./scripts/release.ps1`. Output goes to `artifacts-release/` (gitignored). **Never commit a signing certificate, its password
+or a release token.** Releases are unsigned today: SmartScreen warns once, on the downloaded `Setup.exe` ("More info → Run
+anyway"). Updates are fetched by Velopack's updater, not a browser, so they carry no Mark of the Web and don't warn.
+
+**What the installer must not break** — each of these fails without an error:
+- **The install folder is not the data folder.** The package id is `AdhdTimeOrganizer.Tracker`, so it installs to
+  `%LocalAppData%\AdhdTimeOrganizer.Tracker\` (`current\` holds the app, `Update.exe` beside it). An uninstall deletes that
+  folder whole. Config, outbox and state stay in `%LocalAppData%\AdhdTimeOrganizer.ActivityTracking.Desktop\` and the logs in
+  `%LocalAppData%\AdhdTimeOrganizer\logs`, so an uninstall keeps unsent minutes and a reinstall resumes. Never give the
+  package either of those names.
+- **The `Run` entry follows the exe.** `current\AdhdTimeOrganizer.exe` keeps its path across updates, so updates never touch
+  the entry. The installed build takes the entry over from a build run from source at start (`AutoStartHelper.Reconcile`).
+  A build from source never moves an entry whose exe exists. The uninstall hook removes the entry if it starts the
+  installed exe (`RemoveIfOwn`).
+- **An update goes through the normal exit.** A downloaded release applies at the next start (`VelopackApp.Run()`, first line
+  of `Program.cs`). "Restart to update" in the tray calls `WaitExitThenApplyUpdates` — the updater waits for this process —
+  and then the ordinary exit: flush, toasts removed, notifications unregistered, mutex released. Never use
+  `ApplyUpdatesAndRestart`: it ends the process itself and skips all of that.
+- **The published folder must hold the Windows App SDK runtime, the extracted Insights dll and the icon file.**
+  `release.ps1` checks them after `dotnet publish` (self-contained: .NET and the Windows App SDK both travel with the app,
+  about 165 MB before compression). `NativeSmokeTests` checks the same dll in a build.
+- **Uninstall while the tracker runs** may end it without a flush (Velopack stops processes in the install folder). The
+  minute in progress is lost, nothing queued is.
+
+**Updates are one-way.** The first run of a newer build may migrate what it saved (the plain-text refresh token became
+DPAPI-protected that way), and an older build can't read the migrated form: going back means signing in again. Velopack
+doesn't offer a lower version anyway; to roll back, release a higher version with the old code.
+
+A build run from `bin/` or `artifacts-cli/` is not installed: it never checks for updates, and its tray line says
+"built from source, no updates".
 
 ## Shell
 

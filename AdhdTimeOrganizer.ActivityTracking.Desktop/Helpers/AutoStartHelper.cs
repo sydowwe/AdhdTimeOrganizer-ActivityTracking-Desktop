@@ -1,3 +1,4 @@
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 using Microsoft.Win32;
 using Serilog;
 
@@ -46,6 +47,13 @@ internal interface IAutoStartStore
 /// <c>DesktopActivityTracker</c>, is left over on machines that ran an older build; <see cref="Reconcile"/> removes it.
 /// Neither of the other two names is ever written or deleted by this class except that one.
 /// </para>
+/// <para>
+/// <b>Installed or built.</b> An installed build (Velopack, <c>%LocalAppData%\AdhdTimeOrganizer.Tracker\current\</c>) runs
+/// from a path that stays the same across updates, so its entry never needs rewriting on an update. It does take the entry
+/// over from a build run from source: installing is the user choosing that copy. A build from source still never moves
+/// an entry whose exe exists, the installed one's included. The uninstaller removes the entry if it is the installed
+/// build's (<see cref="RemoveIfOwn"/>), so Windows is not left starting a deleted file.
+/// </para>
 /// </remarks>
 public sealed class AutoStartHelper
 {
@@ -55,25 +63,31 @@ public sealed class AutoStartHelper
     /// <summary>What Windows writes for "enabled": state 2, then no disable time.</summary>
     private static readonly byte[] EnabledMarker = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-    public static AutoStartHelper Current { get; } = new(new RegistryAutoStartStore(), Environment.ProcessPath, File.Exists);
+    public static AutoStartHelper Current { get; } =
+        new(new RegistryAutoStartStore(), Environment.ProcessPath, File.Exists, UpdateService.IsInstalled);
 
     private readonly IAutoStartStore _store;
     private readonly string? _exePath;
     private readonly Func<string, bool> _fileExists;
+    private readonly bool _installed;
     private readonly ILogger _log = Log.ForContext<AutoStartHelper>();
 
-    internal AutoStartHelper(IAutoStartStore store, string? exePath, Func<string, bool> fileExists)
+    /// <param name="installed">This process is the installed build, not one run from a build folder.</param>
+    internal AutoStartHelper(IAutoStartStore store, string? exePath, Func<string, bool> fileExists, bool installed = false)
     {
         _store = store;
         _exePath = exePath;
         _fileExists = fileExists;
+        _installed = installed;
     }
 
+    /// <summary>An entry whose exe is gone is off: Windows will start nothing.</summary>
     public AutoStartState GetState()
     {
         try
         {
-            if (_store.GetRunValue(AppName) is null) return AutoStartState.Off;
+            if (_store.GetRunValue(AppName) is not { } command) return AutoStartState.Off;
+            if (ExecutablePath(command) is not { } target || !_fileExists(target)) return AutoStartState.Off;
             return IsDisabled(_store.GetApproved(AppName)) ? AutoStartState.DisabledInWindows : AutoStartState.On;
         }
         catch (Exception ex)
@@ -121,7 +135,8 @@ public sealed class AutoStartHelper
     /// <summary>
     /// At start: carries the pre-rename entry over and removes it, and repoints an entry whose exe is gone at this one.
     /// An entry whose exe still exists is left alone even if it is another build's — a Debug run from the IDE must not
-    /// redirect a Release autostart — and so is Windows' verdict on it.
+    /// redirect a Release autostart — unless this is the installed build, which takes it over. Windows' verdict on the
+    /// entry is never touched.
     /// </summary>
     public void Reconcile()
     {
@@ -137,13 +152,18 @@ public sealed class AutoStartHelper
                 if (wasOn && _store.GetRunValue(AppName) is null) Enable();
             }
 
-            if (_exePath is not null
-                && _store.GetRunValue(AppName) is { } command
-                && ExecutablePath(command) is { } target
-                && !_fileExists(target))
+            if (_exePath is null || _store.GetRunValue(AppName) is not { } command || ExecutablePath(command) is not { } target)
+                return;
+
+            if (!_fileExists(target))
             {
                 _store.SetRunValue(AppName, Command(_exePath));
                 _log.Information("The autostart entry pointed at a file that no longer exists — repointed at this one");
+            }
+            else if (_installed && !SamePath(target, _exePath))
+            {
+                _store.SetRunValue(AppName, Command(_exePath));
+                _log.Information("The autostart entry pointed at a build run from source — the installed build took it over");
             }
         }
         catch (Exception ex)
@@ -151,6 +171,29 @@ public sealed class AutoStartHelper
             _log.Warning(ex, "Could not reconcile the autostart entry");
         }
     }
+
+    /// <summary>
+    /// The uninstaller's hook: removes the entry, and Windows' verdict on it, when it starts this exe — the file is about
+    /// to be deleted. An entry pointing at a build from source is that build's and stays.
+    /// </summary>
+    public void RemoveIfOwn()
+    {
+        try
+        {
+            if (_exePath is null || _store.GetRunValue(AppName) is not { } command) return;
+            if (ExecutablePath(command) is not { } target || !SamePath(target, _exePath)) return;
+
+            _store.DeleteRunValue(AppName);
+            _store.DeleteApproved(AppName);
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Could not remove the autostart entry on uninstall");
+        }
+    }
+
+    private static bool SamePath(string a, string b) =>
+        string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
 
     private static string Command(string exePath) => $"\"{exePath}\" --minimized";
 

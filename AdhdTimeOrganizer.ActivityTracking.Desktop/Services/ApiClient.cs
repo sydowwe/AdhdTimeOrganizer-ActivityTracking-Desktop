@@ -84,7 +84,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     /// </summary>
     internal static readonly TimeSpan ExitGrace = TimeSpan.FromSeconds(3);
 
-    private readonly HttpClient _http = new(handler ?? new HttpClientHandler()) { Timeout = TimeSpan.FromSeconds(30) };
+    private readonly HttpClient _http = CreateHttpClient(handler);
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private readonly ILogger _log = Log.ForContext<ApiClient>();
@@ -98,6 +98,17 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     /// server refuses the refresh token, or on sign-out.
     /// </summary>
     public bool HasSession => !string.IsNullOrEmpty(config.RefreshToken);
+
+    /// <summary>
+    /// The version goes on <c>DefaultRequestHeaders</c>, unlike the bearer token: it is set once, here, before any request
+    /// exists, and never changes — so every request names the build, sign-in and refresh included (<see cref="AppVersion"/>).
+    /// </summary>
+    private static HttpClient CreateHttpClient(HttpMessageHandler? handler)
+    {
+        var http = new HttpClient(handler ?? new HttpClientHandler()) { Timeout = TimeSpan.FromSeconds(30) };
+        http.DefaultRequestHeaders.TryAddWithoutValidation(AppVersion.HeaderName, AppVersion.Header);
+        return http;
+    }
 
     /// <summary>
     /// Authenticate with email and password.

@@ -31,6 +31,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ApiClient _apiClient;
     private readonly NudgeService _nudges;
     private readonly ActivityTrackerService _tracker;
+    private readonly UpdateService _updates = new();
     private readonly System.Windows.Forms.Timer _statusTimer;
 
     private readonly ToolStripMenuItem _glanceItem;
@@ -39,6 +40,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _toggleItem;
     private readonly ToolStripMenuItem _autoStartItem;
     private readonly ToolStripMenuItem _signInOutItem;
+    private readonly ToolStripMenuItem _updateItem;
 
     private bool _isInitializing = true;
 
@@ -76,6 +78,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _autoStartItem = new ToolStripMenuItem("Start with Windows", null, OnToggleAutoStart) { CheckOnClick = true };
         RefreshAutoStartItem();
         _signInOutItem = new ToolStripMenuItem("Sign in…", null, OnSignInOut);
+        // Hidden until a downloaded release waits; it would apply at the next start anyway.
+        _updateItem = new ToolStripMenuItem("Restart to update", null, OnRestartToUpdate) { Visible = false };
 
         var contextMenu = new ContextMenuStrip();
         // Windows' own startup settings can change it while the tracker runs.
@@ -104,6 +108,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         contextMenu.Items.Add(testNudge);
 #endif
         contextMenu.Items.Add(new ToolStripSeparator());
+        contextMenu.Items.Add(new ToolStripMenuItem(UpdatePolicy.VersionText(AppVersion.Current, UpdateService.IsInstalled)) { Enabled = false });
+        contextMenu.Items.Add(_updateItem);
         contextMenu.Items.Add("Exit", null, OnExit);
 
         using var iconStream = typeof(TrayApplicationContext).Assembly
@@ -130,6 +136,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _statusTimer.Tick += (_, _) => RefreshStatus();
         _statusTimer.Start();
 
+        _updates.Start();
         _ = InitializeAsync();
     }
 
@@ -206,6 +213,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         _trayIcon.Text = Truncate($"{glance}\n{text}", MaxTrayTextLength);
         _toggleItem.Text = status.IsRunning ? "Pause Tracking" : status.PausedUntilUtc is not null ? "Resume Tracking" : "Start Tracking";
         _signInOutItem.Text = hasSession ? "Sign out" : "Sign in…";
+
+        var restart = UpdatePolicy.RestartText(_updates.PendingVersion);
+        _updateItem.Visible = restart is not null;
+        if (restart is not null) _updateItem.Text = restart;
 
         RefreshMappingPrompt(status.Coverage);
     }
@@ -468,9 +479,20 @@ public sealed class TrayApplicationContext : ApplicationContext
         ShowLogin();
     }
 
+    /// <summary>
+    /// The updater is started first and waits for this process to end; then the ordinary exit runs, so the update costs
+    /// nothing the Exit item wouldn't (see <see cref="UpdateService"/>). If the updater can't start, nothing exits.
+    /// </summary>
+    private void OnRestartToUpdate(object? sender, EventArgs e)
+    {
+        if (_updates.PrepareRestart())
+            OnExit(sender, e);
+    }
+
     private void OnExit(object? sender, EventArgs e)
     {
         _statusTimer.Stop();
+        _updates.Dispose();
         _tracker.Dispose(); // flushes the minute in progress to the outbox
         _nudges.Dispose();  // after the poll loop, which feeds it; clears its toasts
         _apiClient.Dispose();
