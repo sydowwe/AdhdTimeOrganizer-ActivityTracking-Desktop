@@ -26,6 +26,7 @@ public sealed class SettingsForm : Form
     private readonly CheckBox _driftEnabledBox;
     private readonly NumericUpDown _driftAfterBox;
     private readonly CheckBox _uploadNoticesBox;
+    private readonly CheckBox _unmappedReviewBox;
     private readonly Label _errorLabel;
 
     public SettingsForm(AppConfig config)
@@ -97,6 +98,10 @@ public sealed class SettingsForm : Form
         _uploadNoticesBox = new CheckBox { Text = "On", Checked = config.UploadNoticesEnabled, AutoSize = true };
         AddRow(layout, "Upload problem notices:", _uploadNoticesBox,
             "When your session ended, uploads have been stuck for a day, or the server refused minutes. Not a nudge: the quiet conditions don't apply.");
+
+        _unmappedReviewBox = new CheckBox { Text = "On", Checked = config.UnmappedReviewEnabled, AutoSize = true };
+        AddRow(layout, "Evening review of unmapped time:", _unmappedReviewBox,
+            "At your evening-shutdown time: one notice with how much of today on this PC no rule maps, if it is worth a look. Needs no drift nudges.");
 
         var ignoreRulesLink = new LinkLabel { Text = "Ignore rules and private windows…", AutoSize = true };
         ignoreRulesLink.LinkClicked += OnEditPrivacy;
@@ -175,6 +180,7 @@ public sealed class SettingsForm : Form
         _config.DriftNudgesEnabled = _driftEnabledBox.Checked;
         _config.DriftNudgeMinutes = (int)_driftAfterBox.Value;
         _config.UploadNoticesEnabled = _uploadNoticesBox.Checked;
+        _config.UnmappedReviewEnabled = _unmappedReviewBox.Checked;
 
         DialogResult = DialogResult.OK;
         Close();

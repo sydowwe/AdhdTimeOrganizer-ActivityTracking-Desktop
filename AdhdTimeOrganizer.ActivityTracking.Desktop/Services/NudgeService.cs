@@ -36,6 +36,9 @@ public sealed class NudgeService : IDisposable
     /// <summary>"Switch plan" opens today's planner.</summary>
     internal const string PlannerPath = "/day-planner";
 
+    /// <summary>"Review" opens the distinct-entries grid on what today left unmapped, busiest first (the page reads <c>today</c>).</summary>
+    internal const string UnmappedReviewPath = "/activity-tracking/desktop/settings/distinctEntries?coverage=Uncovered&today=true";
+
     public static string DefaultDriftStatePath { get; } = Path.Combine(AppConfig.ConfigDirectory, "drift.json");
 
     private readonly AppConfig _config;
@@ -167,6 +170,23 @@ public sealed class NudgeService : IDisposable
         }
     }
 
+    /// <summary>
+    /// The evening invite to map today's unmapped time, from <see cref="UnmappedReviewService"/> on the send loop's thread.
+    /// Not a nudge: no quiet conditions (Windows holds toasts itself) and no pause of its own to honour — the service
+    /// already stayed quiet while tracking was paused.
+    /// </summary>
+    public void ShowUnmappedReview(UnmappedInvite invite)
+    {
+        try
+        {
+            _notifier.Show(new Nudge(1, NudgeKind.UnmappedReview, invite.Unmapped, null, Review: invite));
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Evening review invite failed");
+        }
+    }
+
     public NudgeStatus GetStatus()
     {
         lock (_lock) return _policy.GetStatus(DateTime.UtcNow);
@@ -182,6 +202,8 @@ public sealed class NudgeService : IDisposable
                 NudgeKind.Drift => _drift.IssueForTest(DateTime.UtcNow),
                 NudgeKind.UploadHealth => new Nudge(1, kind, TimeSpan.FromHours(26), null,
                     Upload: new UploadNotice(UploadProblem.Stalled, 90, TimeSpan.FromHours(26), 0)),
+                NudgeKind.UnmappedReview => new Nudge(1, kind, TimeSpan.FromMinutes(130), null, Review: new UnmappedInvite(
+                    TimeSpan.FromMinutes(130), [new InviteApp("Discord", TimeSpan.FromMinutes(50), false), new InviteApp("Chrome", TimeSpan.FromMinutes(30), true)], 1)),
                 _ => _policy.IssueForTest(kind, DateTime.UtcNow)
             };
         _notifier.Show(nudge);
@@ -306,6 +328,12 @@ public sealed class NudgeService : IDisposable
                 return;
             }
 
+            if (activation.Kind == NudgeKind.UnmappedReview)
+            {
+                HandleReviewResponse(activation.Response);
+                return;
+            }
+
             var isDrift = activation.Kind == NudgeKind.Drift;
             if (activation.Response == NudgeResponse.TurnOff)
                 TurnOff(isDrift);
@@ -354,6 +382,28 @@ public sealed class NudgeService : IDisposable
                 _log.Information("Upload notices turned off from a notice");
                 break;
         }
+    }
+
+    /// <summary>
+    /// The evening invite has no state to answer to — the evening was marked handled when it was shown — so either button
+    /// just closes the toast, and "Review" first opens the page. Turning the invite off is a Settings switch.
+    /// </summary>
+    private void HandleReviewResponse(NudgeResponse response)
+    {
+        if (response == NudgeResponse.Review)
+        {
+            try
+            {
+                _openInBrowser(_config.WebAppUri(UnmappedReviewPath));
+            }
+            catch (Exception ex)
+            {
+                _log.Warning(ex, "Could not open the evening review");
+            }
+        }
+
+        _notifier.Remove(NudgeKind.UnmappedReview);
+        _log.Information("Evening review answered: {Response}", response);
     }
 
     /// <summary>"Turn off" switches off the kind it was pressed on: a drift toast doesn't silence hyperfocus nudges.</summary>

@@ -148,6 +148,14 @@ public sealed class AppConfig
     /// </summary>
     public bool UploadNoticesEnabled { get; set; } = true;
 
+    // ── Evening review (see UnmappedReviewPolicy) ─────────────────────────────
+
+    /// <summary>
+    /// One toast at the user's evening: how much of today on this PC no rule maps, and the top two apps, with a button
+    /// that opens the page to map them. On by default — it is how coverage grows — and independent of drift nudges.
+    /// </summary>
+    public bool UnmappedReviewEnabled { get; set; } = true;
+
     // ── Privacy (see PrivacyFilter) ───────────────────────────────────────────
 
     /// <summary>Firefox Private Browsing and Edge InPrivate windows are handled like a hide-title rule.</summary>

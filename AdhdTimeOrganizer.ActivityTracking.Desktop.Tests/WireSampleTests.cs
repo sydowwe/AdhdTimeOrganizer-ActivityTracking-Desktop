@@ -62,10 +62,35 @@ public class WireSampleTests
             coverage.Uncovered.Select(a => (a.ProcessName, a.ProductName, a.ActiveSeconds)));
     }
 
+    [Fact]
+    public void TheUnmappedSample_ReadsThroughTheAgentsModels()
+    {
+        var unmapped = Samples.Value["unmapped"]!.Deserialize<UnmappedToday>();
+
+        Assert.NotNull(unmapped);
+        Assert.Equal(("2026-10-19", 21600L, 7800L), (unmapped.Date, unmapped.TrackedSeconds, unmapped.UnmappedSeconds));
+        Assert.Equal(new[] { ("discord", "Discord", 3000L, false), ("chrome", "Google Chrome", 1800L, true) },
+            unmapped.Apps.Select(a => (a.ProcessName, a.ProductName, a.ActiveSeconds, a.IsBrowser)));
+    }
+
+    /// <summary>A moment read as <see cref="DateTime.MinValue"/> would put the evening in the year 1: an invite at every start.</summary>
+    [Fact]
+    public void TheEveningMomentSample_ReadsThroughTheAgentsModels()
+    {
+        var moment = Samples.Value["eveningMoment"]!.Deserialize<EveningMoment>();
+
+        Assert.NotNull(moment);
+        Assert.True(moment.Enabled);
+        Assert.Equal(new DateTime(2026, 10, 19, 20, 30, 0, DateTimeKind.Utc), moment.MomentUtc);
+        Assert.Equal(DateTimeKind.Utc, moment.MomentUtc.Kind);
+    }
+
     /// <summary>A field the server sends and the agent's model has no member for is a field the agent can never read.</summary>
     [Theory]
     [InlineData("heartbeat", typeof(HeartbeatResponse))]
     [InlineData("coverage", typeof(AgentCoverage))]
+    [InlineData("unmapped", typeof(UnmappedToday))]
+    [InlineData("eveningMoment", typeof(EveningMoment))]
     public void TheAgentsModels_HaveEveryFieldTheServerSends(string sample, Type model)
     {
         var node = Samples.Value[sample]!;

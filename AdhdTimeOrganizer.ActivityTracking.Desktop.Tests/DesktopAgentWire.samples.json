@@ -19,5 +19,15 @@
       { "processName": "slack", "productName": "Slack", "activeSeconds": 9000 },
       { "processName": "chrome", "productName": "Google Chrome", "activeSeconds": 5400 }
     ]
-  }
+  },
+  "unmapped": {
+    "date": "2026-10-19",
+    "trackedSeconds": 21600,
+    "unmappedSeconds": 7800,
+    "apps": [
+      { "processName": "discord", "productName": "Discord", "activeSeconds": 3000, "isBrowser": false },
+      { "processName": "chrome", "productName": "Google Chrome", "activeSeconds": 1800, "isBrowser": true }
+    ]
+  },
+  "eveningMoment": { "enabled": true, "momentUtc": "2026-10-19T20:30:00Z" }
 }

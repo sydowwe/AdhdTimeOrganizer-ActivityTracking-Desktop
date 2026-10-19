@@ -51,6 +51,12 @@ internal static class NudgeToast
                 : Button("Open log folder", nudge, NudgeResponse.OpenLogs));
             builder.AddButton(Button("Turn off these notices", nudge, NudgeResponse.TurnOff));
         }
+        else if (nudge.Kind == NudgeKind.UnmappedReview)
+        {
+            builder.SetDuration(AppNotificationDuration.Long)
+                .AddButton(Button("Review", nudge, NudgeResponse.Review))
+                .AddButton(Button("Not today", nudge, NudgeResponse.NotToday));
+        }
         else
         {
             builder.SetDuration(AppNotificationDuration.Long)
@@ -87,6 +93,7 @@ internal static class NudgeToast
             ($"Planned: {drift.PlannedName} (until {TimeZoneInfo.ConvertTimeFromUtc(drift.PlannedEndsUtc, TimeZoneInfo.Local):HH:mm})",
                 $"Last {FormatLength(nudge.Length)}: {nudge.AppName}."),
         NudgeKind.UploadHealth when nudge.Upload is { } upload => UploadText(upload),
+        NudgeKind.UnmappedReview when nudge.Review is { } review => UnmappedReviewPolicy.Text(review),
         _ => ("Break's over", $"That was {FormatLength(nudge.Length)}. Ready to get back to it?")
     };
 

@@ -69,6 +69,7 @@ public sealed class ActivityTrackerService : IDisposable
     private readonly ActivityRecorder _recorder;
     private readonly PrivacyFilter _privacy = new();      // poll loop only
     private readonly AgentRules _agentRules = new();      // filtered on the send loop only
+    private readonly UnmappedReviewService _review;       // ticked on the send loop only
 
     private readonly CancellationTokenSource _lifetimeCts = new();
     private readonly SemaphoreSlim _sendSignal = new(0, 1);
@@ -92,17 +93,20 @@ public sealed class ActivityTrackerService : IDisposable
 
     public ActivityTrackerService(AppConfig config, ApiClient apiClient, NudgeService? nudges)
         : this(config, apiClient, new OutboxStore(OutboxStore.DefaultDirectory, OutboxRetention),
-            new TodayTotal(TodayTotal.DefaultPath, TimeZoneInfo.Local), nudges)
+            new TodayTotal(TodayTotal.DefaultPath, TimeZoneInfo.Local), nudges, new UnmappedReviewStore(UnmappedReviewStore.DefaultPath))
     {
     }
 
-    public ActivityTrackerService(AppConfig config, ApiClient apiClient, OutboxStore outbox, TodayTotal today, NudgeService? nudges = null)
+    /// <param name="reviewStore">Where the last handled evening is kept; null keeps it in memory, which is what tests want.</param>
+    public ActivityTrackerService(AppConfig config, ApiClient apiClient, OutboxStore outbox, TodayTotal today, NudgeService? nudges = null,
+        UnmappedReviewStore? reviewStore = null)
     {
         _config = config;
         _apiClient = apiClient;
         _outbox = outbox;
         _today = today;
         _nudges = nudges;
+        _review = new UnmappedReviewService(config, apiClient, reviewStore ?? new UnmappedReviewStore(), invite => nudges?.ShowUnmappedReview(invite), IsPaused);
         var maxCreditedGap = MaxCreditedGapFor(PollInterval);
         _recorder = new ActivityRecorder(maxCreditedGap, HoldBackFor(maxCreditedGap));
 
@@ -220,6 +224,7 @@ public sealed class ActivityTrackerService : IDisposable
         _coverage = null;
         _coverageCheckedUtc = DateTime.MinValue;
         _coverageNotSupported = false;
+        _review.Forget();
     }
 
     /// <summary>Wakes the send loop now instead of at its next interval — after signing in, for example.</summary>
@@ -614,6 +619,16 @@ public sealed class ActivityTrackerService : IDisposable
             catch (Exception ex)
             {
                 _log.Error(ex, "Mapping coverage refresh failed");
+            }
+
+            try
+            {
+                await _review.TickAsync(DateTime.UtcNow, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                _log.Error(ex, "Evening review failed");
             }
 
             try { await _sendSignal.WaitAsync(SendInterval, ct); }

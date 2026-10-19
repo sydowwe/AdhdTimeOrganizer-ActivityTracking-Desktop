@@ -102,3 +102,52 @@ public sealed record UncoveredApp
     [JsonPropertyName("activeSeconds")]
     public int ActiveSeconds { get; init; }
 }
+
+/// <summary>
+/// <c>GET /api/activity-tracking/desktop/agent-unmapped</c>: today's desktop time no active rule maps, for the evening
+/// invite. <see cref="Apps"/> empty is the server saying "don't ask" — its thresholds, not this agent's.
+/// </summary>
+public sealed record UnmappedToday
+{
+    [JsonPropertyName("date")]
+    public string Date { get; init; } = "";
+
+    [JsonPropertyName("trackedSeconds")]
+    public long TrackedSeconds { get; init; }
+
+    [JsonPropertyName("unmappedSeconds")]
+    public long UnmappedSeconds { get; init; }
+
+    [JsonPropertyName("apps")]
+    public List<UnmappedApp> Apps { get; init; } = [];
+}
+
+public sealed record UnmappedApp
+{
+    [JsonPropertyName("processName")]
+    public string ProcessName { get; init; } = "";
+
+    /// <summary>The label to show; the process name when the server had none.</summary>
+    [JsonPropertyName("productName")]
+    public string ProductName { get; init; } = "";
+
+    [JsonPropertyName("activeSeconds")]
+    public long ActiveSeconds { get; init; }
+
+    /// <summary>A browser: one process, many pages, so the review is about title rules, not a process rule.</summary>
+    [JsonPropertyName("isBrowser")]
+    public bool IsBrowser { get; init; }
+}
+
+/// <summary>
+/// <c>GET /api/user/evening-shutdown-moment</c>: the instant of the user's next evening, the one the phone's review also
+/// uses. <see cref="Enabled"/> is whether the evening-shutdown push is on, which this agent does not depend on.
+/// </summary>
+public sealed record EveningMoment
+{
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; init; }
+
+    [JsonPropertyName("momentUtc")]
+    public DateTime MomentUtc { get; init; }
+}

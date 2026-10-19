@@ -51,6 +51,9 @@ public enum CoverageFetch
 
 public sealed record CoverageResult(CoverageFetch Status, AgentCoverage? Coverage = null);
 
+/// <summary>An answer the agent only reads (<see cref="CoverageFetch"/> says how the read went); the value is set only when fetched.</summary>
+public sealed record AgentRead<T>(CoverageFetch Status, T? Value = default) where T : class;
+
 /// <param name="PendingAuthToken">Set with <see cref="LoginStatus.TwoFactorRequired"/>; goes back with the code.</param>
 /// <param name="Message">What to tell the user when it did not work.</param>
 public sealed record LoginOutcome(LoginStatus Status, string? PendingAuthToken = null, string? Message = null);
@@ -70,6 +73,8 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     private const string HeartbeatPath = "/api/activity-tracking/desktop/heartbeat";
     private const string AgentRulesPath = "/api/activity-tracking/desktop/agent-rules";
     private const string AgentCoveragePath = "/api/activity-tracking/desktop/agent-coverage";
+    private const string AgentUnmappedPath = "/api/activity-tracking/desktop/agent-unmapped";
+    private const string EveningMomentPath = "/api/user/evening-shutdown-moment";
 
     /// <summary>
     /// How long a refresh already sent may still finish after its caller was cancelled — an exit, a session end.
@@ -321,22 +326,50 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     /// </summary>
     public async Task<CoverageResult> FetchCoverageAsync(CancellationToken ct)
     {
-        if (!HasSession) return new CoverageResult(CoverageFetch.Unavailable);
+        var (status, coverage) = await GetAgentJsonAsync<AgentCoverage>(AgentCoveragePath, "Mapping coverage", ct);
+        return new CoverageResult(status, coverage);
+    }
+
+    /// <summary>
+    /// Today's unmapped time on this PC, the evening invite's figures. A 404 is a server that predates the route; an
+    /// empty <see cref="UnmappedToday.Apps"/> is the server's "don't ask".
+    /// </summary>
+    public async Task<AgentRead<UnmappedToday>> FetchUnmappedTodayAsync(CancellationToken ct)
+    {
+        var (status, value) = await GetAgentJsonAsync<UnmappedToday>(AgentUnmappedPath, "Unmapped time", ct);
+        return new AgentRead<UnmappedToday>(status, value);
+    }
+
+    /// <summary>The instant of the user's next evening — the server's, shared with the phone's review. A 404 is an older server.</summary>
+    public async Task<AgentRead<EveningMoment>> FetchEveningMomentAsync(CancellationToken ct)
+    {
+        var (status, value) = await GetAgentJsonAsync<EveningMoment>(EveningMomentPath, "Evening moment", ct);
+        return new AgentRead<EveningMoment>(status, value);
+    }
+
+    /// <summary>
+    /// One authorized GET of a server answer the agent only reads. Never throws but for the caller's cancellation: a
+    /// failure is <see cref="CoverageFetch.Unavailable"/>, "try again later", and a 404 is
+    /// <see cref="CoverageFetch.NotSupported"/>, a server from before the route. <paramref name="what"/> is for the log.
+    /// </summary>
+    private async Task<(CoverageFetch Status, T? Value)> GetAgentJsonAsync<T>(string path, string what, CancellationToken ct)
+    {
+        if (!HasSession) return (CoverageFetch.Unavailable, default);
 
         try
         {
-            var (response, _) = await SendAuthorizedAsync(() => new HttpRequestMessage(HttpMethod.Get, BuildUri(AgentCoveragePath)), ct);
-            if (response is null) return new CoverageResult(CoverageFetch.Unavailable);
+            var (response, _) = await SendAuthorizedAsync(() => new HttpRequestMessage(HttpMethod.Get, BuildUri(path)), ct);
+            if (response is null) return (CoverageFetch.Unavailable, default);
             using var owned = response;
 
-            if (response.StatusCode == HttpStatusCode.NotFound) return new CoverageResult(CoverageFetch.NotSupported);
+            if (response.StatusCode == HttpStatusCode.NotFound) return (CoverageFetch.NotSupported, default);
             if (response.StatusCode != HttpStatusCode.OK)
             {
-                _log.Warning("Mapping coverage answered {StatusCode}", (int)response.StatusCode);
-                return new CoverageResult(CoverageFetch.Unavailable);
+                _log.Warning("{What} answered {StatusCode}", what, (int)response.StatusCode);
+                return (CoverageFetch.Unavailable, default);
             }
 
-            return new CoverageResult(CoverageFetch.Fetched, await response.Content.ReadFromJsonAsync<AgentCoverage>(ct));
+            return (CoverageFetch.Fetched, await response.Content.ReadFromJsonAsync<T>(ct));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -344,8 +377,8 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
         }
         catch (Exception ex)
         {
-            _log.Warning(ex, "Mapping coverage download failed — will retry");
-            return new CoverageResult(CoverageFetch.Unavailable);
+            _log.Warning(ex, "{What} download failed — will retry", what);
+            return (CoverageFetch.Unavailable, default);
         }
     }
 

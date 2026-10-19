@@ -31,11 +31,13 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/HyperfocusPolicy.cs` | **Pure** nudge decisions: stretches, breaks, app stretches, snooze / repeat / "not now", the break timer |
 | `Services/DriftPolicy.cs` | **Pure** drift-nudge decisions over the server's per-minute plan verdicts (`MinuteVerdict`) |
 | `Services/UploadHealthPolicy.cs` | **Pure** "is tracked time arriving?" decisions: signed out, stalled a day, windows the server refused → show / withdraw a notice |
+| `Services/UnmappedReviewPolicy.cs` | **Pure** evening-invite decisions: is the evening due / missed / handled, the invite's text from the server's answer; plus `UnmappedReviewStore` (the last handled evening, `unmapped-review.json`) |
+| `Services/UnmappedReviewService.cs` | The send loop's evening tick: holds the server's evening moment, asks the server for today's unmapped time when it comes, hands the invite on |
 | `Services/DiagnosticsReport.cs` | **Pure** text of the tray's "Copy diagnostics" (state, settings as counts, scrubbed log tail) and the log-tail reader |
 | `Services/NudgeService.cs` | Feeds polls to the policy, checks quiet conditions, shows and withdraws toasts, handles button presses |
 | `Services/NudgeNotifier.cs`, `NudgeToast.cs` | Windows App SDK notifications: registration, toast text and buttons, parsing a press |
 | `Native/` | P/Invoke (`Win32`, `MonitorHelper`), `ProcessInfoCache`, `AudioSessionHelper` (NAudio), `MicrophoneUsage` (registry: whether, and which apps), `ForegroundEvents` (the WinEvent hook) |
-| `Models/` | Wire models (`ActivityModels.cs`, `AgentRule.cs`, `ServerResolution.cs` — the heartbeat's answer and the coverage) and `AppConfig` (`%LOCALAPPDATA%\…Desktop\config.json`) |
+| `Models/` | Wire models (`ActivityModels.cs`, `AgentRule.cs`, `ServerResolution.cs` — the heartbeat's answer, the coverage, today's unmapped time and the evening moment) and `AppConfig` (`%LOCALAPPDATA%\…Desktop\config.json`) |
 | `AdhdTimeOrganizer.ActivityTracking.Desktop.Tests/` | xunit v3 tests, including `NativeSmokeTests` against the real machine |
 
 ## Building and testing — always through `scripts/test.ps1`
@@ -236,6 +238,25 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     `NudgeToast.Button` swaps it for `’`; `NudgeToastTests` builds every kind and parses the XML.
 - Button presses arrive on a thread-pool thread and are posted to the UI thread ("Turn off" saves the
   config). On exit every toast is removed and the app unregistered, so a stale toast can't relaunch it.
+
+### The evening review of unmapped time
+- **Why:** drift, the tray's "now" and History read the server's mapping, and time no rule maps is invisible to all of
+  them. Once, at the user's evening, one toast: how much of today on this PC is unmapped and the top two apps, with
+  **Review** (opens the web app's distinct-entries grid on `coverage=Uncovered&today=true`, busiest first) and **Not
+  today**. `NudgeKind.UnmappedReview` shares the toast plumbing but is not a nudge: no quiet conditions (Windows holds
+  toasts itself), its own Settings switch (`UnmappedReviewEnabled`, on by default), independent of drift nudges.
+- **The agent decides nothing about mapping.** The evening moment is the server's (`GET /api/user/evening-shutdown-moment`,
+  the same instant the phone uses and the evening-shutdown push sweeps with); what is unmapped, which apps are worth
+  naming and whether to ask at all is `GET …/desktop/agent-unmapped`'s, and **an empty `apps` list is the server's "don't
+  ask"** — no threshold is repeated here. The review itself is the web app's: the agent's token must not write rules, and a
+  browser (`isBrowser`) is mapped by title there, not by process.
+- **One look per evening.** `UnmappedReviewStore` keeps the last handled moment, marked whether the evening ended in an
+  invite or in nothing to say, so neither a restart nor a second pass asks again. A moment more than 3 h old
+  (`UnmappedReviewPolicy.Window`) is missed, not late. Stays quiet while tracking is paused and while signed out; a server
+  from before the routes ends it for the session; a failed read is retried in 5 min, not every pass.
+- The toast names **apps** (product or process name), never a window title, and the log carries counts only.
+- Both answers are pinned by `DesktopAgentWire.samples.json` (`unmapped`, `eveningMoment`) like the others. The tray's
+  "Map apps for drift nudges…" stays: it is the week's view, tied to drift nudges, and opens the same grid.
 
 ### Privacy before upload
 - Two layers. **At recording** (`PrivacyFilter`, poll loop): the user's `LocalRules` (stored under the old

@@ -67,6 +67,7 @@ public static class DiagnosticsReport
         text.AppendLine($"Drift nudges: {OnOff(config.DriftNudgesEnabled)}, after {config.DriftNudgeMinutes} min");
         text.AppendLine($"Quiet while: full screen {OnOff(config.QuietWhenFullscreen)}, microphone {OnOff(config.QuietWhenMicrophoneInUse)}");
         text.AppendLine($"Upload notices: {OnOff(config.UploadNoticesEnabled)}");
+        text.AppendLine($"Evening review: {OnOff(config.UnmappedReviewEnabled)}");
         text.AppendLine($"Private windows: {OnOff(config.HidePrivateWindows)}, handled as {config.PrivateWindowHandling}");
         text.AppendLine($"Rules: {config.LocalRules.Count} local, {(serverRules?.ToString() ?? "not downloaded yet")} from the server");
         text.AppendLine();
