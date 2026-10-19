@@ -232,6 +232,9 @@ public sealed class ActivityTrackerService : IDisposable
         catch (SemaphoreFullException) { /* already signalled */ }
     }
 
+    /// <summary>How many server rules are held; null before the first download. A count only — the patterns are the user's.</summary>
+    public int? ServerRuleCount => _agentRules.IsKnown ? _agentRules.Count : null;
+
     public TrackerStatus GetStatus()
     {
         var pending = _outbox.Summary(); // disk read — kept outside the lock the poll loop takes

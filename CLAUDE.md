@@ -30,6 +30,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/HyperfocusPolicy.cs` | **Pure** nudge decisions: stretches, breaks, app stretches, snooze / repeat / "not now", the break timer |
 | `Services/DriftPolicy.cs` | **Pure** drift-nudge decisions over the server's per-minute plan verdicts (`MinuteVerdict`) |
 | `Services/UploadHealthPolicy.cs` | **Pure** "is tracked time arriving?" decisions: signed out, stalled a day, windows the server refused → show / withdraw a notice |
+| `Services/DiagnosticsReport.cs` | **Pure** text of the tray's "Copy diagnostics" (state, settings as counts, scrubbed log tail) and the log-tail reader |
 | `Services/NudgeService.cs` | Feeds polls to the policy, checks quiet conditions, shows and withdraws toasts, handles button presses |
 | `Services/NudgeNotifier.cs`, `NudgeToast.cs` | Windows App SDK notifications: registration, toast text and buttons, parsing a press |
 | `Native/` | P/Invoke (`Win32`, `MonitorHelper`), `ProcessInfoCache`, `AudioSessionHelper` (NAudio), `MicrophoneUsage` (registry: whether, and which apps), `ForegroundEvents` (the WinEvent hook) |
@@ -255,6 +256,11 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 ### Privacy and logging
 - No email, name or other personal data in logs. Log files outlive an account deletion. Ids, process
   names and status codes are fine. Window titles and paths are personal; don't log them either.
+- "Copy diagnostics" (tray) goes into bug reports, so `DiagnosticsReport` reads `AppConfig` field by field, never
+  serializes it: no token, rules as counts, the poll error as "see the log", and the log tail has the profile folder and
+  e-mail-looking text masked. A new config field stays out of the report until someone decides it is safe;
+  `DiagnosticsReportTests` plants a token, rule patterns and a title and asserts none comes out. The logger holds today's
+  file open, so the tail is read with `FileShare.ReadWrite`.
 - The refresh token is DPAPI-encrypted in `config.json` (`ProtectedRefreshToken`). Never write it in plain
   text.
 

@@ -23,6 +23,9 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private const int TopActivityCount = 5;
 
+    /// <summary>How much of the log "Copy diagnostics" carries.</summary>
+    private const int DiagnosticsLines = 200;
+
     private readonly NotifyIcon _trayIcon;
     private readonly AppConfig _config;
     private readonly ApiClient _apiClient;
@@ -86,6 +89,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         contextMenu.Items.Add("Settings…", null, OnSettings);
         contextMenu.Items.Add("Privacy…", null, OnPrivacy);
         contextMenu.Items.Add("Open log folder", null, OnOpenLogFolder);
+        contextMenu.Items.Add("Copy diagnostics", null, OnCopyDiagnostics);
         contextMenu.Items.Add(_signInOutItem);
 #if DEBUG
         var testNudge = new ToolStripMenuItem("Show test nudge");
@@ -413,6 +417,26 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         Directory.CreateDirectory(Program.LogDirectory);
         Process.Start(new ProcessStartInfo { FileName = Program.LogDirectory, UseShellExecute = true });
+    }
+
+    /// <summary>For a bug report: the state, the settings as counts and the log's tail, on the clipboard.</summary>
+    private void OnCopyDiagnostics(object? sender, EventArgs e)
+    {
+        try
+        {
+            Clipboard.SetText(DiagnosticsReport.Format(
+                DiagnosticsEnvironment.Current(), _config, _tracker.GetStatus(), _tracker.ServerRuleCount,
+                DiagnosticsLog.Tail(Program.LogDirectory, DiagnosticsLines), DateTime.UtcNow,
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)));
+
+            _balloonOpensMapping = false;
+            _trayIcon.ShowBalloonTip(3_000, "Diagnostics copied", "Paste them into your bug report.", ToolTipIcon.Info);
+        }
+        catch (Exception ex)
+        {
+            // The clipboard can be held by another program for a moment.
+            Serilog.Log.Warning(ex, "Could not copy diagnostics");
+        }
     }
 
     private void OnSignInOut(object? sender, EventArgs e)
