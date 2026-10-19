@@ -713,7 +713,7 @@ public sealed class ActivityTrackerService : IDisposable
 
     /// <summary>
     /// What the server said about a stored minute: the newest one is the tray's "now", and every one goes to the drift
-    /// nudge, which skips a backlog minute itself.
+    /// nudge and the start ramp, which skip a backlog minute themselves.
     /// </summary>
     private void OnResolved(DateTime windowStartUtc, HeartbeatResponse response)
     {
@@ -722,7 +722,7 @@ public sealed class ActivityTrackerService : IDisposable
             if (_lastResolved is null || minute.WindowStartUtc >= _lastResolved.WindowStartUtc)
                 _lastResolved = minute;
 
-        _nudges?.OnMinuteResolved(DateTime.UtcNow, MinuteVerdict.From(windowStartUtc, response));
+        _nudges?.OnMinuteResolved(DateTime.UtcNow, MinuteVerdict.From(windowStartUtc, response), PlanView.From(windowStartUtc, response));
     }
 
     /// <summary>

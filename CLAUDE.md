@@ -22,7 +22,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/WindowLimits.cs` | The server's validation rules, applied before a window is queued |
 | `Services/WindowTitleNormalizer.cs` | Strips counters, unsaved markers and app-name suffixes from titles |
 | `Services/OutboxStore.cs` | Finished windows as JSON files under `%LOCALAPPDATA%\…Desktop\outbox` until sent |
-| `Services/ApiClient.cs` | Login, 2FA, token refresh, heartbeat (and its answer), the server-rules and mapping-coverage downloads; `Classify` decides retry vs. drop per status code |
+| `Services/ApiClient.cs` | Login, 2FA, token refresh, heartbeat (and its answer), the server-rules and mapping-coverage downloads, the start ramp's Start now; `Classify` decides retry vs. drop per status code |
 | `Services/RefreshPolicy.cs` | **Pure** refresh decisions: save / sign out / keep, whether an attempt left the token possibly rotated, how long to hold it back |
 | `Services/TodayTotal.cs` | Today's recorded foreground time on this PC, for the tray glance; saved to `today.json` |
 | `Services/PrivacyFilter.cs` | Recording-time privacy: local rules and private browser windows → keep, hide the title, or drop |
@@ -30,6 +30,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/Matching/` | **Port of the server's matcher** (`PatternMatcher`, `MappingRuleSet`) — see "Rule matching" below |
 | `Services/HyperfocusPolicy.cs` | **Pure** nudge decisions: stretches, breaks, app stretches, snooze / repeat / "not now", the break timer |
 | `Services/DriftPolicy.cs` | **Pure** drift-nudge decisions over the server's per-minute plan verdicts (`MinuteVerdict`) |
+| `Services/StartRampPolicy.cs` | **Pure** start-ramp decisions: offer a planned block at its start, from the heartbeat's plan (`PlanView`) |
 | `Services/UploadHealthPolicy.cs` | **Pure** "is tracked time arriving?" decisions: signed out, stalled a day, windows the server refused → show / withdraw a notice |
 | `Services/UnmappedReviewPolicy.cs` | **Pure** evening-invite decisions: is the evening due / missed / handled, the invite's text from the server's answer; plus `UnmappedReviewStore` (the last handled evening, `unmapped-review.json`) |
 | `Services/UnmappedReviewService.cs` | The send loop's evening tick: holds the server's evening moment, asks the server for today's unmapped time when it comes, hands the invite on |
@@ -102,7 +103,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     next point. Never derive it from the port.
 - **The heartbeat answers with what the minute resolved to** (servers from 2026-10-18; `Models/ServerResolution.cs`):
   the minute's active seconds by target, each with the server's `onPlan` verdict, and the planner blocks covering
-  it. The tray's "now" and the drift nudge read it, and nothing else may decide either. An older server answers a bare
+  it (with `inProgress`); from 2026-10-19 also the next block today (`next`) and whether a timer runs (`timerRunning`).
+  The tray's "now", the drift nudge and the start ramp read it, and nothing else may decide any of them. An older server answers a bare
   count: `ApiClient.ReadHeartbeatResponse` reads that (or anything unreadable) as "no answer" — the window is still
   sent, only the glance and the nudge go without. `target` stays a string so a target the server adds later can't fail
   the parse. `GET …/agent-coverage` (404 = older server: no prompt) is fetched hourly, only while drift nudges are on.
@@ -190,8 +192,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   `GetPackageFamilyName` on the limited handle (`ProcessInfo.PackageFamilyName`); a desktop app by its path.
 
 ### Nudges and notifications
-- Nudges are **client-side only**: nothing about them reaches the server. The policies live in
-  `HyperfocusPolicy` and `DriftPolicy`, pure like `ActivityRecorder` — keep clocks, Win32 and toasts out of them.
+- Nudges are **client-side**: their decisions never involve the server, and the one thing a nudge sends is the start
+  ramp's Start now (below). The policies live in `HyperfocusPolicy`, `DriftPolicy` and `StartRampPolicy`, pure like
+  `ActivityRecorder` — keep clocks, Win32 and toasts out of them.
 - **Drift nudges** are fed from the **send** loop, a minute at a time, with the server's verdicts; the policy only
   counts them. Off by default, ≥ 10 min, one per planned block ("Snooze" asks for exactly one more after 30 min).
   Unmapped and ignored minutes neither count nor reset — never treat "unmapped" as off-plan. A minute older than 3
@@ -201,8 +204,30 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   development the web app is not on the API's origin.
 - The drift policy's state is saved to `drift.json` after each minute and each answer, so a restart mid-block neither
   repeats the block's nudge nor loses the streak or a snooze. The hyperfocus policy keeps no such file.
-- The two families keep `HyperfocusPolicy.MinGapBetweenKinds` (10 min) apart: a nudge due within it of the other
-  family's is held like under a quiet condition, never dropped by it. The break-over nudge is exempt.
+- **The start ramp** (`StartRampPolicy`, `NudgeKind.StartRamp`, on by default, its own Settings switch
+  `StartRampEnabled`) helps with *starting*.
+  - **When.** At a planned block's start, while someone is at the computer (a poll found them present within the last
+    minute): "Thesis starts now (until 11:30) · 45 min planned. Start the timer?". It is fed by the send loop with the
+    heartbeat's plan (`PlanView`: `planned`, `next`, `timerRunning`, the minute's verdict), trusted for 3 minutes like a
+    drift minute; it fires from the poll loop.
+  - **Late.** "Started 20 min ago", but only while ≥ 10 min are left; a block nearly over is settled without a word.
+  - **Skipped** when the block is `inProgress` or the minute was on plan. **Held** while a countdown or pomodoro runs
+    (`timerRunning`), under the quiet conditions, and within the gap to the other families. A server from before
+    2026-10-19 sends no `timerRunning`, so the ramp stays quiet against it.
+  - **Asks once per block.** A *reminder* toast (stays until answered).
+    - **Start now** does two things side by side. It calls `POST …/desktop/agent-start-block` (the block goes in progress
+      in the planner, so the start counts even if the browser never gets there). It also opens
+      `WebAppUrl/?track=<plannerTaskId>`, which the web app's home turns into the block's countdown, already running. The
+      timer itself lives only in the browser: there is no server timer to start.
+    - **In 2 minutes** asks exactly once more, without that button.
+    - **Not this one** also silences the drift nudge for that block (`DriftPolicy.QuietBlock`, saved in `drift.json`):
+      after an explicit decision, "you slid off it" would only shame.
+    - A toast still out leaves when the block is started, worked on, or over; another block's toast replaces it.
+  - **State.** Saved to `start-ramp.json` beside `drift.json`: settled blocks by id, kept a day past their end (an
+    extended block keeps its id), and a pending "In 2 minutes". A restart neither asks twice nor forgets the repeat.
+- The three families keep `HyperfocusPolicy.MinGapBetweenKinds` (10 min) apart: a nudge due within it of another
+  family's is held like under a quiet condition, never dropped by it. The start ramp is evaluated first (a block's start
+  doesn't come again). The break-over nudge is exempt.
 - Today's total and its top-5 breakdown (`TodayTotal`, `today.json`) count a window **once, when settled**: the total
   at queue time less what was never stored, the breakdown from the heartbeat's answer. The breakdown is the tray
   glance's submenu, not a left-click flyout — double-click already pauses.

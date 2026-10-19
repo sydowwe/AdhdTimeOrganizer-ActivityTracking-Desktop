@@ -43,6 +43,16 @@ internal static class NudgeToast
                 .AddButton(Button("Snooze 30 min", nudge, NudgeResponse.Snooze))
                 .AddButton(Button("Turn off", nudge, NudgeResponse.TurnOff));
         }
+        else if (nudge.Kind == NudgeKind.StartRamp)
+        {
+            // A reminder, like the break-over one: starting is the hard part, and a toast that slides away after a few
+            // seconds into the notification centre is a cue easily missed. It stays until answered or withdrawn.
+            builder.SetScenario(AppNotificationScenario.Reminder)
+                .AddButton(Button("Start now", nudge, NudgeResponse.StartNow));
+            if (nudge.StartRamp?.CanDefer != false)
+                builder.AddButton(Button("In 2 minutes", nudge, NudgeResponse.Later));
+            builder.AddButton(Button("Not this one", nudge, NudgeResponse.NotThisOne));
+        }
         else if (nudge.Kind == NudgeKind.UploadHealth)
         {
             builder.SetDuration(AppNotificationDuration.Long);
@@ -92,10 +102,29 @@ internal static class NudgeToast
         NudgeKind.Drift when nudge.Drift is { } drift =>
             ($"Planned: {drift.PlannedName} (until {TimeZoneInfo.ConvertTimeFromUtc(drift.PlannedEndsUtc, TimeZoneInfo.Local):HH:mm})",
                 $"Last {FormatLength(nudge.Length)}: {nudge.AppName}."),
+        NudgeKind.StartRamp when nudge.StartRamp is { } ramp => StartRampText(ramp),
         NudgeKind.UploadHealth when nudge.Upload is { } upload => UploadText(upload),
         NudgeKind.UnmappedReview when nudge.Review is { } review => UnmappedReviewPolicy.Text(review),
         _ => ("Break's over", $"That was {FormatLength(nudge.Length)}. Ready to get back to it?")
     };
+
+    /// <summary>
+    /// "Thesis starts now (until 11:30)" with the block's length, or — sat down late — "Thesis started 20 min ago" with
+    /// what is left. The repeat "In 2 minutes" asked for says so, and no more.
+    /// </summary>
+    private static (string Title, string Body) StartRampText(StartRampDetails ramp)
+    {
+        var until = TimeZoneInfo.ConvertTimeFromUtc(ramp.EndsUtc, TimeZoneInfo.Local).ToString("HH:mm", CultureInfo.InvariantCulture);
+        var isLate = ramp.LateBy >= TimeSpan.FromMinutes(1);
+        var title = isLate
+            ? $"{ramp.PlannedName} started {FormatLength(ramp.LateBy)} ago (until {until})"
+            : $"{ramp.PlannedName} starts now (until {until})";
+
+        var body = !ramp.CanDefer ? "Ready now? One click starts the timer."
+            : isLate ? $"{FormatLength(ramp.EndsUtc - ramp.StartsUtc - ramp.LateBy)} left. Start now?"
+            : $"{FormatLength(ramp.EndsUtc - ramp.StartsUtc)} planned. Start the timer?";
+        return (title, body);
+    }
 
     /// <summary>What went wrong and what to do about it. Counts and durations only.</summary>
     private static (string Title, string Body) UploadText(UploadNotice upload)

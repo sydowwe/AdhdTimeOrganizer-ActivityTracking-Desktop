@@ -53,7 +53,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _apiClient = new ApiClient(config);
 
         // Button presses on a nudge are handed to this, the UI, thread.
-        _nudges = new NudgeService(config, new WindowsFormsSynchronizationContext(), signIn: SignInFromNotice);
+        _nudges = new NudgeService(config, new WindowsFormsSynchronizationContext(), signIn: SignInFromNotice,
+            startBlock: plannerTaskId => _apiClient.StartBlockAsync(plannerTaskId, CancellationToken.None));
         _tracker = new ActivityTrackerService(config, _apiClient, _nudges);
 
         // Opens today's breakdown. A submenu rather than a left-click flyout: double-click already pauses and resumes,
@@ -98,6 +99,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         testNudge.DropDownItems.Add("Same app", null, (_, _) => _nudges.ShowTest(NudgeKind.AppStretch));
         testNudge.DropDownItems.Add("Break over", null, (_, _) => _nudges.ShowTest(NudgeKind.BreakOver));
         testNudge.DropDownItems.Add("Drift", null, (_, _) => _nudges.ShowTest(NudgeKind.Drift));
+        testNudge.DropDownItems.Add("Start ramp", null, (_, _) => _nudges.ShowTest(NudgeKind.StartRamp));
         testNudge.DropDownItems.Add("Upload problem", null, (_, _) => _nudges.ShowTest(NudgeKind.UploadHealth));
         contextMenu.Items.Add(testNudge);
 #endif

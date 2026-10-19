@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
@@ -28,6 +29,7 @@ public sealed class NudgeServiceTests : IDisposable
     private readonly string _dir = Path.Combine(Path.GetTempPath(), $"nudge-service-{Guid.NewGuid():N}");
     private readonly List<NudgeService> _services = [];
     private readonly List<string> _folders = [];
+    private readonly ConcurrentQueue<long> _startedBlocks = new(); // filled from the thread pool
     private int _signIns;
 
     private DateTime _start = DateTime.UtcNow.AddHours(-2);
@@ -150,6 +152,89 @@ public sealed class NudgeServiceTests : IDisposable
         Assert.Equal(TimeSpan.FromMinutes(19), drift.Length);
     }
 
+    // ---- the start ramp ---------------------------------------------------
+
+    /// <summary>
+    /// The heartbeat's answer names the next block; at its start, with someone at the computer, the ramp's toast shows —
+    /// and Start now both starts the block on the server and opens its timer in the web app.
+    /// </summary>
+    [Fact]
+    public void TheStartRamp_ShowsAtTheBlocksStart_AndStartNow_StartsItAndOpensItsTimer()
+    {
+        var (service, notifier, opened) = Create();
+        var startsUtc = NextMinute().AddMinutes(1);
+        var email = Block(7, "Email", startsUtc, 30);
+
+        Present(service, startsUtc.AddMinutes(-1));
+        service.OnMinuteResolved(startsUtc.AddSeconds(-15), Verdict(startsUtc.AddMinutes(-2), null, null),
+            new PlanView(startsUtc.AddMinutes(-2), [], email, false, null));
+        Assert.Empty(notifier.Shown);
+
+        Present(service, startsUtc);
+        var ramp = Assert.Single(notifier.Shown);
+        Assert.Equal(NudgeKind.StartRamp, ramp.Kind);
+        Assert.Equal("Email", ramp.StartRamp!.PlannedName);
+
+        service.OnActivated(new NudgeActivation(NudgeKind.StartRamp, ramp.Id, NudgeResponse.StartNow));
+
+        Assert.Equal("https://app.test/?track=7", Assert.Single(opened).AbsoluteUri);
+        Assert.True(SpinWait.SpinUntil(() => !_startedBlocks.IsEmpty, TimeSpan.FromSeconds(5)), "the block is started on the server");
+        Assert.Equal(new[] { 7L }, _startedBlocks);
+    }
+
+    /// <summary>
+    /// "Not this one" ends drift nudges in that block too: twenty-five minutes off plan in it — past the gap between the
+    /// families — and no drift toast. The press changes nothing on the server.
+    /// </summary>
+    [Fact]
+    public void NotThisOne_OnTheRamp_AlsoQuietsDriftInThatBlock()
+    {
+        // Near the real clock: a press is handled at DateTime.UtcNow, and a poll two hours earlier would read as a
+        // two-hour stretch to the hyperfocus policy.
+        _start = NextMinute().AddMinutes(-2);
+        var (service, notifier, opened) = Create();
+        Present(service, _start.AddSeconds(30));
+        Minutes(service, 1, onPlan: false, withPlan: true);
+        var ramp = Assert.Single(notifier.Shown);
+
+        service.OnActivated(new NudgeActivation(NudgeKind.StartRamp, ramp.Id, NudgeResponse.NotThisOne));
+        OffPlan(service, 25);
+
+        Assert.Equal([NudgeKind.StartRamp], notifier.Shown.Select(n => n.Kind));
+        Assert.Empty(opened);
+        Assert.Empty(_startedBlocks);
+    }
+
+    /// <summary>The ramp's state is kept beside drift.json, so a restart in the block doesn't offer it again.</summary>
+    [Fact]
+    public void ARestart_DoesNotOfferTheSameBlockAgain()
+    {
+        var (first, firstNotifier, _) = Create();
+        Present(first, _start.AddSeconds(30));
+        Minutes(first, 1, onPlan: false, withPlan: true);
+        Assert.Equal(NudgeKind.StartRamp, Assert.Single(firstNotifier.Shown).Kind);
+        first.Dispose();
+
+        var (second, secondNotifier, _) = Create();
+        Present(second, _start.AddSeconds(30));
+        Minutes(second, 1, onPlan: false, withPlan: true);
+
+        Assert.Empty(secondNotifier.Shown);
+        Assert.True(File.Exists(Path.Combine(_dir, "start-ramp.json")));
+    }
+
+    [Fact]
+    public void TheStartRamp_Off_ShowsNothing()
+    {
+        var (service, notifier, _) = Create();
+        _config.StartRampEnabled = false;
+        Present(service, _start.AddSeconds(30));
+
+        Minutes(service, 1, onPlan: false, withPlan: true);
+
+        Assert.Empty(notifier.Shown);
+    }
+
     // ---- upload notices ---------------------------------------------------
 
     /// <summary>A stall reaches the notifier as a notice of its own kind, once, and leaves when the outbox drains.</summary>
@@ -233,24 +318,53 @@ public sealed class NudgeServiceTests : IDisposable
         var notifier = new FakeNotifier();
         var opened = new List<Uri>();
         var service = new NudgeService(config, uiContext: null, _ => notifier, opened.Add, Path.Combine(_dir, "drift.json"),
-            signIn: () => _signIns++, openFolder: _folders.Add);
+            signIn: () => _signIns++, openFolder: _folders.Add,
+            startBlock: id =>
+            {
+                _startedBlocks.Enqueue(id);
+                return Task.FromResult(true);
+            });
         _services.Add(service);
         return (service, notifier, opened);
     }
+
+    private static PlannedBlock Block(long id, string name, DateTime startsUtc, int minutes) => new()
+    {
+        PlannerTaskId = id, ActivityId = id * 10, ActivityName = name, StartsAtUtc = startsUtc, EndsAtUtc = startsUtc.AddMinutes(minutes)
+    };
+
+    private static DateTime NextMinute()
+    {
+        var now = DateTime.UtcNow;
+        return new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc).AddMinutes(1);
+    }
+
+    private static MinuteVerdict Verdict(DateTime windowStart, PlannedBlock? block, bool? onPlan) =>
+        new(windowStart, block, onPlan, onPlan == false ? "YouTube" : null);
+
+    /// <summary>A poll that finds someone at the computer.</summary>
+    private static void Present(NudgeService service, DateTime nowUtc) =>
+        service.OnPoll(nowUtc, TimeSpan.FromSeconds(30), isLocked: false, isPresent: true,
+            new ActivitySample { ProcessName = "code", WindowTitle = "Chapter 2", ProductName = "VS Code" });
 
     private static UploadSnapshot Stalled(DateTime nowUtc) =>
         new(HasSession: true, IsPaused: false, PendingWindows: 90, OldestPendingUtc: nowUtc.AddHours(-25), RejectedWindows: 0);
 
     private void OffPlan(NudgeService service, int minutes) => Minutes(service, minutes, onPlan: false);
 
-    /// <summary>Minute windows from <see cref="_start"/> on, each answered 65 s after it began, as the send loop would.</summary>
-    private void Minutes(NudgeService service, int count, bool onPlan)
+    /// <summary>
+    /// Minute windows from <see cref="_start"/> on, each answered 65 s after it began, as the send loop would; with
+    /// <paramref name="withPlan"/>, the answer carries Thesis as the block covering it, not started, as a server with the
+    /// start ramp sends it.
+    /// </summary>
+    private void Minutes(NudgeService service, int count, bool onPlan, bool withPlan = false)
     {
         for (var i = 0; i < count; i++)
         {
             var windowStart = _start;
             _start = _start.AddMinutes(1);
-            service.OnMinuteResolved(windowStart.AddSeconds(65), new MinuteVerdict(windowStart, Thesis, onPlan, onPlan ? null : "YouTube"));
+            service.OnMinuteResolved(windowStart.AddSeconds(65), new MinuteVerdict(windowStart, Thesis, onPlan, onPlan ? null : "YouTube"),
+                withPlan ? new PlanView(windowStart, [Thesis], null, false, onPlan) : null);
         }
     }
 

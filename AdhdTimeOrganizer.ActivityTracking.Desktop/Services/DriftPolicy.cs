@@ -36,6 +36,7 @@ public sealed record MinuteVerdict(DateTime WindowStartUtc, PlannedBlock? Block,
 /// nudge already given there and gives it again, and forgets a streak and a snooze. The outstanding toast is not part of
 /// it — every toast is removed on exit. <see cref="OffPlanNames"/> are user-authored; the file is the user's own.
 /// </summary>
+/// <param name="QuietBlockId">The block the start ramp's "Not this one" was pressed on; absent from older files.</param>
 public sealed record DriftState(
     PlannedBlock? Block,
     DateTime? LastMinuteUtc,
@@ -43,7 +44,8 @@ public sealed record DriftState(
     int OffPlanMinutes,
     Dictionary<string, int> OffPlanNames,
     bool DoneForBlock,
-    DateTime? SnoozedUntilUtc);
+    DateTime? SnoozedUntilUtc,
+    long? QuietBlockId = null);
 
 public sealed record DriftSettings(bool Enabled, TimeSpan After)
 {
@@ -76,6 +78,10 @@ public sealed record DriftSettings(bool Enabled, TimeSpan After)
 /// toast all end it for the block. A quiet condition holds a due nudge until it ends, as long as the streak is still
 /// current. An on-plan minute or the block ending withdraws a toast still in the notification centre.
 /// </para>
+/// <para>
+/// <b>"Not this one" on the start ramp</b> (<see cref="QuietBlock"/>) ends it for that block too: the user said they are
+/// not doing it, and "you slid off it" would be a reproach for a decision.
+/// </para>
 /// </remarks>
 public sealed class DriftPolicy
 {
@@ -91,12 +97,14 @@ public sealed class DriftPolicy
     private int _offPlanMinutes;
     private bool _doneForBlock;
     private DateTime? _snoozedUntilUtc;
+    private long? _quietBlockId;
     private int? _outstandingId;
     private bool _withdrawn;
     private int _lastId;
 
     public DriftState Snapshot() => new(
-        _block, _lastMinuteUtc, _lastOffPlanUtc, _offPlanMinutes, new Dictionary<string, int>(_offPlanNames), _doneForBlock, _snoozedUntilUtc);
+        _block, _lastMinuteUtc, _lastOffPlanUtc, _offPlanMinutes, new Dictionary<string, int>(_offPlanNames), _doneForBlock, _snoozedUntilUtc,
+        _quietBlockId);
 
     /// <summary>Picks up where a saved <paramref name="state"/> left off. A state from another day ends at the next minute's new block.</summary>
     public void Restore(DriftState state)
@@ -109,6 +117,14 @@ public sealed class DriftPolicy
         foreach (var (name, minutes) in state.OffPlanNames) _offPlanNames[name] = minutes;
         _doneForBlock = state.DoneForBlock;
         _snoozedUntilUtc = state.SnoozedUntilUtc;
+        _quietBlockId = state.QuietBlockId;
+    }
+
+    /// <summary>No drift nudge in <paramref name="plannerTaskId"/>, now or once it begins; a toast out for it leaves.</summary>
+    public void QuietBlock(long plannerTaskId)
+    {
+        _quietBlockId = plannerTaskId;
+        if (_block?.PlannerTaskId == plannerTaskId) Withdraw();
     }
 
     /// <summary>Folds in one sent minute.</summary>
@@ -147,7 +163,7 @@ public sealed class DriftPolicy
     /// </summary>
     public Nudge? TakeDue(DateTime nowUtc, DriftSettings settings, Func<bool> isQuiet)
     {
-        if (!settings.Enabled || _block is null || _doneForBlock) return null;
+        if (!settings.Enabled || _block is null || _doneForBlock || _block.PlannerTaskId == _quietBlockId) return null;
         if (_snoozedUntilUtc is { } until && nowUtc < until) return null;
         if (_offPlanMinutes < settings.After.TotalMinutes) return null;
         if (!IsStreakCurrent(nowUtc)) return null;

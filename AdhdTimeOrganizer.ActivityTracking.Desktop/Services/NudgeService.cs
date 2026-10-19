@@ -7,9 +7,10 @@ using Serilog;
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
 /// <summary>
-/// Hyperfocus, break and drift nudges: feeds each poll to <see cref="HyperfocusPolicy"/> and each sent minute's
-/// server verdict to <see cref="DriftPolicy"/>, and shows what they ask for. Nothing about a nudge reaches the server;
-/// the drift nudge only reads what the heartbeat answered.
+/// Hyperfocus, break, drift and start-ramp nudges: feeds each poll to <see cref="HyperfocusPolicy"/>, each sent minute's
+/// server verdict to <see cref="DriftPolicy"/> and its plan to <see cref="StartRampPolicy"/>, and shows what they ask for.
+/// The drift nudge and the ramp only read what the heartbeat answered; the one thing that reaches the server is the
+/// ramp's Start now, which starts the block in the planner.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -33,13 +34,24 @@ public sealed class NudgeService : IDisposable
 {
     private static readonly TimeSpan MicrophoneCheckEvery = TimeSpan.FromSeconds(10);
 
+    /// <summary>The start ramp speaks only to someone at the computer: a poll found them present this recently.</summary>
+    private static readonly TimeSpan RampPresentFor = TimeSpan.FromMinutes(1);
+
     /// <summary>"Switch plan" opens today's planner.</summary>
     internal const string PlannerPath = "/day-planner";
+
+    /// <summary>
+    /// "Start now" opens the web app's home with the block's timer already running (its <c>useTrackLink</c>). A web app
+    /// from before the link just opens home.
+    /// </summary>
+    internal static string TrackPath(long plannerTaskId) => $"/?track={plannerTaskId}";
 
     /// <summary>"Review" opens the distinct-entries grid on what today left unmapped, busiest first (the page reads <c>today</c>).</summary>
     internal const string UnmappedReviewPath = "/activity-tracking/desktop/settings/distinctEntries?coverage=Uncovered&today=true";
 
     public static string DefaultDriftStatePath { get; } = Path.Combine(AppConfig.ConfigDirectory, "drift.json");
+
+    private const string StartRampStateFileName = "start-ramp.json";
 
     private readonly AppConfig _config;
     private readonly SynchronizationContext? _uiContext;
@@ -47,48 +59,63 @@ public sealed class NudgeService : IDisposable
     private readonly Action<Uri> _openInBrowser;
     private readonly Action? _signIn;
     private readonly Action<string> _openFolder;
+    private readonly Func<long, Task<bool>> _startBlock;
     private readonly string _driftStatePath;
+    private readonly string _rampStatePath;
     private readonly ILogger _log = Log.ForContext<NudgeService>();
 
     private readonly Lock _lock = new();
-    private readonly Lock _driftSaveGate = new();
+    private readonly Lock _stateSaveGate = new();
     private readonly HyperfocusPolicy _policy = new(TimeSpan.FromSeconds(10));
     private readonly DriftPolicy _drift = new();
+    private readonly StartRampPolicy _ramp = new();
     private readonly UploadHealthPolicy _upload = new();
     private readonly System.Threading.Timer _breakTimer;
 
     private DateTime _microphoneCheckedUtc = DateTime.MinValue;
     private bool _isMicrophoneInUse;
     private string? _quietReason;
+    private DateTime _presentUtc = DateTime.MinValue; // the last poll that found someone at the computer (under _lock)
 
-    // When each family last showed a toast, for the gap between the two (under _lock).
+    // When each family last showed a toast, for the gap between them (under _lock).
     private DateTime? _hyperfocusShownUtc;
     private DateTime? _driftShownUtc;
+    private DateTime? _rampShownUtc;
     private bool _driftChanged;
+    private bool _rampChanged;
 
     /// <param name="uiContext">Where button presses are handled; the tray's.</param>
     /// <param name="signIn">"Sign in" on an upload notice; opens the sign-in form on the UI thread. Null does nothing.</param>
-    public NudgeService(AppConfig config, SynchronizationContext? uiContext, Action? signIn = null)
-        : this(config, uiContext, onActivated => new NudgeNotifier(onActivated), OpenInBrowser, DefaultDriftStatePath, signIn)
+    /// <param name="startBlock">The start ramp's "Start now" on the server; null starts nothing there.</param>
+    public NudgeService(AppConfig config, SynchronizationContext? uiContext, Action? signIn = null,
+        Func<long, Task<bool>>? startBlock = null)
+        : this(config, uiContext, onActivated => new NudgeNotifier(onActivated), OpenInBrowser, DefaultDriftStatePath, signIn,
+            startBlock: startBlock)
     {
     }
 
     /// <param name="createNotifier">Given the button-press handler; tests pass a fake, so nothing registers with Windows.</param>
-    /// <param name="openInBrowser">"Switch plan"; tests record it instead.</param>
-    /// <param name="driftStatePath">Where <see cref="DriftState"/> is kept across restarts.</param>
+    /// <param name="openInBrowser">"Switch plan", "Start now"; tests record it instead.</param>
+    /// <param name="driftStatePath">
+    /// Where <see cref="DriftState"/> is kept across restarts; <see cref="StartRampState"/> is kept beside it.
+    /// </param>
     /// <param name="signIn">"Sign in"; tests count it.</param>
     /// <param name="openFolder">"Open log folder"; tests record the path instead.</param>
+    /// <param name="startBlock">"Start now" on the server; tests record the id instead.</param>
     internal NudgeService(AppConfig config, SynchronizationContext? uiContext,
         Func<Action<NudgeActivation>, INudgeNotifier> createNotifier, Action<Uri> openInBrowser, string driftStatePath,
-        Action? signIn = null, Action<string>? openFolder = null)
+        Action? signIn = null, Action<string>? openFolder = null, Func<long, Task<bool>>? startBlock = null)
     {
         _config = config;
         _uiContext = uiContext;
         _openInBrowser = openInBrowser;
         _signIn = signIn;
         _openFolder = openFolder ?? OpenFolder;
+        _startBlock = startBlock ?? (_ => Task.FromResult(false));
         _driftStatePath = driftStatePath;
-        if (LoadDriftState() is { } state) _drift.Restore(state);
+        _rampStatePath = Path.Combine(Path.GetDirectoryName(driftStatePath)!, StartRampStateFileName);
+        if (LoadState<DriftState>(_driftStatePath, "drift nudge") is { } drift) _drift.Restore(drift);
+        if (LoadState<StartRampState>(_rampStatePath, "start ramp") is { } ramp) _ramp.Restore(ramp);
         _breakTimer = new System.Threading.Timer(_ => Evaluate(DateTime.UtcNow));
         _notifier = createNotifier(OnActivated);
     }
@@ -106,6 +133,7 @@ public sealed class NudgeService : IDisposable
             {
                 var present = isPresent || (!isLocked && IsMicrophoneInUse(nowUtc));
                 var app = present ? foreground : null;
+                if (present && !isLocked) _presentUtc = nowUtc;
 
                 _policy.MaxObservedGap = maxObservedGap;
                 _policy.Record(nowUtc, present,
@@ -124,10 +152,10 @@ public sealed class NudgeService : IDisposable
     }
 
     /// <summary>
-    /// One minute the server stored, with what it resolved to — from the send loop, oldest first. A backlog minute is
-    /// ignored by the policy: it says nothing about now.
+    /// One minute the server stored, with what it resolved to and, from a server that says, the plan around it — from the
+    /// send loop, oldest first. A backlog minute is ignored by the policies: it says nothing about now.
     /// </summary>
-    public void OnMinuteResolved(DateTime nowUtc, MinuteVerdict minute)
+    public void OnMinuteResolved(DateTime nowUtc, MinuteVerdict minute, PlanView? plan = null)
     {
         try
         {
@@ -135,6 +163,7 @@ public sealed class NudgeService : IDisposable
             {
                 _drift.Record(nowUtc, minute);
                 _driftChanged = true;
+                if (plan is not null) _ramp.Record(nowUtc, plan);
             }
             Evaluate(nowUtc);
         }
@@ -200,6 +229,7 @@ public sealed class NudgeService : IDisposable
             nudge = kind switch
             {
                 NudgeKind.Drift => _drift.IssueForTest(DateTime.UtcNow),
+                NudgeKind.StartRamp => _ramp.IssueForTest(DateTime.UtcNow),
                 NudgeKind.UploadHealth => new Nudge(1, kind, TimeSpan.FromHours(26), null,
                     Upload: new UploadNotice(UploadProblem.Stalled, 90, TimeSpan.FromHours(26), 0)),
                 NudgeKind.UnmappedReview => new Nudge(1, kind, TimeSpan.FromMinutes(130), null, Review: new UnmappedInvite(
@@ -210,27 +240,40 @@ public sealed class NudgeService : IDisposable
     }
 
     /// <remarks>
-    /// The two families keep <see cref="HyperfocusPolicy.MinGapBetweenKinds"/> apart, the way the hyperfocus kinds keep
+    /// The three families keep <see cref="HyperfocusPolicy.MinGapBetweenKinds"/> apart, the way the hyperfocus kinds keep
     /// apart among themselves: a due one is held, like under a quiet condition, rather than two toasts landing a minute
-    /// apart. The break-over nudge is exempt, as it is from quiet conditions — the user set it.
+    /// apart. The start ramp goes first — a block's start is the one moment that won't come again. The break-over nudge is
+    /// exempt, as it is from quiet conditions — the user set it.
     /// </remarks>
     private void Evaluate(DateTime nowUtc)
     {
+        Nudge? ramp;
         Nudge? nudge;
         Nudge? drift;
         IReadOnlyList<NudgeKind> withdrawn;
         bool driftWithdrawn;
+        bool rampWithdrawn;
         DateTime? breakEndsUtc;
         DriftState? driftState = null;
+        StartRampState? rampState = null;
 
         var settings = NudgeSettings.From(_config);
         var driftSettings = DriftSettings.From(_config);
+        var rampSettings = StartRampSettings.From(_config);
         lock (_lock)
         {
-            nudge = _policy.TakeDue(nowUtc, settings, () => IsQuiet(nowUtc) || IsWithinGap(_driftShownUtc, nowUtc));
+            ramp = _ramp.TakeDue(nowUtc, rampSettings, nowUtc - _presentUtc <= RampPresentFor,
+                () => IsQuiet(nowUtc) || IsWithinGap(_hyperfocusShownUtc, nowUtc) || IsWithinGap(_driftShownUtc, nowUtc),
+                out var rampChanged);
+            _rampChanged |= rampChanged;
+            if (ramp is not null) _rampShownUtc = nowUtc;
+
+            nudge = _policy.TakeDue(nowUtc, settings,
+                () => IsQuiet(nowUtc) || IsWithinGap(_driftShownUtc, nowUtc) || IsWithinGap(_rampShownUtc, nowUtc));
             if (nudge is not null) _hyperfocusShownUtc = nowUtc;
 
-            drift = _drift.TakeDue(nowUtc, driftSettings, () => IsQuiet(nowUtc) || IsWithinGap(_hyperfocusShownUtc, nowUtc));
+            drift = _drift.TakeDue(nowUtc, driftSettings,
+                () => IsQuiet(nowUtc) || IsWithinGap(_hyperfocusShownUtc, nowUtc) || IsWithinGap(_rampShownUtc, nowUtc));
             if (drift is not null)
             {
                 _driftShownUtc = nowUtc;
@@ -239,6 +282,7 @@ public sealed class NudgeService : IDisposable
 
             withdrawn = _policy.TakeWithdrawn();
             driftWithdrawn = _drift.TakeWithdrawn();
+            rampWithdrawn = _ramp.TakeWithdrawn();
             breakEndsUtc = _policy.GetStatus(nowUtc).BreakEndsUtc;
 
             if (_driftChanged)
@@ -246,12 +290,27 @@ public sealed class NudgeService : IDisposable
                 driftState = _drift.Snapshot();
                 _driftChanged = false;
             }
+            if (_rampChanged)
+            {
+                rampState = _ramp.Snapshot();
+                _rampChanged = false;
+            }
         }
 
-        if (driftState is not null) SaveDriftState(driftState);
+        if (driftState is not null) SaveState(_driftStatePath, driftState, "drift nudge");
+        if (rampState is not null) SaveState(_rampStatePath, rampState, "start ramp");
 
         foreach (var kind in withdrawn) _notifier.Remove(kind);
         if (driftWithdrawn) _notifier.Remove(NudgeKind.Drift);
+        if (rampWithdrawn) _notifier.Remove(NudgeKind.StartRamp);
+
+        if (ramp is not null)
+        {
+            // No name: the planned activity is the user's own words.
+            _log.Information("Start ramp for block {PlannerTaskId}, {LateMinutes} min after its start",
+                ramp.StartRamp!.PlannerTaskId, (int)ramp.StartRamp.LateBy.TotalMinutes);
+            _notifier.Show(ramp);
+        }
 
         if (nudge is not null)
         {
@@ -334,6 +393,12 @@ public sealed class NudgeService : IDisposable
                 return;
             }
 
+            if (activation.Kind == NudgeKind.StartRamp)
+            {
+                HandleRampResponse(activation);
+                return;
+            }
+
             var isDrift = activation.Kind == NudgeKind.Drift;
             if (activation.Response == NudgeResponse.TurnOff)
                 TurnOff(isDrift);
@@ -406,6 +471,65 @@ public sealed class NudgeService : IDisposable
         _log.Information("Evening review answered: {Response}", response);
     }
 
+    /// <summary>
+    /// A press on a start-ramp toast. <b>Start now</b> starts the block on the server and opens its timer in the web app,
+    /// side by side: the browser does not wait for the server, and the server's start counts even if the browser never
+    /// gets there. <b>Not this one</b> also ends drift nudges in the block. <b>In 2 minutes</b> is the policy's alone.
+    /// </summary>
+    private void HandleRampResponse(NudgeActivation activation)
+    {
+        var nowUtc = DateTime.UtcNow;
+        PlannedBlock? block;
+        lock (_lock)
+        {
+            block = _ramp.Respond(activation.NudgeId, activation.Response, nowUtc, out var changed);
+            _rampChanged |= changed;
+            if (block is not null && activation.Response == NudgeResponse.NotThisOne)
+            {
+                _drift.QuietBlock(block.PlannerTaskId);
+                _driftChanged = true;
+            }
+        }
+
+        if (block is null)
+        {
+            _log.Debug("Ignored {Response} on start ramp {NudgeId}: no longer current", activation.Response, activation.NudgeId);
+            return;
+        }
+
+        _log.Information("Start ramp for block {PlannerTaskId} answered: {Response}", block.PlannerTaskId, activation.Response);
+        if (activation.Response == NudgeResponse.StartNow) StartNow(block.PlannerTaskId);
+
+        Evaluate(nowUtc); // saves the state, withdraws a drift toast for a block now quiet
+    }
+
+    private void StartNow(long plannerTaskId)
+    {
+        // The test toast's block is not a planner task: open the page, start nothing.
+        if (plannerTaskId > 0)
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (!await _startBlock(plannerTaskId))
+                        _log.Information("Block {PlannerTaskId} was not started on the server", plannerTaskId);
+                }
+                catch (Exception ex)
+                {
+                    _log.Warning(ex, "Starting block {PlannerTaskId} failed", plannerTaskId);
+                }
+            });
+
+        try
+        {
+            _openInBrowser(_config.WebAppUri(TrackPath(plannerTaskId)));
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Could not open the block's timer");
+        }
+    }
+
     /// <summary>"Turn off" switches off the kind it was pressed on: a drift toast doesn't silence hyperfocus nudges.</summary>
     private void TurnOff(bool isDrift)
     {
@@ -441,35 +565,36 @@ public sealed class NudgeService : IDisposable
     private static bool IsWithinGap(DateTime? shownUtc, DateTime nowUtc) =>
         shownUtc is { } shown && nowUtc - shown < HyperfocusPolicy.MinGapBetweenKinds;
 
-    private DriftState? LoadDriftState()
+    /// <param name="what">The policy, for the log.</param>
+    private T? LoadState<T>(string path, string what) where T : class
     {
         try
         {
-            return File.Exists(_driftStatePath) ? JsonSerializer.Deserialize<DriftState>(File.ReadAllText(_driftStatePath)) : null;
+            return File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllText(path)) : null;
         }
         catch (Exception ex)
         {
-            _log.Warning(ex, "Could not read the drift nudge's saved state — starting afresh");
+            _log.Warning(ex, "Could not read the {What}'s saved state — starting afresh", what);
             return null;
         }
     }
 
     /// <summary>Never throws: a failed save costs at most a repeated nudge after a restart.</summary>
-    private void SaveDriftState(DriftState state)
+    private void SaveState<T>(string path, T state, string what)
     {
         try
         {
-            lock (_driftSaveGate)
+            lock (_stateSaveGate)
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(_driftStatePath)!);
-                var tempPath = _driftStatePath + ".tmp";
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                var tempPath = path + ".tmp";
                 File.WriteAllText(tempPath, JsonSerializer.Serialize(state));
-                File.Move(tempPath, _driftStatePath, overwrite: true);
+                File.Move(tempPath, path, overwrite: true);
             }
         }
         catch (Exception ex)
         {
-            _log.Warning(ex, "Could not save the drift nudge's state");
+            _log.Warning(ex, "Could not save the {What}'s state", what);
         }
     }
 

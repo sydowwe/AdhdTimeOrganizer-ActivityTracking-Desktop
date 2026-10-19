@@ -44,11 +44,30 @@ public class WireSampleTests
         Assert.Equal(new DateTime(2026, 10, 18, 9, 0, 0, DateTimeKind.Utc), block.StartsAtUtc);
         Assert.Equal(new DateTime(2026, 10, 18, 9, 30, 0, DateTimeKind.Utc), block.EndsAtUtc);
         Assert.Equal(DateTimeKind.Utc, block.EndsAtUtc.Kind);
+        Assert.True(block.InProgress);
 
         // And it means what the server meant: 25 s on plan against 15 s off, the unmapped 12 s left out.
         var verdict = MinuteVerdict.From(block.StartsAtUtc, response);
         Assert.True(verdict.OnPlan);
         Assert.Equal("Leisure · Video", verdict.OffPlanName);
+
+        // The start ramp's half: the next block today, and a timer known not to run — not null, which is an older server.
+        var next = response.Next;
+        Assert.NotNull(next);
+        Assert.Equal((8L, 15L, "Email", false), (next.PlannerTaskId, next.ActivityId, next.ActivityName, next.InProgress));
+        Assert.Equal(new DateTime(2026, 10, 18, 9, 30, 0, DateTimeKind.Utc), next.StartsAtUtc);
+        Assert.False(response.TimerRunning);
+    }
+
+    /// <summary>A server from before the start ramp sends neither: no next block, and a timer it can't speak for.</summary>
+    [Fact]
+    public void AHeartbeatFromBeforeTheStartRamp_ReadsAsNoNext_AndTimerUnknown()
+    {
+        var response = ApiClient.ReadHeartbeatResponse("""{"processedCount":1,"resolution":[],"planned":[]}""");
+
+        Assert.NotNull(response);
+        Assert.Null(response.Next);
+        Assert.Null(response.TimerRunning);
     }
 
     [Fact]

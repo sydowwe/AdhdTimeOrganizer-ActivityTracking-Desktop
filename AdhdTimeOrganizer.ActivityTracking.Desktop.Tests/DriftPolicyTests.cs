@@ -193,6 +193,44 @@ public class DriftPolicyTests
         Assert.True(run.Policy.TakeWithdrawn());
     }
 
+    /// <summary>
+    /// "Not this one" on the start ramp: the user decided against the block, so no "you slid off it" in it — but the next
+    /// block is a plan again. It holds across a restart, which the ramp's answer may well straddle.
+    /// </summary>
+    [Fact]
+    public void AQuietBlock_GetsNoDriftNudge_TheNextBlockDoes_AndItOutlivesARestart()
+    {
+        var run = new Run();
+        run.Policy.QuietBlock(Thesis.PlannerTaskId);
+        run.Minutes(5, onPlan: false, "YouTube");
+
+        var restarted = new Run();
+        restarted.Policy.Restore(run.Policy.Snapshot());
+        restarted.Skip(TimeSpan.FromMinutes(5));
+        restarted.Minutes(30, onPlan: false, "YouTube");
+        Assert.Empty(restarted.Shown);
+
+        run.Minutes(25, onPlan: false, "YouTube");
+        Assert.Empty(run.Shown);
+
+        run.Block = Block(2, "Email");
+        run.Minutes(10, onPlan: false, "YouTube");
+        Assert.Equal("Email", Assert.Single(run.Shown).Drift!.PlannedName);
+    }
+
+    /// <summary>Pressed while a drift toast for the block is still out, it takes the toast away.</summary>
+    [Fact]
+    public void QuietingTheCurrentBlock_WithdrawsItsToast()
+    {
+        var run = new Run();
+        run.Minutes(10, onPlan: false, "YouTube");
+        Assert.Single(run.Shown);
+
+        run.Policy.QuietBlock(Thesis.PlannerTaskId);
+
+        Assert.True(run.Policy.TakeWithdrawn());
+    }
+
     [Fact]
     public void NamesWhereMostOfTheOffPlanTimeWent()
     {

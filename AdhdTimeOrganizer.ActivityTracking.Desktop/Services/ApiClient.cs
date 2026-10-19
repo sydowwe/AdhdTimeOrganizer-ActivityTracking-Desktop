@@ -75,6 +75,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     private const string AgentCoveragePath = "/api/activity-tracking/desktop/agent-coverage";
     private const string AgentUnmappedPath = "/api/activity-tracking/desktop/agent-unmapped";
     private const string EveningMomentPath = "/api/user/evening-shutdown-moment";
+    private const string AgentStartBlockPath = "/api/activity-tracking/desktop/agent-start-block";
 
     /// <summary>
     /// How long a refresh already sent may still finish after its caller was cancelled — an exit, a session end.
@@ -345,6 +346,40 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     {
         var (status, value) = await GetAgentJsonAsync<EveningMoment>(EveningMomentPath, "Evening moment", ct);
         return new AgentRead<EveningMoment>(status, value);
+    }
+
+    /// <summary>
+    /// The start ramp's Start now: the planned block goes in progress on the server. True when it is in progress
+    /// afterwards. Never throws but for the caller's cancellation, and nothing waits on it — the web app's timer opens
+    /// either way, and the web app marks the block started too. A 409 is a block no longer open (done, skipped, moved off
+    /// today); a 404 is a server from before the route.
+    /// </summary>
+    public async Task<bool> StartBlockAsync(long plannerTaskId, CancellationToken ct)
+    {
+        if (!HasSession) return false;
+
+        try
+        {
+            var (response, _) = await SendAuthorizedAsync(() => new HttpRequestMessage(HttpMethod.Post, BuildUri(AgentStartBlockPath))
+            {
+                Content = JsonContent.Create(new { plannerTaskId })
+            }, ct);
+            if (response is null) return false;
+            using var owned = response;
+
+            if (response.IsSuccessStatusCode) return true;
+            _log.Information("Start block {PlannerTaskId} answered {StatusCode}", plannerTaskId, (int)response.StatusCode);
+            return false;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Start block {PlannerTaskId} failed", plannerTaskId);
+            return false;
+        }
     }
 
     /// <summary>

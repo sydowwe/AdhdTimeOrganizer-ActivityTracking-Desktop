@@ -110,6 +110,46 @@ public class NudgeToastTests
         new(1, NudgeKind.UploadHealth, TimeSpan.Zero, null,
             Upload: new UploadNotice(problem, 90, TimeSpan.FromHours(26), 4));
 
+    /// <summary>
+    /// The start ramp: a reminder that stays until answered, Start now · In 2 minutes · Not this one — and the repeat
+    /// "In 2 minutes" asked for has no third chance. A user-authored name with XML in it still builds.
+    /// </summary>
+    [Theory]
+    [InlineData(true, new[] { NudgeResponse.StartNow, NudgeResponse.Later, NudgeResponse.NotThisOne })]
+    [InlineData(false, new[] { NudgeResponse.StartNow, NudgeResponse.NotThisOne })]
+    public void Build_StartRamp_IsAReminder_WithItsButtons(bool canDefer, NudgeResponse[] responses)
+    {
+        var startsUtc = new DateTime(2026, 10, 19, 11, 0, 0, DateTimeKind.Utc);
+        var nudge = Ramp(new StartRampDetails(7, "O'Reilly & <\"notes\">", startsUtc, startsUtc.AddMinutes(45), TimeSpan.Zero, canDefer));
+        var notification = NudgeToast.Build(nudge);
+        var toast = XDocument.Parse(notification.Payload).Root!;
+
+        Assert.Equal("StartRamp", notification.Tag);
+        Assert.Equal("reminder", (string?)toast.Attribute("scenario"));
+        Assert.Equal(NudgeToast.Text(nudge).Title, toast.Descendants("text").First().Value);
+        Assert.Equal(
+            responses.Select(r => new NudgeActivation(NudgeKind.StartRamp, 5, r)),
+            toast.Descendants("action").Select(a => NudgeToast.Parse(Arguments((string)a.Attribute("arguments")!))));
+    }
+
+    [Fact]
+    public void Text_StartRamp_OnTime_Late_AndTheRepeat()
+    {
+        var startsUtc = new DateTime(2026, 10, 19, 11, 0, 0, DateTimeKind.Utc);
+        var endsUtc = startsUtc.AddMinutes(45);
+        var until = TimeZoneInfo.ConvertTimeFromUtc(endsUtc, TimeZoneInfo.Local).ToString("HH:mm");
+
+        Assert.Equal(($"Thesis starts now (until {until})", "45 min planned. Start the timer?"),
+            NudgeToast.Text(Ramp(new StartRampDetails(1, "Thesis", startsUtc, endsUtc, TimeSpan.FromSeconds(40), true))));
+        Assert.Equal(($"Thesis started 20 min ago (until {until})", "25 min left. Start now?"),
+            NudgeToast.Text(Ramp(new StartRampDetails(1, "Thesis", startsUtc, endsUtc, TimeSpan.FromMinutes(20), true))));
+        Assert.Equal(($"Thesis started 2 min ago (until {until})", "Ready now? One click starts the timer."),
+            NudgeToast.Text(Ramp(new StartRampDetails(1, "Thesis", startsUtc, endsUtc, TimeSpan.FromMinutes(2), false))));
+    }
+
+    private static Nudge Ramp(StartRampDetails details) =>
+        new(5, NudgeKind.StartRamp, details.EndsUtc - details.StartsUtc, null, StartRamp: details);
+
     [Fact]
     public void Build_BreakOver_IsAReminder_ThatStaysUntilAnswered()
     {

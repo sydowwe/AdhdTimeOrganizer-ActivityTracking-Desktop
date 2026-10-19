@@ -140,6 +140,15 @@ public sealed class AppConfig
     /// <summary>Off-plan minutes inside one planned block before the nudge. At least 10.</summary>
     public int DriftNudgeMinutes { get; set; } = 10;
 
+    // ── Start ramp (see StartRampPolicy) ──────────────────────────────────────
+
+    /// <summary>
+    /// "Thesis starts now (until 11:30). Start the timer?" at each planned block's start. On by default, unlike drift
+    /// nudges: it needs only a plan, not mapped apps, it helps with the hard part rather than reproaching a slip, and it
+    /// asks once per block.
+    /// </summary>
+    public bool StartRampEnabled { get; set; } = true;
+
     // ── Upload problems (see UploadHealthPolicy) ──────────────────────────────
 
     /// <summary>

@@ -23,6 +23,18 @@ public sealed record HeartbeatResponse
     /// <summary>The open planner blocks covering the minute, earliest first.</summary>
     [JsonPropertyName("planned")]
     public List<PlannedBlock> Planned { get; init; } = [];
+
+    /// <summary>The first open block starting after the minute, today only — what the start ramp offers at its start.</summary>
+    [JsonPropertyName("next")]
+    public PlannedBlock? Next { get; init; }
+
+    /// <summary>
+    /// A countdown or pomodoro is running in the web app, as far as the server knows (a stopwatch doesn't count). Null
+    /// from a server older than the start ramp (2026-10-19), which can't say whether a block was started either — the
+    /// ramp stays quiet against one.
+    /// </summary>
+    [JsonPropertyName("timerRunning")]
+    public bool? TimerRunning { get; init; }
 }
 
 /// <summary>One slice of a minute's foreground time. <see cref="Name"/> is user-authored: never log it.</summary>
@@ -70,6 +82,10 @@ public sealed record PlannedBlock
 
     [JsonPropertyName("endsAt")]
     public DateTime EndsAtUtc { get; init; }
+
+    /// <summary>Started in the planner (the web app's timer, the phone's push, or the start ramp's Start now).</summary>
+    [JsonPropertyName("inProgress")]
+    public bool InProgress { get; init; }
 }
 
 /// <summary>

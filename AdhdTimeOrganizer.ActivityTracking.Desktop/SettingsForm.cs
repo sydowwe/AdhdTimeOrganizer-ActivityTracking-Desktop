@@ -25,6 +25,7 @@ public sealed class SettingsForm : Form
     private readonly CheckBox _quietMicrophoneBox;
     private readonly CheckBox _driftEnabledBox;
     private readonly NumericUpDown _driftAfterBox;
+    private readonly CheckBox _startRampBox;
     private readonly CheckBox _uploadNoticesBox;
     private readonly CheckBox _unmappedReviewBox;
     private readonly Label _errorLabel;
@@ -92,6 +93,11 @@ public sealed class SettingsForm : Form
         AddRow(layout, "Drift nudges:", _driftEnabledBox,
             "When your planner says one thing and your apps another. Apps without a mapping rule don't count either way.");
         AddRow(layout, "Off plan, nudge after (min):", _driftAfterBox, "At most once per planned block.");
+
+        _startRampBox = new CheckBox { Text = "On", Checked = config.StartRampEnabled, AutoSize = true };
+        AddRow(layout, "Start ramp:", _startRampBox,
+            "When a planned block starts and you are at the computer: one notice to start its timer. Needs no drift nudges.");
+
         AddRow(layout, "Stay quiet while:", _quietFullscreenBox, null);
         AddRow(layout, "", _quietMicrophoneBox, null);
 
@@ -179,6 +185,7 @@ public sealed class SettingsForm : Form
         _config.QuietWhenMicrophoneInUse = _quietMicrophoneBox.Checked;
         _config.DriftNudgesEnabled = _driftEnabledBox.Checked;
         _config.DriftNudgeMinutes = (int)_driftAfterBox.Value;
+        _config.StartRampEnabled = _startRampBox.Checked;
         _config.UploadNoticesEnabled = _uploadNoticesBox.Checked;
         _config.UnmappedReviewEnabled = _unmappedReviewBox.Checked;
 
