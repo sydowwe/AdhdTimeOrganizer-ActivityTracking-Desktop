@@ -129,3 +129,17 @@ public sealed class TwoFactorLoginRequest
     [JsonPropertyName("pendingAuthToken")]
     public required string PendingAuthToken { get; init; }
 }
+
+/// <summary>Browser sign-in, second half (<c>POST /api/auth/extension/token</c>): the code the loopback listener received.</summary>
+public sealed class BrowserCodeExchangeRequest
+{
+    [JsonPropertyName("code")]
+    public required string Code { get; init; }
+
+    [JsonPropertyName("codeVerifier")]
+    public required string CodeVerifier { get; init; }
+
+    /// <summary>The redirect the code was issued for, byte for byte.</summary>
+    [JsonPropertyName("redirectUri")]
+    public required string RedirectUri { get; init; }
+}

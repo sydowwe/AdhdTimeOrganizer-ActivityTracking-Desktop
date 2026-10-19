@@ -171,7 +171,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private void ShowLogin()
     {
         _config.Save();
-        using var loginForm = new LoginForm(_apiClient);
+        using var loginForm = new LoginForm(_apiClient, _config);
         if (loginForm.ShowDialog() == DialogResult.OK)
         {
             StartUnlessPaused();

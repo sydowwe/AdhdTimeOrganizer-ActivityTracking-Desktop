@@ -14,7 +14,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 |---|---|
 | `Program.cs` | Logging (Serilog → `%LOCALAPPDATA%\AdhdTimeOrganizer\logs`), single-instance mutex, tray startup |
 | `TrayApplicationContext.cs` | Tray icon and menu (incl. "Pause for…", the today/now glance and the "map these apps" prompt); pulls status from the tracker on a UI timer |
-| `LoginForm.cs`, `SettingsForm.cs`, `PrivacyForm.cs` | Password + 2FA sign-in; settings editor; the user's ignore / hide-title rules and private-window handling |
+| `LoginForm.cs`, `SettingsForm.cs`, `PrivacyForm.cs` | Sign-in (the browser by default; password + 2FA behind "Use a password instead"); settings editor; the user's ignore / hide-title rules and private-window handling |
+| `Services/BrowserSignIn.cs` | **Pure** browser sign-in: PKCE (S256), state, the `/connect/tracker` URL, and whether a request reaching the listener is our redirect |
+| `Services/LoopbackRedirectListener.cs`, `Services/BrowserSignInFlow.cs` | The loopback listener (`TcpListener` on `127.0.0.1`, free port, one redirect, the handler testable on a stream) and the run: listen → open the browser → wait → exchange |
 | `Helpers/AutoStartHelper.cs` | "Start with Windows": the tracker's own `Run` entry (`AdhdTimeOrganizer.ActivityTracking.Desktop` — never `AdhdTimeOrganizer`, which the separate desktop app uses), Windows' `StartupApproved` verdict, repair of a moved exe; the registry sits behind `IAutoStartStore` so tests never touch it |
 | `Services/ActivityTrackerService.cs` | Poll loop (foreground changes as they happen, plus a poll for the rest of the desktop), send loop (drains the outbox), lock/suspend/session-end handling |
 | `Services/ActivityRecorder.cs` | **Pure** minute accounting: measured elapsed time, split at minute boundaries, gap cap, switch counts, the hold-back that idle backdating retracts from |
@@ -112,6 +114,15 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     `AdhdTimeOrganizer.Tracking/application/dto/response/desktop/DesktopAgentWire.samples.json`, the same arrangement as
     the matcher vectors: the server checks it against its DTOs and live routes, `WireSampleTests` read it through
     these models, and each side fails when the other's copy differs. A wire change starts on the server.
+
+- **Browser sign-in is the RFC 8252 loopback flow** (servers from 2026-10-19). The tracker listens on
+  `http://127.0.0.1:<free port>/cb` and opens `<WebAppUrl>/connect/tracker?redirect_uri=…&code_challenge=…&state=…`.
+  The user confirms there, the browser comes back with `?code=…&state=…`, and `POST /api/auth/extension/token`
+  `{ code, codeVerifier, redirectUri }` answers with the same token pair as `/auth/extension/login`. The server
+  accepts exactly that redirect shape: the IPv4 literal (never `localhost`), any port from 1024 up, path `/cb`,
+  nothing after it. The challenge is S256 only, the state is 16–128 base64url characters, and a code lives a minute
+  and is spent by its first exchange, even a failed one. Change `BrowserSignIn` and the server's `TrackerSignInRules`
+  together. A 404 from the exchange means an older server: the password form still works there.
 
 ### Time accounting
 - All of it lives in `ActivityRecorder` and `ScreenState`, which have no clock and no Win32, so they're

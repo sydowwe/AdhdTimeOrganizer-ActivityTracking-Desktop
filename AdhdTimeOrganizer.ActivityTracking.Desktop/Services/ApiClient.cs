@@ -124,7 +124,20 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
             new TwoFactorLoginRequest { Token = code, PendingAuthToken = pendingAuthToken });
     }
 
-    private async Task<LoginOutcome> PostLoginAsync<TRequest>(string path, TRequest request)
+    /// <summary>
+    /// Browser sign-in, last step: the code the loopback listener received, with the PKCE verifier only this process
+    /// holds, for the same token pair the password login gives (see <see cref="BrowserSignIn"/>).
+    /// </summary>
+    public async Task<LoginOutcome> ExchangeBrowserCodeAsync(string code, string codeVerifier, string redirectUri)
+    {
+        _log.Information("Exchanging browser sign-in code");
+        return await PostLoginAsync("/api/auth/extension/token",
+            new BrowserCodeExchangeRequest { Code = code, CodeVerifier = codeVerifier, RedirectUri = redirectUri },
+            DescribeBrowserCodeFailure);
+    }
+
+    private async Task<LoginOutcome> PostLoginAsync<TRequest>(
+        string path, TRequest request, Func<HttpStatusCode, string>? describeFailure = null)
     {
         try
         {
@@ -133,7 +146,8 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
             if (!response.IsSuccessStatusCode)
             {
                 _log.Warning("Login step {Path} failed with status {StatusCode}", path, response.StatusCode);
-                return new LoginOutcome(LoginStatus.Failed, Message: DescribeLoginFailure(response.StatusCode));
+                return new LoginOutcome(LoginStatus.Failed,
+                    Message: (describeFailure ?? DescribeLoginFailure)(response.StatusCode));
             }
 
             var tokens = await response.Content.ReadFromJsonAsync<TokenResponse>();
@@ -164,6 +178,16 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
         400 or 401 => "Wrong email, password or code.",
         403 => "Sign-in refused. Check your account in the web app.",
         423 or 429 => "Too many attempts. Try again later.",
+        _ => $"Sign-in failed ({(int)statusCode})."
+    };
+
+    private static string DescribeBrowserCodeFailure(HttpStatusCode statusCode) => (int)statusCode switch
+    {
+        400 => "The browser sign-in expired or was already used. Try again.",
+        403 => "Sign-in refused. Check your account in the web app.",
+        // A server from before 2026-10-19 has no exchange route.
+        404 => "This server doesn't support browser sign-in yet. Use a password instead.",
+        429 => "Too many attempts. Try again later.",
         _ => $"Sign-in failed ({(int)statusCode})."
     };
 
