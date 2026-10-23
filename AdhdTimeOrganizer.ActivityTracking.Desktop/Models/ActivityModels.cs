@@ -97,6 +97,13 @@ public sealed class LoginRequest
 
     [JsonPropertyName("password")]
     public required string Password { get; init; }
+
+    /// <summary>
+    /// Which tracker is signing in. The server refuses a login without it, and the session it issues may call the
+    /// desktop routes only. The browser sign-in needs no such field: the server reads the kind off the loopback redirect.
+    /// </summary>
+    [JsonPropertyName("client")]
+    public string Client { get; init; } = "DesktopTracker";
 }
 
 /// <summary>
