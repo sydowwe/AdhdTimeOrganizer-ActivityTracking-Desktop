@@ -1,5 +1,5 @@
 {
-  "about": "Shared test cases for DesktopMappingRuleSet (server) and its port in the desktop agent (MappingRuleSet). Both test suites resolve every case and each checks the other repo's copy of this file is byte-identical. Rules have the shape of GET /activity-tracking/desktop/agent-rules; entries carry what the heartbeat resolves after its own normalization, so a product or title the agent could not read is an empty string, never null. Change matching on the server, change this file, copy it to AdhdTimeOrganizer.ActivityTracking.Desktop.Tests/, port the change.",
+  "about": "Shared test cases for DesktopMappingRuleSet (server) and its port in the desktop tracker (MappingRuleSet). Both test suites resolve every case and each checks the other repo's copy of this file is byte-identical. Rules have the shape of GET /tracker/desktop/rules; entries carry what the heartbeat resolves after its own normalization, so a product or title the tracker could not read is an empty string, never null. Change matching on the server, change this file, copy it to AdhdTimeOrganizer.ActivityTracking.Desktop.Tests/, port the change.",
   "cases": [
     {
       "name": "exact matches the whole value, ignoring case",

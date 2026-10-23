@@ -1,8 +1,8 @@
 # AdhdTimeOrganizer.ActivityTracking.Desktop
 
-The Windows tray agent that records which windows the user has in front of them and sends one
+The Windows tray tracker that records which windows the user has in front of them and sends one
 **minute window** per minute to the AdhdTimeOrganizer server
-(`POST /api/activity-tracking/desktop/heartbeat`). WinForms, .NET 10, no DI container.
+(`POST /api/tracker/desktop/heartbeat`). WinForms, .NET 10, no DI container.
 
 The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 `AdhdTimeOrganizer.Tracking/`, start with its `docs/summary.md`). Ideas for what to build next are in
@@ -31,7 +31,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/RefreshPolicy.cs` | **Pure** refresh decisions: save / sign out / keep, whether an attempt left the token possibly rotated, how long to hold it back |
 | `Services/TodayTotal.cs` | Today's recorded foreground time on this PC, for the tray glance; saved to `today.json` |
 | `Services/PrivacyFilter.cs` | Recording-time privacy: local rules and private browser windows → keep, hide the title, or drop |
-| `Services/AgentRules.cs` | Send-time privacy: the user's server rules (in memory) and the filter that drops entries an ignore rule wins |
+| `Services/TrackerRules.cs` | Send-time privacy: the user's server rules (in memory) and the filter that drops entries an ignore rule wins |
 | `Services/Matching/` | **Port of the server's matcher** (`PatternMatcher`, `MappingRuleSet`) — see "Rule matching" below |
 | `Services/HyperfocusPolicy.cs` | **Pure** nudge decisions: stretches, breaks, app stretches, snooze / repeat / "not now", the break timer |
 | `Services/DriftPolicy.cs` | **Pure** drift-nudge decisions over the server's per-minute plan verdicts (`MinuteVerdict`) |
@@ -43,7 +43,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/NudgeService.cs` | Feeds polls to the policy, checks quiet conditions, shows and withdraws toasts, handles button presses |
 | `Services/NudgeNotifier.cs`, `NudgeToast.cs` | Windows App SDK notifications: registration, toast text and buttons, parsing a press |
 | `Native/` | P/Invoke (`Win32`, `MonitorHelper`), `ProcessInfoCache`, `AudioSessionHelper` (NAudio), `MicrophoneUsage` (registry: whether, and which apps), `ForegroundEvents` (the WinEvent hook) |
-| `Models/` | Wire models (`ActivityModels.cs`, `AgentRule.cs`, `ServerResolution.cs` — the heartbeat's answer, the coverage, today's unmapped time and the evening moment) and `AppConfig` (`%LOCALAPPDATA%\…Desktop\config.json`) |
+| `Models/` | Wire models (`ActivityModels.cs`, `TrackerRule.cs`, `ServerResolution.cs` — the heartbeat's answer, the coverage, today's unmapped time and the evening moment) and `AppConfig` (`%LOCALAPPDATA%\…Desktop\config.json`) |
 | `AdhdTimeOrganizer.ActivityTracking.Desktop.Tests/` | xunit v3 tests, including `NativeSmokeTests` against the real machine |
 
 ## Building and testing — always through `scripts/test.ps1`
@@ -75,7 +75,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 ## Rules that hold everywhere
 
 ### The wire contract
-- **A refused heartbeat is a lost minute.** The agent cannot repair a batch the server calls
+- **A refused heartbeat is a lost minute.** The tracker cannot repair a batch the server calls
   malformed: a 4xx other than 401/403/408/409/425/429 is dropped (`ApiClient.Classify`). So every server
   bound is mirrored in `WindowLimits` and applied before queuing: ≤ 60 s active + background per entry,
   ≤ 60 s active per window, ≤ 200 entries, column widths, the 2000-byte (process, title) index limit, and
@@ -94,11 +94,11 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   normalization changes which rules match and splits the distinct-entries grid. Do it deliberately and
   say so.
 - **Rule matching: the server is authoritative; `Services/Matching/` is its one sanctioned port.** The
-  agent downloads the user's active rules (`GET /api/activity-tracking/desktop/agent-rules`, ETag → 304,
+  tracker downloads the user's active rules (`GET /api/tracker/desktop/rules`, ETag → 304,
   at most every 5 min, memory only, forgotten on sign-out) and, just before sending a window, drops the
   entries whose winning rule ignores — so an ignored title never leaves the machine. It needs *every*
   rule, not only the ignore ones: first match wins after the specificity sort, so a narrower activity rule
-  shadows a broad ignore rule. The heartbeat still applies the same rules (stale cache, old agents).
+  shadows a broad ignore rule. The heartbeat still applies the same rules (stale cache, old trackers).
   - **Must answer exactly what the server answers.** `Tests/DesktopMappingRuleSet.vectors.json` is a copy
     of the server's `AdhdTimeOrganizer.Tracking/domain/helper/mapping/DesktopMappingRuleSet.vectors.json`;
     both test suites resolve it and each fails when the other repo's copy differs. Matching changes start
@@ -115,16 +115,16 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   The tray's "now", the drift nudge and the start ramp read it, and nothing else may decide any of them. An older server answers a bare
   count: `ApiClient.ReadHeartbeatResponse` reads that (or anything unreadable) as "no answer" — the window is still
   sent, only the glance and the nudge go without. `target` stays a string so a target the server adds later can't fail
-  the parse. `GET …/agent-coverage` (404 = older server: no prompt) is fetched hourly, only while drift nudges are on.
-  - **Both answers are pinned by `Tests/DesktopAgentWire.samples.json`**, a copy of the server's
-    `AdhdTimeOrganizer.Tracking/application/dto/response/desktop/DesktopAgentWire.samples.json`, the same arrangement as
+  the parse. `GET …/coverage` (404 = older server: no prompt) is fetched hourly, only while drift nudges are on.
+  - **Both answers are pinned by `Tests/DesktopTrackerWire.samples.json`**, a copy of the server's
+    `AdhdTimeOrganizer.Tracking/application/dto/response/desktop/DesktopTrackerWire.samples.json`, the same arrangement as
     the matcher vectors: the server checks it against its DTOs and live routes, `WireSampleTests` read it through
     these models, and each side fails when the other's copy differs. A wire change starts on the server.
 
 - **Browser sign-in is the RFC 8252 loopback flow** (servers from 2026-10-19). The tracker listens on
   `http://127.0.0.1:<free port>/cb` and opens `<WebAppUrl>/connect/tracker?redirect_uri=…&code_challenge=…&state=…`.
-  The user confirms there, the browser comes back with `?code=…&state=…`, and `POST /api/auth/extension/token`
-  `{ code, codeVerifier, redirectUri }` answers with the same token pair as `/auth/extension/login`. The server
+  The user confirms there, the browser comes back with `?code=…&state=…`, and `POST /api/auth/tracker/token`
+  `{ code, codeVerifier, redirectUri }` answers with the same token pair as `/auth/tracker/login`. The server
   accepts exactly that redirect shape: the IPv4 literal (never `localhost`), any port from 1024 up, path `/cb`,
   nothing after it. The challenge is S256 only, the state is 16–128 base64url characters, and a code lives a minute
   and is spent by its first exchange, even a failed one. Change `BrowserSignIn` and the server's `TrackerSignInRules`
@@ -232,7 +232,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     (`timerRunning`), under the quiet conditions, and within the gap to the other families. A server from before
     2026-10-19 sends no `timerRunning`, so the ramp stays quiet against it.
   - **Asks once per block.** A *reminder* toast (stays until answered).
-    - **Start now** does two things side by side. It calls `POST …/desktop/agent-start-block` (the block goes in progress
+    - **Start now** does two things side by side. It calls `POST …/tracker/desktop/start-block` (the block goes in progress
       in the planner, so the start counts even if the browser never gets there). It also opens
       `WebAppUrl/?track=<plannerTaskId>`, which the web app's home turns into the block's countdown, already running. The
       timer itself lives only in the browser: there is no server timer to start.
@@ -287,17 +287,17 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   **Review** (opens the web app's distinct-entries grid on `coverage=Uncovered&today=true`, busiest first) and **Not
   today**. `NudgeKind.UnmappedReview` shares the toast plumbing but is not a nudge: no quiet conditions (Windows holds
   toasts itself), its own Settings switch (`UnmappedReviewEnabled`, on by default), independent of drift nudges.
-- **The agent decides nothing about mapping.** The evening moment is the server's (`GET /api/user/evening-shutdown-moment`,
+- **The tracker decides nothing about mapping.** The evening moment is the server's (`GET /api/tracker/evening-shutdown-moment`,
   the same instant the phone uses and the evening-shutdown push sweeps with); what is unmapped, which apps are worth
-  naming and whether to ask at all is `GET …/desktop/agent-unmapped`'s, and **an empty `apps` list is the server's "don't
-  ask"** — no threshold is repeated here. The review itself is the web app's: the agent's token must not write rules, and a
+  naming and whether to ask at all is `GET …/desktop/unmapped`'s, and **an empty `apps` list is the server's "don't
+  ask"** — no threshold is repeated here. The review itself is the web app's: the tracker's token must not write rules, and a
   browser (`isBrowser`) is mapped by title there, not by process.
 - **One look per evening.** `UnmappedReviewStore` keeps the last handled moment, marked whether the evening ended in an
   invite or in nothing to say, so neither a restart nor a second pass asks again. A moment more than 3 h old
   (`UnmappedReviewPolicy.Window`) is missed, not late. Stays quiet while tracking is paused and while signed out; a server
   from before the routes ends it for the session; a failed read is retried in 5 min, not every pass.
 - The toast names **apps** (product or process name), never a window title, and the log carries counts only.
-- Both answers are pinned by `DesktopAgentWire.samples.json` (`unmapped`, `eveningMoment`) like the others. The tray's
+- Both answers are pinned by `DesktopTrackerWire.samples.json` (`unmapped`, `eveningMoment`) like the others. The tray's
   "Map apps for drift nudges…" stays: it is the week's view, tied to drift nudges, and opens the same grid.
 
 ### Privacy before upload
@@ -306,7 +306,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   hidden title becomes `"<product or process> - PRIVATE"` or the window is dropped
   (`PrivateWindowHandling`); process and product stay, so process-level server rules still map the time.
   The raw title goes no further than `ToSample`, so it never reaches the outbox. **At sending**
-  (`AgentRules`, send loop): the server's rules, as above.
+  (`TrackerRules`, send loop): the server's rules, as above.
 - A local title rule matches the raw title **and** the normalized one: normalization strips the browser
   suffix, and with it a localized private-browsing marker.
 - Private windows are recognised by title only: Firefox ends it with "Private Browsing", Edge writes

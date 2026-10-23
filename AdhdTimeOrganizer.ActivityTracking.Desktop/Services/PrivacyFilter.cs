@@ -6,7 +6,7 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 /// <summary>
 /// What a window may be recorded as, decided before anything reaches the outbox: dropped, recorded with its title
 /// hidden, or recorded as it is. The user's <see cref="LocalRule"/>s and private browser windows decide it; the
-/// server's rules are applied later, at send time (<see cref="AgentRules"/>).
+/// server's rules are applied later, at send time (<see cref="TrackerRules"/>).
 /// </summary>
 /// <remarks>
 /// <para>

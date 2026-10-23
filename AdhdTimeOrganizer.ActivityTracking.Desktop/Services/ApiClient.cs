@@ -23,19 +23,19 @@ internal enum RefreshOutcome { Refreshed, Rejected, Unavailable }
 
 public enum LoginStatus { SignedIn, TwoFactorRequired, TwoFactorSetupRequired, Failed }
 
-public enum AgentRulesFetch
+public enum TrackerRulesFetch
 {
-    /// <summary>A new set, in <see cref="AgentRulesResult.Rules"/>.</summary>
+    /// <summary>A new set, in <see cref="TrackerRulesResult.Rules"/>.</summary>
     Updated,
     /// <summary>304: the set already held is current.</summary>
     Unchanged,
-    /// <summary>The server predates the route. It still filters on the heartbeat; the agent sends unfiltered.</summary>
+    /// <summary>The server predates the route. It still filters on the heartbeat; the tracker sends unfiltered.</summary>
     NotSupported,
     /// <summary>Offline, signed out, refused or failed — keep what is held and try again.</summary>
     Unavailable
 }
 
-public sealed record AgentRulesResult(AgentRulesFetch Status, IReadOnlyList<AgentRule>? Rules = null, string? ETag = null);
+public sealed record TrackerRulesResult(TrackerRulesFetch Status, IReadOnlyList<TrackerRule>? Rules = null, string? ETag = null);
 
 /// <param name="Response">What the server resolved the minute to; null unless sent, and from a server that predates the answer.</param>
 public sealed record HeartbeatOutcome(SendResult Result, HeartbeatResponse? Response = null);
@@ -49,10 +49,10 @@ public enum CoverageFetch
     Unavailable
 }
 
-public sealed record CoverageResult(CoverageFetch Status, AgentCoverage? Coverage = null);
+public sealed record CoverageResult(CoverageFetch Status, TrackerCoverage? Coverage = null);
 
-/// <summary>An answer the agent only reads (<see cref="CoverageFetch"/> says how the read went); the value is set only when fetched.</summary>
-public sealed record AgentRead<T>(CoverageFetch Status, T? Value = default) where T : class;
+/// <summary>An answer the tracker only reads (<see cref="CoverageFetch"/> says how the read went); the value is set only when fetched.</summary>
+public sealed record TrackerRead<T>(CoverageFetch Status, T? Value = default) where T : class;
 
 /// <param name="PendingAuthToken">Set with <see cref="LoginStatus.TwoFactorRequired"/>; goes back with the code.</param>
 /// <param name="Message">What to tell the user when it did not work.</param>
@@ -70,12 +70,12 @@ public sealed record LoginOutcome(LoginStatus Status, string? PendingAuthToken =
 /// <param name="time">Null for the system clock; tests pass one they can move.</param>
 public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = null, TimeProvider? time = null) : IDisposable
 {
-    private const string HeartbeatPath = "/api/activity-tracking/desktop/heartbeat";
-    private const string AgentRulesPath = "/api/activity-tracking/desktop/agent-rules";
-    private const string AgentCoveragePath = "/api/activity-tracking/desktop/agent-coverage";
-    private const string AgentUnmappedPath = "/api/activity-tracking/desktop/agent-unmapped";
-    private const string EveningMomentPath = "/api/user/evening-shutdown-moment";
-    private const string AgentStartBlockPath = "/api/activity-tracking/desktop/agent-start-block";
+    private const string HeartbeatPath = "/api/tracker/desktop/heartbeat";
+    private const string TrackerRulesPath = "/api/tracker/desktop/rules";
+    private const string TrackerCoveragePath = "/api/tracker/desktop/coverage";
+    private const string TrackerUnmappedPath = "/api/tracker/desktop/unmapped";
+    private const string EveningMomentPath = "/api/tracker/evening-shutdown-moment";
+    private const string TrackerStartBlockPath = "/api/tracker/desktop/start-block";
 
     /// <summary>
     /// How long a refresh already sent may still finish after its caller was cancelled — an exit, a session end.
@@ -122,7 +122,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     {
         // No email in the log: log files outlive an account deletion.
         _log.Information("Attempting login");
-        return await PostLoginAsync("/api/auth/extension/login", new LoginRequest { Email = email, Password = password });
+        return await PostLoginAsync("/api/auth/tracker/login", new LoginRequest { Email = email, Password = password });
     }
 
     /// <summary>
@@ -131,7 +131,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     public async Task<LoginOutcome> CompleteTwoFactorAsync(string pendingAuthToken, string code)
     {
         _log.Information("Submitting 2FA code");
-        return await PostLoginAsync("/api/auth/login/2fa/extension",
+        return await PostLoginAsync("/api/auth/tracker/login/2fa",
             new TwoFactorLoginRequest { Token = code, PendingAuthToken = pendingAuthToken });
     }
 
@@ -142,7 +142,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     public async Task<LoginOutcome> ExchangeBrowserCodeAsync(string code, string codeVerifier, string redirectUri)
     {
         _log.Information("Exchanging browser sign-in code");
-        return await PostLoginAsync("/api/auth/extension/token",
+        return await PostLoginAsync("/api/auth/tracker/token",
             new BrowserCodeExchangeRequest { Code = code, CodeVerifier = codeVerifier, RedirectUri = redirectUri },
             DescribeBrowserCodeFailure);
     }
@@ -304,33 +304,33 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     };
 
     /// <summary>
-    /// Downloads the user's active server rules for the before-upload filter (<see cref="AgentRules"/>), sending
+    /// Downloads the user's active server rules for the before-upload filter (<see cref="TrackerRules"/>), sending
     /// <paramref name="etag"/> so an unchanged set costs a 304 and no body.
     /// </summary>
-    public async Task<AgentRulesResult> FetchAgentRulesAsync(string? etag, CancellationToken ct)
+    public async Task<TrackerRulesResult> FetchTrackerRulesAsync(string? etag, CancellationToken ct)
     {
-        if (!HasSession) return new AgentRulesResult(AgentRulesFetch.Unavailable);
+        if (!HasSession) return new TrackerRulesResult(TrackerRulesFetch.Unavailable);
 
         try
         {
             var (response, _) = await SendAuthorizedAsync(() =>
             {
-                var request = new HttpRequestMessage(HttpMethod.Get, BuildUri(AgentRulesPath));
+                var request = new HttpRequestMessage(HttpMethod.Get, BuildUri(TrackerRulesPath));
                 if (etag is not null && EntityTagHeaderValue.TryParse(etag, out var tag))
                     request.Headers.IfNoneMatch.Add(tag);
                 return request;
             }, ct);
-            if (response is null) return new AgentRulesResult(AgentRulesFetch.Unavailable);
+            if (response is null) return new TrackerRulesResult(TrackerRulesFetch.Unavailable);
             using var owned = response;
 
-            var status = ClassifyAgentRules(response.StatusCode);
-            if (status == AgentRulesFetch.Unavailable)
-                _log.Warning("Agent rules answered {StatusCode} — keeping the rules already held", (int)response.StatusCode);
-            if (status != AgentRulesFetch.Updated)
-                return new AgentRulesResult(status);
+            var status = ClassifyTrackerRules(response.StatusCode);
+            if (status == TrackerRulesFetch.Unavailable)
+                _log.Warning("Tracker rules answered {StatusCode} — keeping the rules already held", (int)response.StatusCode);
+            if (status != TrackerRulesFetch.Updated)
+                return new TrackerRulesResult(status);
 
-            var rules = await response.Content.ReadFromJsonAsync<List<AgentRule>>(ct) ?? [];
-            return new AgentRulesResult(AgentRulesFetch.Updated, rules, response.Headers.ETag?.ToString());
+            var rules = await response.Content.ReadFromJsonAsync<List<TrackerRule>>(ct) ?? [];
+            return new TrackerRulesResult(TrackerRulesFetch.Updated, rules, response.Headers.ETag?.ToString());
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -338,8 +338,8 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
         }
         catch (Exception ex)
         {
-            _log.Warning(ex, "Agent rules download failed — will retry");
-            return new AgentRulesResult(AgentRulesFetch.Unavailable);
+            _log.Warning(ex, "Tracker rules download failed — will retry");
+            return new TrackerRulesResult(TrackerRulesFetch.Unavailable);
         }
     }
 
@@ -348,12 +348,12 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     /// applies them on the heartbeat, so sending goes on unfiltered rather than waiting for a route that is not
     /// coming. Everything else that is not a 200 or a 304 is "try again", like a heartbeat.
     /// </remarks>
-    internal static AgentRulesFetch ClassifyAgentRules(HttpStatusCode statusCode) => statusCode switch
+    internal static TrackerRulesFetch ClassifyTrackerRules(HttpStatusCode statusCode) => statusCode switch
     {
-        HttpStatusCode.OK => AgentRulesFetch.Updated,
-        HttpStatusCode.NotModified => AgentRulesFetch.Unchanged,
-        HttpStatusCode.NotFound => AgentRulesFetch.NotSupported,
-        _ => AgentRulesFetch.Unavailable
+        HttpStatusCode.OK => TrackerRulesFetch.Updated,
+        HttpStatusCode.NotModified => TrackerRulesFetch.Unchanged,
+        HttpStatusCode.NotFound => TrackerRulesFetch.NotSupported,
+        _ => TrackerRulesFetch.Unavailable
     };
 
     /// <summary>
@@ -362,7 +362,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     /// </summary>
     public async Task<CoverageResult> FetchCoverageAsync(CancellationToken ct)
     {
-        var (status, coverage) = await GetAgentJsonAsync<AgentCoverage>(AgentCoveragePath, "Mapping coverage", ct);
+        var (status, coverage) = await GetTrackerJsonAsync<TrackerCoverage>(TrackerCoveragePath, "Mapping coverage", ct);
         return new CoverageResult(status, coverage);
     }
 
@@ -370,17 +370,17 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     /// Today's unmapped time on this PC, the evening invite's figures. A 404 is a server that predates the route; an
     /// empty <see cref="UnmappedToday.Apps"/> is the server's "don't ask".
     /// </summary>
-    public async Task<AgentRead<UnmappedToday>> FetchUnmappedTodayAsync(CancellationToken ct)
+    public async Task<TrackerRead<UnmappedToday>> FetchUnmappedTodayAsync(CancellationToken ct)
     {
-        var (status, value) = await GetAgentJsonAsync<UnmappedToday>(AgentUnmappedPath, "Unmapped time", ct);
-        return new AgentRead<UnmappedToday>(status, value);
+        var (status, value) = await GetTrackerJsonAsync<UnmappedToday>(TrackerUnmappedPath, "Unmapped time", ct);
+        return new TrackerRead<UnmappedToday>(status, value);
     }
 
     /// <summary>The instant of the user's next evening — the server's, shared with the phone's review. A 404 is an older server.</summary>
-    public async Task<AgentRead<EveningMoment>> FetchEveningMomentAsync(CancellationToken ct)
+    public async Task<TrackerRead<EveningMoment>> FetchEveningMomentAsync(CancellationToken ct)
     {
-        var (status, value) = await GetAgentJsonAsync<EveningMoment>(EveningMomentPath, "Evening moment", ct);
-        return new AgentRead<EveningMoment>(status, value);
+        var (status, value) = await GetTrackerJsonAsync<EveningMoment>(EveningMomentPath, "Evening moment", ct);
+        return new TrackerRead<EveningMoment>(status, value);
     }
 
     /// <summary>
@@ -395,7 +395,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
 
         try
         {
-            var (response, _) = await SendAuthorizedAsync(() => new HttpRequestMessage(HttpMethod.Post, BuildUri(AgentStartBlockPath))
+            var (response, _) = await SendAuthorizedAsync(() => new HttpRequestMessage(HttpMethod.Post, BuildUri(TrackerStartBlockPath))
             {
                 Content = JsonContent.Create(new { plannerTaskId })
             }, ct);
@@ -418,11 +418,11 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     }
 
     /// <summary>
-    /// One authorized GET of a server answer the agent only reads. Never throws but for the caller's cancellation: a
+    /// One authorized GET of a server answer the tracker only reads. Never throws but for the caller's cancellation: a
     /// failure is <see cref="CoverageFetch.Unavailable"/>, "try again later", and a 404 is
     /// <see cref="CoverageFetch.NotSupported"/>, a server from before the route. <paramref name="what"/> is for the log.
     /// </summary>
-    private async Task<(CoverageFetch Status, T? Value)> GetAgentJsonAsync<T>(string path, string what, CancellationToken ct)
+    private async Task<(CoverageFetch Status, T? Value)> GetTrackerJsonAsync<T>(string path, string what, CancellationToken ct)
     {
         if (!HasSession) return (CoverageFetch.Unavailable, default);
 
@@ -531,7 +531,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
             _log.Debug("Refreshing access token");
             sent = true;
             using var response = await _http.PostAsJsonAsync(
-                BuildUri("/api/auth/extension/refresh"), new { refreshToken }, send.Token);
+                BuildUri("/api/auth/tracker/refresh"), new { refreshToken }, send.Token);
 
             var tokens = response.IsSuccessStatusCode ? await response.Content.ReadFromJsonAsync<TokenResponse>(send.Token) : null;
             var attempt = new RefreshAttempt.Answered(response.StatusCode, tokens is { AccessToken.Length: > 0, RefreshToken.Length: > 0 });

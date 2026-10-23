@@ -193,16 +193,16 @@ public sealed class UnmappedReviewServiceTests : IDisposable
         {
             switch (request.RequestUri!.AbsolutePath)
             {
-                case "/api/auth/extension/refresh":
+                case "/api/auth/tracker/refresh":
                     return Task.FromResult(Json("""{ "accessToken": "access", "refreshToken": "refresh-2" }"""));
 
-                case "/api/user/evening-shutdown-moment":
+                case "/api/tracker/evening-shutdown-moment":
                     Interlocked.Increment(ref _momentRequests);
                     return Task.FromResult(HasRoutes
                         ? Json($$"""{ "enabled": true, "momentUtc": "{{MomentUtc:yyyy-MM-ddTHH:mm:ss}}Z" }""")
                         : new HttpResponseMessage(HttpStatusCode.NotFound));
 
-                case "/api/activity-tracking/desktop/agent-unmapped":
+                case "/api/tracker/desktop/unmapped":
                     Interlocked.Increment(ref _unmappedRequests);
                     return Task.FromResult(HasRoutes ? Json(Unmapped, UnmappedStatus) : new HttpResponseMessage(HttpStatusCode.NotFound));
 

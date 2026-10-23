@@ -7,13 +7,13 @@ using Xunit;
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Tests;
 
 /// <summary>
-/// The agent half of the contract with the server's <c>DesktopMappingRuleSet</c>: every case in
+/// The tracker half of the contract with the server's <c>DesktopMappingRuleSet</c>: every case in
 /// <c>DesktopMappingRuleSet.vectors.json</c> resolves to the rule it names, here exactly as on the server.
 /// </summary>
 /// <remarks>
 /// A port that disagrees fails silently either way: it uploads a title the user's rule ignores, or drops a minute
 /// the server would have attributed. The file is the server's (<c>AdhdTimeOrganizer.Tracking/domain/helper/mapping/</c>);
-/// its rules are deserialized through <see cref="AgentRule"/>, so the wire shape is pinned too.
+/// its rules are deserialized through <see cref="TrackerRule"/>, so the wire shape is pinned too.
 /// </remarks>
 public class MappingRuleSetVectorTests
 {
@@ -86,7 +86,7 @@ public class MappingRuleSetVectorTests
 
     private sealed record VectorFile(List<VectorCase> Cases);
 
-    private sealed record VectorCase(string Name, List<AgentRule> Rules, VectorEntry Entry, long? ExpectedRuleId);
+    private sealed record VectorCase(string Name, List<TrackerRule> Rules, VectorEntry Entry, long? ExpectedRuleId);
 
     private sealed record VectorEntry(string ProcessName, string ProductName, string WindowTitle);
 }

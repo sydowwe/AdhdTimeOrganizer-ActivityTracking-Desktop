@@ -149,7 +149,7 @@ public class PrivacyFilterTests
 }
 
 /// <summary>The server rules, applied to a window just before it is sent.</summary>
-public class AgentRulesTests
+public class TrackerRulesTests
 {
     private static ActivityEntry Entry(string process, string? title, string? product = "Product") => new()
     {
@@ -167,13 +167,13 @@ public class AgentRulesTests
         new() { WindowStart = new DateTime(2026, 10, 18, 9, 0, 0, DateTimeKind.Utc), Entries = [.. entries] };
 
     /// <summary>"Ignore anything titled *GitHub*, except Chrome — that one is Programming."</summary>
-    private static AgentRules OverlappingRules()
+    private static TrackerRules OverlappingRules()
     {
-        var rules = new AgentRules();
+        var rules = new TrackerRules();
         rules.Replace(
         [
-            new AgentRule { Id = 1, WindowTitle = "*GitHub*", WindowTitleMatchType = PatternMatchType.Wildcard, IsIgnored = true },
-            new AgentRule
+            new TrackerRule { Id = 1, WindowTitle = "*GitHub*", WindowTitleMatchType = PatternMatchType.Wildcard, IsIgnored = true },
+            new TrackerRule
             {
                 Id = 2, ProcessName = "chrome", ProcessNameMatchType = PatternMatchType.Exact,
                 WindowTitle = "*GitHub*", WindowTitleMatchType = PatternMatchType.Wildcard, IsIgnored = false
@@ -211,8 +211,8 @@ public class AgentRulesTests
     [Fact]
     public void Filter_ResolvesAMissingProductAsEmpty_LikeTheHeartbeat()
     {
-        var rules = new AgentRules();
-        rules.Replace([new AgentRule { Id = 1, ProductName = "*", ProductNameMatchType = PatternMatchType.Wildcard, IsIgnored = true }], null, DateTime.UtcNow);
+        var rules = new TrackerRules();
+        rules.Replace([new TrackerRule { Id = 1, ProductName = "*", ProductNameMatchType = PatternMatchType.Wildcard, IsIgnored = true }], null, DateTime.UtcNow);
 
         Assert.Null(rules.Filter(Window(Entry("elevated", "Admin", product: null))));
     }
@@ -220,14 +220,14 @@ public class AgentRulesTests
     [Fact]
     public void Lifecycle_UnknownUntilDownloaded_DueAfterTheInterval_ForgottenOnClear()
     {
-        var rules = new AgentRules();
+        var rules = new TrackerRules();
         var now = new DateTime(2026, 10, 18, 9, 0, 0, DateTimeKind.Utc);
         var interval = TimeSpan.FromMinutes(5);
 
         Assert.False(rules.IsKnown);
         Assert.True(rules.IsDue(now, interval));
 
-        rules.Replace([new AgentRule { Id = 1, ProcessName = "x", ProcessNameMatchType = PatternMatchType.Exact, IsIgnored = true }], "\"v1\"", now);
+        rules.Replace([new TrackerRule { Id = 1, ProcessName = "x", ProcessNameMatchType = PatternMatchType.Exact, IsIgnored = true }], "\"v1\"", now);
         Assert.True(rules.IsKnown);
         Assert.False(rules.IsDue(now.AddMinutes(4), interval));
         Assert.True(rules.IsDue(now.AddMinutes(5), interval));
@@ -243,15 +243,15 @@ public class AgentRulesTests
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.OK, AgentRulesFetch.Updated)]
-    [InlineData(HttpStatusCode.NotModified, AgentRulesFetch.Unchanged)]
+    [InlineData(HttpStatusCode.OK, TrackerRulesFetch.Updated)]
+    [InlineData(HttpStatusCode.NotModified, TrackerRulesFetch.Unchanged)]
     // A server from before the route: it still filters on arrival, and waiting for it would hold the outbox forever.
-    [InlineData(HttpStatusCode.NotFound, AgentRulesFetch.NotSupported)]
-    [InlineData(HttpStatusCode.Forbidden, AgentRulesFetch.Unavailable)]
-    [InlineData(HttpStatusCode.Unauthorized, AgentRulesFetch.Unavailable)]
-    [InlineData(HttpStatusCode.BadGateway, AgentRulesFetch.Unavailable)]
-    public void ClassifyAgentRules(HttpStatusCode status, AgentRulesFetch expected) =>
-        Assert.Equal(expected, ApiClient.ClassifyAgentRules(status));
+    [InlineData(HttpStatusCode.NotFound, TrackerRulesFetch.NotSupported)]
+    [InlineData(HttpStatusCode.Forbidden, TrackerRulesFetch.Unavailable)]
+    [InlineData(HttpStatusCode.Unauthorized, TrackerRulesFetch.Unavailable)]
+    [InlineData(HttpStatusCode.BadGateway, TrackerRulesFetch.Unavailable)]
+    public void ClassifyTrackerRules(HttpStatusCode status, TrackerRulesFetch expected) =>
+        Assert.Equal(expected, ApiClient.ClassifyTrackerRules(status));
 }
 
 public class PauseTests

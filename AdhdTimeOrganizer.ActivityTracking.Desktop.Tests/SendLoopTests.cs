@@ -203,18 +203,18 @@ public sealed class SendLoopTests : IDisposable
         {
             switch (request.RequestUri!.AbsolutePath)
             {
-                case "/api/auth/extension/refresh":
+                case "/api/auth/tracker/refresh":
                     return Json("""{ "accessToken": "access", "refreshToken": "refresh-2" }""");
 
-                case "/api/activity-tracking/desktop/agent-rules":
+                case "/api/tracker/desktop/rules":
                     return Json("""[ { "id": 1, "processName": "ignored", "processNameMatchType": "Exact", "isIgnored": true } ]""");
 
-                case "/api/activity-tracking/desktop/heartbeat":
+                case "/api/tracker/desktop/heartbeat":
                     var body = await request.Content!.ReadAsStringAsync(ct);
                     lock (Heartbeats) Heartbeats.Add(body);
                     return Json(HeartbeatBody, HeartbeatStatus);
 
-                case "/api/activity-tracking/desktop/agent-coverage":
+                case "/api/tracker/desktop/coverage":
                     Interlocked.Increment(ref _coverageRequests);
                     return HasCoverageRoute
                         ? Json("""{ "days": 7, "trackedSeconds": 7200, "mappedSeconds": 1800, "uncovered": [ { "processName": "slack", "productName": "Slack", "activeSeconds": 5400 } ] }""")

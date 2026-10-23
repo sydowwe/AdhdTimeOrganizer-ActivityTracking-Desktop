@@ -91,7 +91,7 @@ internal static class ProcessInfoCache
 
     /// <summary>
     /// <c>Process.ProcessName</c> drops a trailing ".exe" and nothing else; this matches it so process
-    /// names stay identical to what the agent reported before, which the user's mapping rules match on.
+    /// names stay identical to what the tracker reported before, which the user's mapping rules match on.
     /// </summary>
     internal static string ProcessNameFromPath(string path)
     {

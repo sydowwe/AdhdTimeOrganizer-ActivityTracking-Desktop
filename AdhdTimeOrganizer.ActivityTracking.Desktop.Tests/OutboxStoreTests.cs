@@ -70,7 +70,7 @@ public sealed class OutboxStoreTests : IDisposable
 
     /// <summary>
     /// The measured fields merge like the seconds: switches add up, a call in either part is a call. An entry from an
-    /// outbox file an older agent wrote has no count, and stays unknown only if both parts are.
+    /// outbox file an older tracker wrote has no count, and stays unknown only if both parts are.
     /// </summary>
     [Fact]
     public void Save_MergesTheSwitchCountAndCallFlagOfTheSameMinute()

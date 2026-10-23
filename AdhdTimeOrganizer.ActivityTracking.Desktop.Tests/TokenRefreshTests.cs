@@ -8,8 +8,8 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Tests;
 
 /// <summary>
 /// The refresh against a fake server. The server rotates on every refresh; a refresh answer lost after the rotation
-/// committed leaves the agent holding the old token. The server exchanges that token again once the rotation is
-/// more than 5 s old, and answers 409 inside those 5 s (401 from a server older than that) — so the agent must hold
+/// committed leaves the tracker holding the old token. The server exchanges that token again once the rotation is
+/// more than 5 s old, and answers 409 inside those 5 s (401 from a server older than that) — so the tracker must hold
 /// it back until then, and never end the session over it. The decisions themselves are <c>RefreshPolicyTests</c>.
 /// </summary>
 public sealed class TokenRefreshTests : IDisposable
@@ -131,7 +131,7 @@ public sealed class TokenRefreshTests : IDisposable
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
-            if (request.RequestUri!.AbsolutePath != "/api/auth/extension/refresh")
+            if (request.RequestUri!.AbsolutePath != "/api/auth/tracker/refresh")
                 return new HttpResponseMessage(HttpStatusCode.NotFound);
 
             var body = await request.Content!.ReadAsStringAsync(ct);

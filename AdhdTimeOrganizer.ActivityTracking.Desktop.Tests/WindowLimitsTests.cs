@@ -79,7 +79,7 @@ public class WindowLimitsTests
     }
 
     /// <summary>
-    /// Nothing leaves the agent null or blank where a server before 2026-10-18 would refuse it: a null
+    /// Nothing leaves the tracker null or blank where a server before 2026-10-18 would refuse it: a null
     /// product name or path was a 500 there (NOT NULL insert), a blank title a 400.
     /// </summary>
     [Fact]

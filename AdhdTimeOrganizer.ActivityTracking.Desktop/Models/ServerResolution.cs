@@ -5,7 +5,7 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 /// <summary>
 /// The heartbeat's answer: what the minute just sent resolved to on the server, and what the user had planned for it.
 /// The tray's "now: Thesis" and the drift nudge both read it — which activity a window maps to is the server's answer,
-/// never the agent's (its rule port only decides what is dropped before upload).
+/// never the tracker's (its rule port only decides what is dropped before upload).
 /// </summary>
 /// <remarks>
 /// Servers before 2026-10-18 answer the heartbeat with a bare count; <see cref="Services.ApiClient.ReadHeartbeatResponse"/>
@@ -89,10 +89,10 @@ public sealed record PlannedBlock
 }
 
 /// <summary>
-/// <c>GET /api/activity-tracking/desktop/agent-coverage</c>: how much of the last week the user's rules map, and the
+/// <c>GET /api/tracker/desktop/coverage</c>: how much of the last week the user's rules map, and the
 /// unmapped apps holding the most of the rest — the "map these apps to enable drift nudges" prompt.
 /// </summary>
-public sealed record AgentCoverage
+public sealed record TrackerCoverage
 {
     [JsonPropertyName("days")]
     public int Days { get; init; }
@@ -120,8 +120,8 @@ public sealed record UncoveredApp
 }
 
 /// <summary>
-/// <c>GET /api/activity-tracking/desktop/agent-unmapped</c>: today's desktop time no active rule maps, for the evening
-/// invite. <see cref="Apps"/> empty is the server saying "don't ask" — its thresholds, not this agent's.
+/// <c>GET /api/tracker/desktop/unmapped</c>: today's desktop time no active rule maps, for the evening
+/// invite. <see cref="Apps"/> empty is the server saying "don't ask" — its thresholds, not this tracker's.
 /// </summary>
 public sealed record UnmappedToday
 {
@@ -156,8 +156,8 @@ public sealed record UnmappedApp
 }
 
 /// <summary>
-/// <c>GET /api/user/evening-shutdown-moment</c>: the instant of the user's next evening, the one the phone's review also
-/// uses. <see cref="Enabled"/> is whether the evening-shutdown push is on, which this agent does not depend on.
+/// <c>GET /api/tracker/evening-shutdown-moment</c>: the instant of the user's next evening, the one the phone's review also
+/// uses. <see cref="Enabled"/> is whether the evening-shutdown push is on, which this tracker does not depend on.
 /// </summary>
 public sealed record EveningMoment
 {

@@ -80,13 +80,13 @@ public sealed class StartBlockClientTests : IDisposable
 
             switch (request.RequestUri!.AbsolutePath)
             {
-                case "/api/auth/extension/refresh":
+                case "/api/auth/tracker/refresh":
                     return new HttpResponseMessage(HttpStatusCode.OK)
                     {
                         Content = new StringContent("""{ "accessToken": "access", "refreshToken": "refresh-2" }""", Encoding.UTF8, "application/json")
                     };
 
-                case "/api/activity-tracking/desktop/agent-start-block" when request.Method == HttpMethod.Post:
+                case "/api/tracker/desktop/start-block" when request.Method == HttpMethod.Post:
                     StartRequests.Add((await request.Content!.ReadAsStringAsync(ct), request.Headers.Authorization?.ToString()));
                     return new HttpResponseMessage(StartStatus);
 

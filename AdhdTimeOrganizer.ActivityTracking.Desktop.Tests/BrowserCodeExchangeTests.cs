@@ -64,7 +64,7 @@ public sealed class BrowserCodeExchangeTests : IDisposable
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
-            if (request.RequestUri!.AbsolutePath != "/api/auth/extension/token" || request.Method != HttpMethod.Post)
+            if (request.RequestUri!.AbsolutePath != "/api/auth/tracker/token" || request.Method != HttpMethod.Post)
                 return new HttpResponseMessage(HttpStatusCode.NotFound);
 
             ExchangeBodies.Add(await request.Content!.ReadAsStringAsync(ct));

@@ -225,7 +225,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     /// "Map Slack, Chrome and Teams to enable drift nudges": a menu item while it applies, and a balloon the first time
     /// the coverage arrives after drift nudges were turned on. Clicking either opens the uncovered entries.
     /// </summary>
-    private void RefreshMappingPrompt(AgentCoverage? coverage)
+    private void RefreshMappingPrompt(TrackerCoverage? coverage)
     {
         var prompt = coverage is { Uncovered.Count: > 0 } ? DescribeMappingPrompt(coverage) : null;
         _mapAppsItem.Visible = prompt is not null;
@@ -275,7 +275,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             : top.Select(a => $"{a.Name} — {NudgeToast.FormatLength(TimeSpan.FromSeconds(a.ActiveSeconds))}").ToList();
 
     /// <summary>"Map Slack, Chrome and Teams to enable drift nudges".</summary>
-    internal static string DescribeMappingPrompt(AgentCoverage coverage)
+    internal static string DescribeMappingPrompt(TrackerCoverage coverage)
     {
         var names = coverage.Uncovered.Select(a => a.ProductName.Length > 0 ? a.ProductName : a.ProcessName).ToArray();
         var list = names.Length == 1 ? names[0] : $"{string.Join(", ", names[..^1])} and {names[^1]}";

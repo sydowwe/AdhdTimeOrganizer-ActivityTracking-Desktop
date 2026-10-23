@@ -64,7 +64,7 @@ public sealed class ActivityEntry
     public string? ProductName { get; init; }
 
     /// <summary>
-    /// Times the window came to the front in this minute. Null only in an outbox file written by an agent from before
+    /// Times the window came to the front in this minute. Null only in an outbox file written by an tracker from before
     /// it was measured: the server stores that as "unknown", which is what it is.
     /// </summary>
     [JsonPropertyName("switchCount")]
@@ -137,7 +137,7 @@ public sealed class TwoFactorLoginRequest
     public required string PendingAuthToken { get; init; }
 }
 
-/// <summary>Browser sign-in, second half (<c>POST /api/auth/extension/token</c>): the code the loopback listener received.</summary>
+/// <summary>Browser sign-in, second half (<c>POST /api/auth/tracker/token</c>): the code the loopback listener received.</summary>
 public sealed class BrowserCodeExchangeRequest
 {
     [JsonPropertyName("code")]

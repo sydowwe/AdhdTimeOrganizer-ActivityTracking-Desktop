@@ -2,7 +2,7 @@ using System.Net;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
-/// <summary>How one refresh ended, as far as the agent can tell.</summary>
+/// <summary>How one refresh ended, as far as the tracker can tell.</summary>
 internal abstract record RefreshAttempt
 {
     /// <summary>The server answered. <paramref name="HasTokens"/>: the answer carried both tokens.</summary>

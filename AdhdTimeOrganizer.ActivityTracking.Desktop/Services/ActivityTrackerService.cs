@@ -21,7 +21,7 @@ public sealed record TrackerStatus(
     DateTime? PausedUntilUtc = null,
     TimeSpan TodayOnThisPc = default,
     ResolvedMinute? LastResolved = null,
-    AgentCoverage? Coverage = null,
+    TrackerCoverage? Coverage = null,
     DateTime? OldestPendingUtc = null,
     int RejectedWindows = 0);
 
@@ -44,7 +44,7 @@ public sealed class ActivityTrackerService : IDisposable
 {
     private static readonly TimeSpan SendInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan OutboxRetention = TimeSpan.FromDays(30);
-    private static readonly TimeSpan AgentRulesRefreshInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan TrackerRulesRefreshInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan CoverageRefreshInterval = TimeSpan.FromHours(1);
     private const int WindowsPerSendPass = 50;
     private static readonly TimeSpan MicrophoneCheckInterval = TimeSpan.FromSeconds(10);
@@ -68,7 +68,7 @@ public sealed class ActivityTrackerService : IDisposable
     private readonly Lock _lock = new();
     private readonly ActivityRecorder _recorder;
     private readonly PrivacyFilter _privacy = new();      // poll loop only
-    private readonly AgentRules _agentRules = new();      // filtered on the send loop only
+    private readonly TrackerRules _trackerRules = new();      // filtered on the send loop only
     private readonly UnmappedReviewService _review;       // ticked on the send loop only
 
     private readonly CancellationTokenSource _lifetimeCts = new();
@@ -85,7 +85,7 @@ public sealed class ActivityTrackerService : IDisposable
     private int _rejectedWindows;
 
     // Send loop only, except the reset on sign-out / a settings change (both just make the next pass fetch).
-    private AgentCoverage? _coverage;
+    private TrackerCoverage? _coverage;
     private DateTime _coverageCheckedUtc = DateTime.MinValue;
     private bool _coverageNotSupported;
 
@@ -112,7 +112,7 @@ public sealed class ActivityTrackerService : IDisposable
 
         // The server rules are one user's on one server; a sign-out (or a new server URL, which signs out) forgets them.
         // So is what the server last said about the user's minutes and their mapping coverage.
-        _apiClient.SignedOut += _agentRules.Clear;
+        _apiClient.SignedOut += _trackerRules.Clear;
         _apiClient.SignedOut += ForgetServerAnswers;
 
         // Subscribed from the UI thread, whose message loop delivers them.
@@ -238,7 +238,7 @@ public sealed class ActivityTrackerService : IDisposable
     }
 
     /// <summary>How many server rules are held; null before the first download. A count only — the patterns are the user's.</summary>
-    public int? ServerRuleCount => _agentRules.IsKnown ? _agentRules.Count : null;
+    public int? ServerRuleCount => _trackerRules.IsKnown ? _trackerRules.Count : null;
 
     public TrackerStatus GetStatus()
     {
@@ -643,8 +643,8 @@ public sealed class ActivityTrackerService : IDisposable
     /// unreachable or the session is gone, the rest would fail the same way, each after its own timeout.
     /// </summary>
     /// <remarks>
-    /// Each window first loses the entries the user's server rules ignore (<see cref="AgentRules"/>), with rules
-    /// fetched at most <see cref="AgentRulesRefreshInterval"/> ago — a backlog sent after a day offline is
+    /// Each window first loses the entries the user's server rules ignore (<see cref="TrackerRules"/>), with rules
+    /// fetched at most <see cref="TrackerRulesRefreshInterval"/> ago — a backlog sent after a day offline is
     /// filtered with today's rules, not with the ones it was recorded under. A window nothing is left of is
     /// removed here: the heartbeat refuses an empty one.
     /// </remarks>
@@ -653,11 +653,11 @@ public sealed class ActivityTrackerService : IDisposable
         var pending = _outbox.Pending(DateTime.UtcNow, WindowsPerSendPass);
         if (pending.Count == 0) return;
 
-        if (!await RefreshAgentRulesAsync(ct)) return;
+        if (!await RefreshTrackerRulesAsync(ct)) return;
 
         foreach (var item in pending)
         {
-            var window = _agentRules.Filter(item.Window);
+            var window = _trackerRules.Filter(item.Window);
             if (window is null)
             {
                 if (_outbox.Remove(item)) TakeBackUnstored(item.Window, null);
@@ -761,31 +761,31 @@ public sealed class ActivityTrackerService : IDisposable
     /// as known-empty — it still filters on the heartbeat, and waiting for it would hold the outbox for good.
     /// Once a set is held, a failed download keeps using it and tries again on the next pass.
     /// </summary>
-    private async Task<bool> RefreshAgentRulesAsync(CancellationToken ct)
+    private async Task<bool> RefreshTrackerRulesAsync(CancellationToken ct)
     {
         var now = DateTime.UtcNow;
-        if (!_agentRules.IsDue(now, AgentRulesRefreshInterval)) return true;
+        if (!_trackerRules.IsDue(now, TrackerRulesRefreshInterval)) return true;
 
-        var fetch = await _apiClient.FetchAgentRulesAsync(_agentRules.ETag, ct);
+        var fetch = await _apiClient.FetchTrackerRulesAsync(_trackerRules.ETag, ct);
         switch (fetch.Status)
         {
-            case AgentRulesFetch.Updated:
-                _agentRules.Replace(fetch.Rules ?? [], fetch.ETag, now);
-                _log.Information("Server rules updated: {Count} active", _agentRules.Count);
+            case TrackerRulesFetch.Updated:
+                _trackerRules.Replace(fetch.Rules ?? [], fetch.ETag, now);
+                _log.Information("Server rules updated: {Count} active", _trackerRules.Count);
                 return true;
 
-            case AgentRulesFetch.Unchanged:
-                _agentRules.MarkChecked(now);
+            case TrackerRulesFetch.Unchanged:
+                _trackerRules.MarkChecked(now);
                 return true;
 
-            case AgentRulesFetch.NotSupported:
-                if (!_agentRules.IsKnown)
-                    _log.Information("The server has no agent-rules route — sending unfiltered; it applies its rules on arrival");
-                _agentRules.Replace([], null, now);
+            case TrackerRulesFetch.NotSupported:
+                if (!_trackerRules.IsKnown)
+                    _log.Information("The server has no rules route — sending unfiltered; it applies its rules on arrival");
+                _trackerRules.Replace([], null, now);
                 return true;
 
             default:
-                return _agentRules.IsKnown;
+                return _trackerRules.IsKnown;
         }
     }
 
@@ -829,7 +829,7 @@ public sealed class ActivityTrackerService : IDisposable
         SystemEvents.SessionSwitch -= OnSessionSwitch;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         SystemEvents.SessionEnding -= OnSessionEnding;
-        _apiClient.SignedOut -= _agentRules.Clear;
+        _apiClient.SignedOut -= _trackerRules.Clear;
         _apiClient.SignedOut -= ForgetServerAnswers;
 
         // Let an in-flight poll finish before flushing, so nothing it records lands after the flush.

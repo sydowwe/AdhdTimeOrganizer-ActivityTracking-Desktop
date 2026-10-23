@@ -12,7 +12,7 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 /// <para>
 /// Why it asks at all: the drift nudge, the tray's "now" and History all read the server's mapping, and time no rule
 /// maps is invisible to every one of them. The review itself is the web app's — the user is signed in there and may write
-/// any matcher, which the agent's long-lived token must not — so the invite only says what is waiting and opens the page.
+/// any matcher, which the tracker's long-lived token must not — so the invite only says what is waiting and opens the page.
 /// </para>
 /// <para>
 /// It does not depend on drift nudges. It stays quiet while tracking is paused (a pause is the user asking for quiet) and
@@ -68,7 +68,7 @@ internal sealed class UnmappedReviewService(
                 // Too late to ring, and the next evening is already the server's answer: forget this one.
                 store.MarkHandled(moment);
                 _momentUtc = null;
-                _log.Information("The evening review was missed (the agent was not running or asleep) — skipped");
+                _log.Information("The evening review was missed (the tracker was not running or asleep) — skipped");
                 break;
 
             case ReviewTiming.Due:

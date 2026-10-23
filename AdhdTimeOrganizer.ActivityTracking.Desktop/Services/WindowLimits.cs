@@ -4,8 +4,8 @@ using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
 /// <summary>
-/// The server's heartbeat rules, applied before a window is queued, so nothing the agent sends can be
-/// refused for its shape. A refused window is a lost minute — the agent cannot repair a batch the server
+/// The server's heartbeat rules, applied before a window is queued, so nothing the tracker sends can be
+/// refused for its shape. A refused window is a lost minute — the tracker cannot repair a batch the server
 /// calls malformed — so every bound here mirrors one in the server's <c>DesktopActivityHeartbeatValidator</c>
 /// and <c>TrackingIngestLimits</c>.
 /// </summary>
@@ -71,7 +71,7 @@ public static class WindowLimits
 
         // A missing product name or path goes out as "" rather than null. The server stores "" either way,
         // but a server from before 2026-10-18 lets a null through its validator into a NOT NULL insert and
-        // answers 500 — so "" keeps this agent working against an older server too.
+        // answers 500 — so "" keeps this tracker working against an older server too.
         return new ActivityEntry
         {
             ProcessName = processName,

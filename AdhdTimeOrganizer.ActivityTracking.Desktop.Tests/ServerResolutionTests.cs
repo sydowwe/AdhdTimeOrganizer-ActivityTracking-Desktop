@@ -82,14 +82,14 @@ public class TrayGlanceTests
     [InlineData(new[] { "Slack", "Google Chrome" }, "Map Slack and Google Chrome to enable drift nudges")]
     [InlineData(new[] { "Slack", "Google Chrome", "Microsoft Teams" }, "Map Slack, Google Chrome and Microsoft Teams to enable drift nudges")]
     public void MappingPrompt_NamesTheApps(string[] products, string expected) =>
-        Assert.Equal(expected, TrayApplicationContext.DescribeMappingPrompt(new AgentCoverage
+        Assert.Equal(expected, TrayApplicationContext.DescribeMappingPrompt(new TrackerCoverage
         {
             Uncovered = [.. products.Select(p => new UncoveredApp { ProcessName = p.ToLowerInvariant(), ProductName = p, ActiveSeconds = 3600 })]
         }));
 
     [Fact]
     public void MappingPrompt_FallsBackToTheProcessName() =>
-        Assert.Equal("Map rider64 to enable drift nudges", TrayApplicationContext.DescribeMappingPrompt(new AgentCoverage
+        Assert.Equal("Map rider64 to enable drift nudges", TrayApplicationContext.DescribeMappingPrompt(new TrackerCoverage
         {
             Uncovered = [new UncoveredApp { ProcessName = "rider64", ProductName = "", ActiveSeconds = 3600 }]
         }));

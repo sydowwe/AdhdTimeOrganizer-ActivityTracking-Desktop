@@ -23,7 +23,7 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 /// <see cref="Clear"/> may come from any thread (a sign-out), so the set is swapped under a lock, never mutated.
 /// </para>
 /// </remarks>
-public sealed class AgentRules
+public sealed class TrackerRules
 {
     private readonly Lock _lock = new();
     private MappingRuleSet _rules = MappingRuleSet.Empty;
@@ -51,7 +51,7 @@ public sealed class AgentRules
         lock (_lock) return _checkedUtc is not { } checkedUtc || utcNow - checkedUtc >= interval;
     }
 
-    public void Replace(IEnumerable<AgentRule> rules, string? etag, DateTime utcNow)
+    public void Replace(IEnumerable<TrackerRule> rules, string? etag, DateTime utcNow)
     {
         var set = new MappingRuleSet(rules);
         lock (_lock)

@@ -8,7 +8,7 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services.Matching;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The agent uses the answer for one thing: an entry whose winning rule ignores is dropped before upload, so its
+/// The tracker uses the answer for one thing: an entry whose winning rule ignores is dropped before upload, so its
 /// title never leaves the machine. It needs <em>every</em> rule for that, not only the ignoring ones, because a
 /// narrower rule that maps to an activity shadows a broad ignore rule ("ignore anything titled *GitHub*, except in
 /// Chrome") and the entry must then go up.
@@ -25,24 +25,24 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services.Matching;
 /// </remarks>
 public sealed class MappingRuleSet
 {
-    private readonly List<AgentRule> _ordered;
+    private readonly List<TrackerRule> _ordered;
     private readonly PatternMatcher _matcher = new();
 
-    public MappingRuleSet(IEnumerable<AgentRule> activeRules)
+    public MappingRuleSet(IEnumerable<TrackerRule> activeRules)
     {
         _ordered = OrderBySpecificity(activeRules);
     }
 
     public static MappingRuleSet Empty { get; } = new([]);
 
-    public IReadOnlyList<AgentRule> Rules => _ordered;
+    public IReadOnlyList<TrackerRule> Rules => _ordered;
 
     /// <summary>
     /// The rule the heartbeat would pick for this tuple, or null. Pass what the heartbeat resolves: it stores a
     /// missing product or title as <c>""</c> before matching, and <c>""</c> is not null to every pattern
     /// (<c>*</c> matches it).
     /// </summary>
-    public AgentRule? Resolve(string? processName, string? productName, string? windowTitle)
+    public TrackerRule? Resolve(string? processName, string? productName, string? windowTitle)
     {
         foreach (var rule in _ordered)
             if (Matches(rule, processName, productName, windowTitle))
@@ -51,7 +51,7 @@ public sealed class MappingRuleSet
         return null;
     }
 
-    private bool Matches(AgentRule rule, string? processName, string? productName, string? windowTitle)
+    private bool Matches(TrackerRule rule, string? processName, string? productName, string? windowTitle)
     {
         if (rule.ProcessName != null && rule.ProcessNameMatchType != null)
             if (!_matcher.Matches(processName, rule.ProcessName, rule.ProcessNameMatchType.Value))
@@ -68,7 +68,7 @@ public sealed class MappingRuleSet
         return true;
     }
 
-    private static List<AgentRule> OrderBySpecificity(IEnumerable<AgentRule> rules) =>
+    private static List<TrackerRule> OrderBySpecificity(IEnumerable<TrackerRule> rules) =>
         rules
             .OrderByDescending(r =>
                 (r.ProcessName != null ? 1 : 0) +

@@ -12,7 +12,7 @@ public enum ReviewTiming
     /// <summary>The evening is here and has not been looked at: ask the server what today left unmapped.</summary>
     Due,
 
-    /// <summary>The evening came and went while the agent could not ask (asleep, off): too late to ring now.</summary>
+    /// <summary>The evening came and went while the tracker could not ask (asleep, off): too late to ring now.</summary>
     Missed,
 
     /// <summary>This evening was already invited, or found nothing worth asking.</summary>

@@ -29,7 +29,7 @@ public sealed class ClientVersionHeaderTests : IDisposable
         await _api.LoginAsync("someone@example.test", "password");
         await _api.StartBlockAsync(7, TestContext.Current.CancellationToken); // a refresh, then the authorized POST
 
-        Assert.Equal(["/api/auth/extension/login", "/api/auth/extension/refresh", "/api/activity-tracking/desktop/agent-start-block"],
+        Assert.Equal(["/api/auth/tracker/login", "/api/auth/tracker/refresh", "/api/tracker/desktop/start-block"],
             _server.Requests.Select(r => r.Path));
         Assert.All(_server.Requests, r => Assert.Equal($"desktop/{AppVersion.Current}", r.Version));
     }
@@ -62,7 +62,7 @@ public sealed class ClientVersionHeaderTests : IDisposable
             var path = request.RequestUri!.AbsolutePath;
             Requests.Add((path, request.Headers.TryGetValues(AppVersion.HeaderName, out var values) ? string.Join(",", values) : null));
 
-            return Task.FromResult(path == "/api/auth/extension/refresh"
+            return Task.FromResult(path == "/api/auth/tracker/refresh"
                 ? new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent("""{ "accessToken": "access", "refreshToken": "refresh-2" }""", Encoding.UTF8, "application/json")

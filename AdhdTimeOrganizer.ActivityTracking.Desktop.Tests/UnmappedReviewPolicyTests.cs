@@ -46,7 +46,7 @@ public class UnmappedReviewPolicyTests : IDisposable
         Assert.Equal(ReviewTiming.NotYet, UnmappedReviewPolicy.Timing(Moment.AddHours(-1), Moment, Moment.AddDays(-1)));
     }
 
-    /// <summary>The server's "don't ask" is an empty list; the agent adds no threshold of its own.</summary>
+    /// <summary>The server's "don't ask" is an empty list; the tracker adds no threshold of its own.</summary>
     [Fact]
     public void Invite_WithNoAppsNamed_IsNoInvite()
     {
@@ -75,7 +75,7 @@ public class UnmappedReviewPolicyTests : IDisposable
         Assert.Equal(2, invite.More);
     }
 
-    /// <summary>A product the agent could not read is named by its process, never left blank in a toast.</summary>
+    /// <summary>A product the tracker could not read is named by its process, never left blank in a toast.</summary>
     [Fact]
     public void Invite_AnAppWithoutAProductName_IsNamedByItsProcess()
     {

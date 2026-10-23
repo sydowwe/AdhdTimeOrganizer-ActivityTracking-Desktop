@@ -7,8 +7,8 @@ using Xunit;
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Tests;
 
 /// <summary>
-/// The agent half of the wire contract: <c>DesktopAgentWire.samples.json</c> is what the server's heartbeat and
-/// <c>agent-coverage</c> send — the server's tests check that against its DTOs and live endpoints — and here the same
+/// The tracker half of the wire contract: <c>DesktopTrackerWire.samples.json</c> is what the server's heartbeat and
+/// <c>coverage</c> send — the server's tests check that against its DTOs and live endpoints — and here the same
 /// file goes through this repo's models (<c>Models/ServerResolution.cs</c>).
 /// </summary>
 /// <remarks>
@@ -18,12 +18,12 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Tests;
 /// </remarks>
 public class WireSampleTests
 {
-    private const string SamplesFileName = "DesktopAgentWire.samples.json";
+    private const string SamplesFileName = "DesktopTrackerWire.samples.json";
 
     private static readonly Lazy<JsonNode> Samples = new(() => JsonNode.Parse(File.ReadAllText(SamplesPath()))!);
 
     [Fact]
-    public void TheHeartbeatSample_ReadsThroughTheAgentsModels()
+    public void TheHeartbeatSample_ReadsThroughTheTrackerModels()
     {
         var response = ApiClient.ReadHeartbeatResponse(Samples.Value["heartbeat"]!.ToJsonString());
 
@@ -71,9 +71,9 @@ public class WireSampleTests
     }
 
     [Fact]
-    public void TheCoverageSample_ReadsThroughTheAgentsModels()
+    public void TheCoverageSample_ReadsThroughTheTrackerModels()
     {
-        var coverage = Samples.Value["coverage"]!.Deserialize<AgentCoverage>();
+        var coverage = Samples.Value["coverage"]!.Deserialize<TrackerCoverage>();
 
         Assert.NotNull(coverage);
         Assert.Equal((7, 43200, 16200), (coverage.Days, coverage.TrackedSeconds, coverage.MappedSeconds));
@@ -82,7 +82,7 @@ public class WireSampleTests
     }
 
     [Fact]
-    public void TheUnmappedSample_ReadsThroughTheAgentsModels()
+    public void TheUnmappedSample_ReadsThroughTheTrackerModels()
     {
         var unmapped = Samples.Value["unmapped"]!.Deserialize<UnmappedToday>();
 
@@ -94,7 +94,7 @@ public class WireSampleTests
 
     /// <summary>A moment read as <see cref="DateTime.MinValue"/> would put the evening in the year 1: an invite at every start.</summary>
     [Fact]
-    public void TheEveningMomentSample_ReadsThroughTheAgentsModels()
+    public void TheEveningMomentSample_ReadsThroughTheTrackerModels()
     {
         var moment = Samples.Value["eveningMoment"]!.Deserialize<EveningMoment>();
 
@@ -104,13 +104,13 @@ public class WireSampleTests
         Assert.Equal(DateTimeKind.Utc, moment.MomentUtc.Kind);
     }
 
-    /// <summary>A field the server sends and the agent's model has no member for is a field the agent can never read.</summary>
+    /// <summary>A field the server sends and the tracker's model has no member for is a field the tracker can never read.</summary>
     [Theory]
     [InlineData("heartbeat", typeof(HeartbeatResponse))]
-    [InlineData("coverage", typeof(AgentCoverage))]
+    [InlineData("coverage", typeof(TrackerCoverage))]
     [InlineData("unmapped", typeof(UnmappedToday))]
     [InlineData("eveningMoment", typeof(EveningMoment))]
-    public void TheAgentsModels_HaveEveryFieldTheServerSends(string sample, Type model)
+    public void TheTrackerModels_HaveEveryFieldTheServerSends(string sample, Type model)
     {
         var node = Samples.Value[sample]!;
         var read = JsonSerializer.SerializeToNode(node.Deserialize(model), model)!;
