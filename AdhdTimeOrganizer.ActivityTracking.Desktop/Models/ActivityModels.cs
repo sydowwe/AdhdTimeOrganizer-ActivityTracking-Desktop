@@ -64,7 +64,7 @@ public sealed class ActivityEntry
     public string? ProductName { get; init; }
 
     /// <summary>
-    /// Times the window came to the front in this minute. Null only in an outbox file written by an tracker from before
+    /// Times the window came to the front in this minute. Null only in an outbox file written by a tracker from before
     /// it was measured: the server stores that as "unknown", which is what it is.
     /// </summary>
     [JsonPropertyName("switchCount")]

@@ -26,7 +26,7 @@ public sealed record ActivityTotal(
 /// </para>
 /// <para>
 /// This machine only, and labelled so. The server's figure would cover every tracker, but computing it on every
-/// heartbeat costs the hottest route a ledger sum; an tracker can't add up what it never saw anyway.
+/// heartbeat costs the hottest route a ledger sum; a tracker can't add up what it never saw anyway.
 /// </para>
 /// <para>
 /// "Today" is the local date of a window's start. Only the latest day is kept: a window from an earlier day (a

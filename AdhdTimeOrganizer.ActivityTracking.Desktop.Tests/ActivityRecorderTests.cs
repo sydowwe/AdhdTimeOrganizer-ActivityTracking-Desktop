@@ -154,7 +154,7 @@ public class ActivityRecorderTests
     }
 
     /// <summary>
-    /// Every entry from this tracker carries a measured count, zero included: on the server a null means "an tracker that
+    /// Every entry from this tracker carries a measured count, zero included: on the server a null means "a tracker that
     /// did not measure", and a background window that never came to the front measured zero switches.
     /// </summary>
     [Fact]
