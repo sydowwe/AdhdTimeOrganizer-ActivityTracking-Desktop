@@ -367,12 +367,16 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     }
 
     /// <summary>
-    /// Today's unmapped time on this PC, the evening invite's figures. A 404 is a server that predates the route; an
+    /// A day's unmapped time on this PC, the evening invite's figures. A 404 is a server that predates the route; an
     /// empty <see cref="UnmappedToday.Apps"/> is the server's "don't ask".
     /// </summary>
-    public async Task<TrackerRead<UnmappedToday>> FetchUnmappedTodayAsync(CancellationToken ct)
+    /// <param name="day">The evening's own day (yesterday's date for an evening past midnight); null is the server's today.</param>
+    public async Task<TrackerRead<UnmappedToday>> FetchUnmappedTodayAsync(DateOnly? day, CancellationToken ct)
     {
-        var (status, value) = await GetTrackerJsonAsync<UnmappedToday>(TrackerUnmappedPath, "Unmapped time", ct);
+        var path = day is { } d
+            ? $"{TrackerUnmappedPath}?date={d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)}"
+            : TrackerUnmappedPath;
+        var (status, value) = await GetTrackerJsonAsync<UnmappedToday>(path, "Unmapped time", ct);
         return new TrackerRead<UnmappedToday>(status, value);
     }
 

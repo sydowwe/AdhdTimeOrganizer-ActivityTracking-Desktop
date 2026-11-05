@@ -285,7 +285,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 ### The evening review of unmapped time
 - **Why:** drift, the tray's "now" and History read the server's mapping, and time no rule maps is invisible to all of
   them. Once, at the user's evening, one toast: how much of today on this PC is unmapped and the top two apps, with
-  **Review** (opens the web app's distinct-entries grid on `coverage=Uncovered&today=true`, busiest first) and **Not
+  **Review** (opens the web app's distinct-entries grid on `coverage=Uncovered&today=true&date=<the evening's day>`,
+  busiest first; `date` wins, `today` is for web apps from before it) and **Not
   today**. `NudgeKind.UnmappedReview` shares the toast plumbing but is not a nudge: no quiet conditions (Windows holds
   toasts itself), its own Settings switch (`UnmappedReviewEnabled`, on by default), independent of drift nudges.
 - **The tracker decides nothing about mapping.** The evening moment is the server's (`GET /api/tracker/evening-shutdown-moment`,
@@ -295,7 +296,12 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   browser (`isBrowser`) is mapped by title there, not by process.
 - **One look per evening.** `UnmappedReviewStore` keeps the last handled moment, marked whether the evening ended in an
   invite or in nothing to say, so neither a restart nor a second pass asks again. A moment more than 3 h old
-  (`UnmappedReviewPolicy.Window`) is missed, not late. Stays quiet while tracking is paused and while signed out; a server
+  (`UnmappedReviewPolicy.Window`) is missed, not late. **The server names the evening just gone beside the next**
+  (`previousMomentUtc`): once a moment passes it answers tomorrow's as the next, so without it a PC that slept through
+  22:00 — or only refreshed after it — lost tonight's invite. `UnmappedReviewPolicy.Pick` takes the previous one while it
+  is due, else the next. **Each evening carries its own day** (`date`): bed at 01:30 sends at 00:30 the next date, so
+  `unmapped?date=` and Review's `&date=` name the day that is ending. A server from before these fields sends neither,
+  and the tracker behaves as it did. Stays quiet while tracking is paused and while signed out; a server
   from before the routes ends it for the session; a failed read is retried in 5 min, not every pass.
 - The toast names **apps** (product or process name), never a window title, and the log carries counts only.
 - Both answers are pinned by `DesktopTrackerWire.samples.json` (`unmapped`, `eveningMoment`) like the others. The tray's

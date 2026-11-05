@@ -93,17 +93,85 @@ public sealed class UnmappedReviewServiceTests : IDisposable
         Assert.Equal(1, _server.UnmappedRequests);
     }
 
-    /// <summary>A laptop opened at 2 a.m. is not reminded of last night's ritual.</summary>
+    /// <summary>
+    /// A laptop opened at 2 a.m. is not reminded of last night's ritual — with the server answering as it really does
+    /// once the moment has passed: tonight's as the evening just gone, tomorrow's as the next.
+    /// </summary>
     [Fact]
     public async Task AnEveningMissed_IsSkipped()
     {
         var service = Service(new UnmappedReviewStore());
         await service.TickAsync(Moment.AddMinutes(-10), CancellationToken.None); // learns the moment
 
+        MoveServerPast(Moment);
         await service.TickAsync(Moment.AddHours(5), CancellationToken.None);
 
         Assert.Empty(_shown);
         Assert.Equal(0, _server.UnmappedRequests);
+    }
+
+    /// <summary>
+    /// The laptop slept through the moment and wakes 90 minutes later. The hourly refresh brings tomorrow's moment as
+    /// the next — which alone would lose tonight's review — and tonight's as the evening just gone, still in its window.
+    /// </summary>
+    [Fact]
+    public async Task AWakeAfterTheMoment_StillInvites_ForTheEveningJustGone()
+    {
+        var service = Service(new UnmappedReviewStore());
+        await service.TickAsync(Moment.AddHours(-2), CancellationToken.None); // learns tonight's, then sleeps
+
+        MoveServerPast(Moment);
+        await service.TickAsync(Moment.AddMinutes(90), CancellationToken.None);
+
+        Assert.Single(_shown);
+        Assert.Equal(2, _server.MomentRequests); // the wake refreshed the moment, and tonight's was not lost to it
+        Assert.Equal("2026-10-19", _server.LastUnmappedDate);
+    }
+
+    /// <summary>A tracker started after the moment — the PC was off at 22:00 — has only ever heard the server's answer since.</summary>
+    [Fact]
+    public async Task AStartAfterTheMoment_StillInvites()
+    {
+        MoveServerPast(Moment);
+        var service = Service(new UnmappedReviewStore());
+
+        await service.TickAsync(Moment.AddMinutes(40), CancellationToken.None);
+        await service.TickAsync(Moment.AddMinutes(41), CancellationToken.None);
+
+        Assert.Single(_shown);
+        Assert.Equal(1, _server.UnmappedRequests);
+    }
+
+    /// <summary>
+    /// Bed at 01:30 puts the evening at 00:30, after the date has turned: the figures asked for — and the day the invite's
+    /// Review opens — are the evening's own day, not the half hour since midnight.
+    /// </summary>
+    [Fact]
+    public async Task AnEveningPastMidnight_AsksAboutTheDayBefore()
+    {
+        var pastMidnight = new DateTime(2026, 10, 20, 0, 30, 0, DateTimeKind.Utc);
+        _server.MomentUtc = pastMidnight;
+        _server.Date = new DateOnly(2026, 10, 19);
+        _server.Unmapped = TwoApps; // its "date" is 2026-10-19
+        var service = Service(new UnmappedReviewStore());
+
+        await service.TickAsync(pastMidnight.AddMinutes(1), CancellationToken.None);
+
+        Assert.Equal("2026-10-19", _server.LastUnmappedDate);
+        Assert.Equal(new DateOnly(2026, 10, 19), Assert.Single(_shown).Date);
+    }
+
+    /// <summary>A server from before dates and the previous evening: no <c>date</c> is sent, and the next moment still invites.</summary>
+    [Fact]
+    public async Task AServerWithoutDates_AsksAboutToday()
+    {
+        _server.SendsDates = false;
+        var service = Service(new UnmappedReviewStore());
+
+        await service.TickAsync(Moment.AddMinutes(1), CancellationToken.None);
+
+        Assert.Single(_shown);
+        Assert.Null(_server.LastUnmappedDate);
     }
 
     [Fact]
@@ -172,6 +240,15 @@ public sealed class UnmappedReviewServiceTests : IDisposable
 
     private UnmappedReviewService Service(UnmappedReviewStore store) => new(_config, _api, store, _shown.Add, _ => _paused);
 
+    /// <summary>What the server answers once <paramref name="moment"/> has passed: it as the evening just gone, the next day's as the next.</summary>
+    private void MoveServerPast(DateTime moment)
+    {
+        _server.PreviousUtc = moment;
+        _server.PreviousDate = DateOnly.FromDateTime(moment);
+        _server.MomentUtc = moment.AddDays(1);
+        _server.Date = DateOnly.FromDateTime(moment.AddDays(1));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
@@ -183,11 +260,26 @@ public sealed class UnmappedReviewServiceTests : IDisposable
         private int _unmappedRequests;
 
         public DateTime MomentUtc { get; set; }
+
+        /// <summary>The next evening's day; defaults to the moment's own date.</summary>
+        public DateOnly? Date { get; set; }
+
+        /// <summary>The evening just gone; null is a moment no evening has passed since the test began.</summary>
+        public DateTime? PreviousUtc { get; set; }
+
+        public DateOnly? PreviousDate { get; set; }
+
+        /// <summary>False is a server from before the dates and the previous evening: only <c>enabled</c> and <c>momentUtc</c>.</summary>
+        public bool SendsDates { get; set; } = true;
+
         public string Unmapped { get; set; } = "";
         public HttpStatusCode UnmappedStatus { get; set; } = HttpStatusCode.OK;
         public bool HasRoutes { get; set; } = true;
         public int MomentRequests => Volatile.Read(ref _momentRequests);
         public int UnmappedRequests => Volatile.Read(ref _unmappedRequests);
+
+        /// <summary>The <c>date</c> the last unmapped request named; null when it named none.</summary>
+        public string? LastUnmappedDate { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -198,17 +290,29 @@ public sealed class UnmappedReviewServiceTests : IDisposable
 
                 case "/api/tracker/evening-shutdown-moment":
                     Interlocked.Increment(ref _momentRequests);
-                    return Task.FromResult(HasRoutes
-                        ? Json($$"""{ "enabled": true, "momentUtc": "{{MomentUtc:yyyy-MM-ddTHH:mm:ss}}Z" }""")
-                        : new HttpResponseMessage(HttpStatusCode.NotFound));
+                    return Task.FromResult(HasRoutes ? Json(MomentJson()) : new HttpResponseMessage(HttpStatusCode.NotFound));
 
                 case "/api/tracker/desktop/unmapped":
                     Interlocked.Increment(ref _unmappedRequests);
+                    LastUnmappedDate = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query)["date"];
                     return Task.FromResult(HasRoutes ? Json(Unmapped, UnmappedStatus) : new HttpResponseMessage(HttpStatusCode.NotFound));
 
                 default:
                     return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
             }
+        }
+
+        private string MomentJson()
+        {
+            var moment = $$"""{ "enabled": true, "momentUtc": "{{MomentUtc:yyyy-MM-ddTHH:mm:ss}}Z" """;
+            if (!SendsDates) return moment + "}";
+
+            var date = Date ?? DateOnly.FromDateTime(MomentUtc);
+            var previous = PreviousUtc is { } p
+                ? $$""", "previousMomentUtc": "{{p:yyyy-MM-ddTHH:mm:ss}}Z", "previousDate": "{{PreviousDate ?? DateOnly.FromDateTime(p):yyyy-MM-dd}}" """
+                // A server always names one; a day before the next is close enough for tests that never reach it.
+                : $$""", "previousMomentUtc": "{{MomentUtc.AddDays(-1):yyyy-MM-ddTHH:mm:ss}}Z", "previousDate": "{{date.AddDays(-1):yyyy-MM-dd}}" """;
+            return moment + $$""", "date": "{{date:yyyy-MM-dd}}" """ + previous + "}";
         }
 
         private static HttpResponseMessage Json(string body, HttpStatusCode status = HttpStatusCode.OK) =>

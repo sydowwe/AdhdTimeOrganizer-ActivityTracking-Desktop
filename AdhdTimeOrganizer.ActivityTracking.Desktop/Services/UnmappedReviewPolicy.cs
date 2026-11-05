@@ -25,7 +25,11 @@ public sealed record InviteApp(string Name, TimeSpan Length, bool IsBrowser);
 /// <param name="Unmapped">All of today's unmapped time, not only the named apps'.</param>
 /// <param name="Apps">The busiest few, busiest first.</param>
 /// <param name="More">How many more the server named, past <see cref="Apps"/>.</param>
-public sealed record UnmappedInvite(TimeSpan Unmapped, IReadOnlyList<InviteApp> Apps, int More);
+/// <param name="Date">The day the figures are about, for the page Review opens; null when the server sent none it could read.</param>
+public sealed record UnmappedInvite(TimeSpan Unmapped, IReadOnlyList<InviteApp> Apps, int More, DateOnly? Date = null);
+
+/// <summary>An evening as the server names it: its moment, and the day it closes (null from a server before dates).</summary>
+public sealed record Evening(DateTime MomentUtc, DateOnly? Date);
 
 /// <summary>
 /// Decides when the evening invite is due and what it says: "2 h 10 m on this PC today isn't mapped — Discord 50 m,
@@ -42,7 +46,8 @@ public sealed record UnmappedInvite(TimeSpan Unmapped, IReadOnlyList<InviteApp> 
 /// <b>One look per evening.</b> The evening moment is the server's (the same instant the phone's review and the
 /// evening-shutdown push use); an evening is handled once, whether it ended in an invite or in nothing to say, so a
 /// restart or a second pass never asks again. A moment more than <see cref="Window"/> old is missed rather than late:
-/// a laptop opened at 2 a.m. is not reminded of last night's ritual.
+/// a laptop opened at 2 a.m. is not reminded of last night's ritual. One opened at 22:40, after a 22:00 moment, is —
+/// the server names the evening just gone beside the next (<see cref="Pick"/>).
 /// </para>
 /// <para>
 /// The invite names apps, not what the user was doing in them: nothing here is a window title.
@@ -63,6 +68,19 @@ public static class UnmappedReviewPolicy
         return nowUtc - momentUtc > Window ? ReviewTiming.Missed : ReviewTiming.Due;
     }
 
+    /// <summary>
+    /// Which evening to act on: the one just gone while it is still <see cref="ReviewTiming.Due"/>, else the next. Once a
+    /// moment passes the server answers with tomorrow's as the next, so without <paramref name="previous"/> a tracker that
+    /// was asleep or off at the moment — or merely refreshed after it — would never see tonight's again. An older evening
+    /// gone past <see cref="Window"/> is simply passed over: the next one is what is left to wait for.
+    /// </summary>
+    public static (Evening Evening, ReviewTiming Timing) Pick(DateTime nowUtc, Evening? previous, Evening next, DateTime? handledMomentUtc)
+    {
+        if (previous is not null && Timing(nowUtc, previous.MomentUtc, handledMomentUtc) == ReviewTiming.Due)
+            return (previous, ReviewTiming.Due);
+        return (next, Timing(nowUtc, next.MomentUtc, handledMomentUtc));
+    }
+
     /// <summary>The invite for the server's answer, or null when it named no app.</summary>
     public static UnmappedInvite? Invite(UnmappedToday today)
     {
@@ -72,7 +90,9 @@ public static class UnmappedReviewPolicy
             .Take(NamedApps)
             .Select(a => new InviteApp(a.ProductName.Length > 0 ? a.ProductName : a.ProcessName, TimeSpan.FromSeconds(a.ActiveSeconds), a.IsBrowser))
             .ToList();
-        return new UnmappedInvite(TimeSpan.FromSeconds(today.UnmappedSeconds), named, today.Apps.Count - named.Count);
+        DateOnly? date = DateOnly.TryParseExact(today.Date, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None, out var parsed) ? parsed : null;
+        return new UnmappedInvite(TimeSpan.FromSeconds(today.UnmappedSeconds), named, today.Apps.Count - named.Count, date);
     }
 
     /// <summary>"2 h 10 m on this PC today isn't mapped" / "Discord 50 m, Chrome 30 m (by page) and 2 more".</summary>

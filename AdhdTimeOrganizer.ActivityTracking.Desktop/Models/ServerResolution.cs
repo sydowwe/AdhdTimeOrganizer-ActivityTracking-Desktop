@@ -157,8 +157,13 @@ public sealed record UnmappedApp
 
 /// <summary>
 /// <c>GET /api/tracker/evening-shutdown-moment</c>: the instant of the user's next evening, the one the phone's review also
-/// uses. <see cref="Enabled"/> is whether the evening-shutdown push is on, which this tracker does not depend on.
+/// uses, and the evening just gone. <see cref="Enabled"/> is whether the evening-shutdown push is on, which this tracker
+/// does not depend on.
 /// </summary>
+/// <remarks>
+/// The dates and the previous evening are null from a server before them: the tracker then only knows the next evening
+/// and asks about "today", as it did before.
+/// </remarks>
 public sealed record EveningMoment
 {
     [JsonPropertyName("enabled")]
@@ -166,4 +171,15 @@ public sealed record EveningMoment
 
     [JsonPropertyName("momentUtc")]
     public DateTime MomentUtc { get; init; }
+
+    /// <summary>The day the next evening closes — the day its review is about. Yesterday's date for a moment past midnight.</summary>
+    [JsonPropertyName("date")]
+    public DateOnly? Date { get; init; }
+
+    /// <summary>The latest evening's moment before now: what a tracker that was asleep or off at the moment still owes.</summary>
+    [JsonPropertyName("previousMomentUtc")]
+    public DateTime? PreviousMomentUtc { get; init; }
+
+    [JsonPropertyName("previousDate")]
+    public DateOnly? PreviousDate { get; init; }
 }

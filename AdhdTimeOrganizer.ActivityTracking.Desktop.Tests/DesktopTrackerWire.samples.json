@@ -31,5 +31,11 @@
       { "processName": "chrome", "productName": "Google Chrome", "activeSeconds": 1800, "isBrowser": true }
     ]
   },
-  "eveningMoment": { "enabled": true, "momentUtc": "2026-10-19T20:30:00Z" }
+  "eveningMoment": {
+    "enabled": true,
+    "momentUtc": "2026-10-19T20:30:00Z",
+    "date": "2026-10-19",
+    "previousMomentUtc": "2026-10-18T20:30:00Z",
+    "previousDate": "2026-10-18"
+  }
 }

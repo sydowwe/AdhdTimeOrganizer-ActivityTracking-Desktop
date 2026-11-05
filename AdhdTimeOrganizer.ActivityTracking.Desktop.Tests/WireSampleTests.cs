@@ -102,6 +102,9 @@ public class WireSampleTests
         Assert.True(moment.Enabled);
         Assert.Equal(new DateTime(2026, 10, 19, 20, 30, 0, DateTimeKind.Utc), moment.MomentUtc);
         Assert.Equal(DateTimeKind.Utc, moment.MomentUtc.Kind);
+        Assert.Equal(new DateOnly(2026, 10, 19), moment.Date);
+        Assert.Equal(new DateTime(2026, 10, 18, 20, 30, 0, DateTimeKind.Utc), moment.PreviousMomentUtc);
+        Assert.Equal(new DateOnly(2026, 10, 18), moment.PreviousDate);
     }
 
     /// <summary>A field the server sends and the tracker's model has no member for is a field the tracker can never read.</summary>

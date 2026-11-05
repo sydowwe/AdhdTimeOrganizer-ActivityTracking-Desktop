@@ -46,6 +46,50 @@ public class UnmappedReviewPolicyTests : IDisposable
         Assert.Equal(ReviewTiming.NotYet, UnmappedReviewPolicy.Timing(Moment.AddHours(-1), Moment, Moment.AddDays(-1)));
     }
 
+    /// <summary>The evening just gone is acted on while it is still due; the next one is otherwise what there is.</summary>
+    [Theory]
+    [InlineData(90, null, true, ReviewTiming.Due)]     // woke 90 min after it: tonight's, not tomorrow's
+    [InlineData(90, 0, false, ReviewTiming.NotYet)]    // already invited: wait for tomorrow's
+    [InlineData(200, null, false, ReviewTiming.NotYet)] // past the window: passed over, not "missed" again
+    public void Pick_TheEveningJustGone_WhileItIsDue(int minutesAfter, int? handledMinutesAfter, bool expectPrevious, ReviewTiming expected)
+    {
+        var previous = new Evening(Moment, new DateOnly(2026, 10, 19));
+        var next = new Evening(Moment.AddDays(1), new DateOnly(2026, 10, 20));
+        DateTime? handled = handledMinutesAfter is { } h ? Moment.AddMinutes(h) : null;
+
+        var (evening, timing) = UnmappedReviewPolicy.Pick(Moment.AddMinutes(minutesAfter), previous, next, handled);
+
+        Assert.Equal(expectPrevious ? previous : next, evening);
+        Assert.Equal(expected, timing);
+    }
+
+    /// <summary>A server from before the previous evening: the next one decides alone, as before.</summary>
+    [Fact]
+    public void Pick_WithoutAPreviousEvening_IsTheNextsTiming()
+    {
+        var next = new Evening(Moment, null);
+
+        Assert.Equal((next, ReviewTiming.Due), UnmappedReviewPolicy.Pick(Moment.AddMinutes(5), null, next, null));
+    }
+
+    [Fact]
+    public void Invite_CarriesTheServersDay_ForThePageReviewOpens()
+    {
+        var invite = UnmappedReviewPolicy.Invite(new UnmappedToday { Date = "2026-10-19", UnmappedSeconds = 50 * 60, Apps = [App("discord", "Discord", 50, false)] })!;
+
+        Assert.Equal(new DateOnly(2026, 10, 19), invite.Date);
+    }
+
+    /// <summary>The day rides beside <c>today=true</c>, which a web app from before <c>date</c> still understands.</summary>
+    [Fact]
+    public void ReviewPath_NamesTheDay_AndKeepsTodayForOlderWebApps()
+    {
+        Assert.Equal("/activity-tracking/desktop/settings/distinctEntries?coverage=Uncovered&today=true&date=2026-10-19",
+            NudgeService.UnmappedReviewPath(new DateOnly(2026, 10, 19)));
+        Assert.Equal("/activity-tracking/desktop/settings/distinctEntries?coverage=Uncovered&today=true",
+            NudgeService.UnmappedReviewPath(null));
+    }
+
     /// <summary>The server's "don't ask" is an empty list; the tracker adds no threshold of its own.</summary>
     [Fact]
     public void Invite_WithNoAppsNamed_IsNoInvite()

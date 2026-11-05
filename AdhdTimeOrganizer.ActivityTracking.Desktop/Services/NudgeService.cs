@@ -46,8 +46,17 @@ public sealed class NudgeService : IDisposable
     /// </summary>
     internal static string TrackPath(long plannerTaskId) => $"/?track={plannerTaskId}";
 
-    /// <summary>"Review" opens the distinct-entries grid on what today left unmapped, busiest first (the page reads <c>today</c>).</summary>
-    internal const string UnmappedReviewPath = "/activity-tracking/desktop/settings/distinctEntries?coverage=Uncovered&today=true";
+    /// <summary>
+    /// "Review" opens the distinct-entries grid on what the evening's day left unmapped, busiest first. <c>date</c> names
+    /// the day — yesterday's date for an evening past midnight — and wins over <c>today</c>, which stays for a web app
+    /// from before <c>date</c>.
+    /// </summary>
+    internal static string UnmappedReviewPath(DateOnly? date) =>
+        "/activity-tracking/desktop/settings/distinctEntries?coverage=Uncovered&today=true"
+        + (date is { } d ? $"&date={d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)}" : "");
+
+    /// <summary>The invite on screen, for the day its Review opens; set on the send loop, read on the toast's thread.</summary>
+    private volatile UnmappedInvite? _review;
 
     public static string DefaultDriftStatePath { get; } = Path.Combine(AppConfig.ConfigDirectory, "drift.json");
 
@@ -208,6 +217,7 @@ public sealed class NudgeService : IDisposable
     {
         try
         {
+            _review = invite;
             _notifier.Show(new Nudge(1, NudgeKind.UnmappedReview, invite.Unmapped, null, Review: invite));
         }
         catch (Exception ex)
@@ -459,7 +469,8 @@ public sealed class NudgeService : IDisposable
         {
             try
             {
-                _openInBrowser(_config.WebAppUri(UnmappedReviewPath));
+                // A toast answered after a restart has no invite held: today's grid is the honest fallback.
+                _openInBrowser(_config.WebAppUri(UnmappedReviewPath(_review?.Date)));
             }
             catch (Exception ex)
             {

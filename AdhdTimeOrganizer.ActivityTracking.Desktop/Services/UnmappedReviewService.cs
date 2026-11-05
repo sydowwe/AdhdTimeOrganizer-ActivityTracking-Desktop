@@ -36,7 +36,12 @@ internal sealed class UnmappedReviewService(
 
     private readonly ILogger _log = Log.ForContext<UnmappedReviewService>();
 
-    private DateTime? _momentUtc;
+    /// <summary>The server's next evening; null until asked, and after an evening is dealt with, so the next pass asks again.</summary>
+    private Evening? _next;
+
+    /// <summary>The evening just gone, as the server named it with <see cref="_next"/>; null from a server before it.</summary>
+    private Evening? _previous;
+
     private DateTime _momentCheckedUtc = DateTime.MinValue;
     private DateTime _retryAtUtc = DateTime.MinValue;
     private bool _notSupported;
@@ -44,7 +49,7 @@ internal sealed class UnmappedReviewService(
     /// <summary>A sign-out ends the user's evening as far as this session knows; the next sign-in asks again.</summary>
     public void Forget()
     {
-        _momentUtc = null;
+        ForgetEvenings();
         _momentCheckedUtc = DateTime.MinValue;
         _retryAtUtc = DateTime.MinValue;
         _notSupported = false;
@@ -55,34 +60,41 @@ internal sealed class UnmappedReviewService(
         if (!config.UnmappedReviewEnabled || _notSupported || !apiClient.HasSession || isPaused(nowUtc)) return;
         if (nowUtc < _retryAtUtc) return;
 
-        if (_momentUtc is null || nowUtc - _momentCheckedUtc >= MomentRefreshInterval || IsSpent(nowUtc))
+        if (_next is null || nowUtc - _momentCheckedUtc >= MomentRefreshInterval || IsSpent(nowUtc))
         {
             if (!await RefreshMomentAsync(nowUtc, ct)) return;
         }
 
-        if (_momentUtc is not { } moment) return;
+        if (_next is not { } next) return;
 
-        switch (UnmappedReviewPolicy.Timing(nowUtc, moment, store.HandledMomentUtc))
+        var (evening, timing) = UnmappedReviewPolicy.Pick(nowUtc, _previous, next, store.HandledMomentUtc);
+        switch (timing)
         {
             case ReviewTiming.Missed:
-                // Too late to ring, and the next evening is already the server's answer: forget this one.
-                store.MarkHandled(moment);
-                _momentUtc = null;
+                // A held moment gone stale (the tracker slept past it and could not ask since): too late to ring.
+                store.MarkHandled(evening.MomentUtc);
+                ForgetEvenings();
                 _log.Information("The evening review was missed (the tracker was not running or asleep) — skipped");
                 break;
 
             case ReviewTiming.Due:
-                await InviteAsync(nowUtc, moment, ct);
+                await InviteAsync(nowUtc, evening, ct);
                 break;
         }
     }
 
+    private void ForgetEvenings()
+    {
+        _next = null;
+        _previous = null;
+    }
+
     /// <summary>
-    /// The held moment has been handled and is past, so the server's next answer is the next evening's. Not asked for
-    /// more than once a minute: a server clock a few seconds behind this one still answers with the moment just handled.
+    /// The held next moment has been handled and is past, so the server's next answer is the next evening's. Not asked
+    /// for more than once a minute: a server clock a few seconds behind this one still answers with the moment just handled.
     /// </summary>
     private bool IsSpent(DateTime nowUtc) =>
-        _momentUtc is { } moment && store.HandledMomentUtc is { } handled && handled >= moment && nowUtc >= moment
+        _next is { } next && store.HandledMomentUtc is { } handled && handled >= next.MomentUtc && nowUtc >= next.MomentUtc
         && nowUtc - _momentCheckedUtc >= TimeSpan.FromMinutes(1);
 
     private async Task<bool> RefreshMomentAsync(DateTime nowUtc, CancellationToken ct)
@@ -91,7 +103,10 @@ internal sealed class UnmappedReviewService(
         switch (read.Status)
         {
             case CoverageFetch.Fetched when read.Value is { } fetched:
-                _momentUtc = DateTime.SpecifyKind(fetched.MomentUtc, DateTimeKind.Utc);
+                _next = new Evening(DateTime.SpecifyKind(fetched.MomentUtc, DateTimeKind.Utc), fetched.Date);
+                _previous = fetched.PreviousMomentUtc is { } previous
+                    ? new Evening(DateTime.SpecifyKind(previous, DateTimeKind.Utc), fetched.PreviousDate)
+                    : null;
                 _momentCheckedUtc = nowUtc;
                 return true;
 
@@ -106,15 +121,16 @@ internal sealed class UnmappedReviewService(
         }
     }
 
-    private async Task InviteAsync(DateTime nowUtc, DateTime moment, CancellationToken ct)
+    private async Task InviteAsync(DateTime nowUtc, Evening evening, CancellationToken ct)
     {
-        var read = await apiClient.FetchUnmappedTodayAsync(ct);
+        // The evening's own day: past midnight (bed at 01:30) "today" would be the half hour since the date turned.
+        var read = await apiClient.FetchUnmappedTodayAsync(evening.Date, ct);
         switch (read.Status)
         {
             case CoverageFetch.Fetched when read.Value is { } today:
                 // Handled whether or not there was anything to say: an evening is looked at once.
-                store.MarkHandled(moment);
-                _momentUtc = null; // the server's next answer is tomorrow's
+                store.MarkHandled(evening.MomentUtc);
+                ForgetEvenings(); // the server's next answer moves on past this one
 
                 if (UnmappedReviewPolicy.Invite(today) is not { } invite)
                 {
