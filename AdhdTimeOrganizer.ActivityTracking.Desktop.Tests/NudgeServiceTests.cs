@@ -242,7 +242,11 @@ public sealed class NudgeServiceTests : IDisposable
     public void AStall_IsShownOnce_AndWithdrawnWhenItResolves()
     {
         var (service, notifier, _) = Create();
-        var now = DateTime.UtcNow;
+        var firstSeen = DateTime.UtcNow;
+        var now = firstSeen + UploadHealthPolicy.StallGrace;
+
+        service.OnUploadStatus(firstSeen, Stalled(firstSeen));
+        Assert.Empty(notifier.Shown);
 
         service.OnUploadStatus(now, Stalled(now));
         service.OnUploadStatus(now.AddSeconds(2), Stalled(now.AddSeconds(2)));
@@ -266,6 +270,8 @@ public sealed class NudgeServiceTests : IDisposable
         var (service, notifier, _) = Create();
         var now = DateTime.UtcNow;
         service.OnUploadStatus(now, Stalled(now));
+        service.OnUploadStatus(now + UploadHealthPolicy.StallGrace, Stalled(now + UploadHealthPolicy.StallGrace));
+        Assert.Single(notifier.Shown);
 
         service.OnActivated(new NudgeActivation(NudgeKind.UploadHealth, 1, NudgeResponse.TurnOff));
 

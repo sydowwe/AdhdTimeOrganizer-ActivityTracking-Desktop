@@ -250,9 +250,10 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   glance's submenu, not a left-click flyout — double-click already pauses.
 - **Upload notices are not nudges** (`UploadHealthPolicy`, toast kind `NudgeKind.UploadHealth`, switch
   `UploadNoticesEnabled`). Three problems, one toast at a time, in this order: signed out (minutes waiting for 10 min —
-  it replaced the old "signed out" balloon), stalled (the **oldest unsent minute** is a day old), dropped (3+ windows
-  refused since the last notice). A stall is measured by `OutboxStore.Summary().OldestStartUtc`, never by `LastSentUtc`:
-  the outbox is on disk, "last sent" is not. They are fed by the tray's 2 s timer (`NudgeService.OnUploadStatus`), not
+  it replaced the old "signed out" balloon), stalled (the **oldest unsent minute** is a day old and stays so for 10 min),
+  dropped (3+ windows refused since the last notice). A stall is measured by `OutboxStore.Summary().OldestStartUtc`, never
+  by `LastSentUtc`: the outbox is on disk, "last sent" is not. The 10 min (`StallGrace`) are for a PC waking from a long
+  sleep: its backlog is days old before anything has tried to send it. They are fed by the tray's 2 s timer (`NudgeService.OnUploadStatus`), not
   the poll loop, so they keep running through a pause — the policy itself shows nothing while paused. No quiet
   conditions (Windows holds toasts itself). Once per episode, again at most daily, withdrawn when the condition clears;
   a dropped-windows toast is not withdrawn (those minutes are gone) and leaves on exit. State is in memory: a restart

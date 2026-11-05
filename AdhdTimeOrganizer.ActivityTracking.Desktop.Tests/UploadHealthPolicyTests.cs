@@ -20,6 +20,13 @@ public class UploadHealthPolicyTests
     private UploadHealthChange At(TimeSpan after, UploadSnapshot snapshot, bool enabled = true) =>
         _policy.Evaluate(Now + after, snapshot, enabled);
 
+    /// <summary>A stall first seen at <see cref="Now"/>, evaluated again once its grace has run out.</summary>
+    private UploadHealthChange PastTheStallGrace(UploadSnapshot snapshot)
+    {
+        At(TimeSpan.Zero, snapshot);
+        return At(UploadHealthPolicy.StallGrace, snapshot);
+    }
+
     [Fact]
     public void AHealthyTracker_SaysNothing()
     {
@@ -74,26 +81,48 @@ public class UploadHealthPolicyTests
     // ---- stalled ----------------------------------------------------------
 
     [Fact]
-    public void Stalled_IsReported_WhenTheOldestMinuteIsADayOld()
+    public void Stalled_IsReported_WhenTheOldestMinuteIsADayOld_AndStaysSoPastTheGrace()
     {
-        Assert.Null(At(TimeSpan.Zero, StalledFor(UploadHealthPolicy.StallAfter - TimeSpan.FromMinutes(1))).Show);
+        var young = StalledFor(UploadHealthPolicy.StallAfter - TimeSpan.FromHours(1));
+        Assert.Null(At(TimeSpan.Zero, young).Show);
+        Assert.Null(At(UploadHealthPolicy.StallGrace, young).Show);
 
-        var notice = At(TimeSpan.Zero, StalledFor(TimeSpan.FromHours(26), pending: 300)).Show;
+        var overdue = StalledFor(TimeSpan.FromHours(26), pending: 300);
+        Assert.Null(At(TimeSpan.FromMinutes(20), overdue).Show);
+        Assert.Null(At(TimeSpan.FromMinutes(20) + UploadHealthPolicy.StallGrace - TimeSpan.FromSeconds(1), overdue).Show);
 
-        Assert.Equal(new UploadNotice(UploadProblem.Stalled, 300, TimeSpan.FromHours(26), 0), notice);
+        var notice = At(TimeSpan.FromMinutes(20) + UploadHealthPolicy.StallGrace, overdue).Show;
+
+        var age = TimeSpan.FromHours(26) + TimeSpan.FromMinutes(20) + UploadHealthPolicy.StallGrace;
+        Assert.Equal(new UploadNotice(UploadProblem.Stalled, 300, age, 0), notice);
+    }
+
+    /// <summary>
+    /// A PC back from a weekend asleep holds a minute from before it: days old, but nothing has tried to send it yet. It
+    /// goes out within the grace, so there was no stall to report, and the next one starts its own grace.
+    /// </summary>
+    [Fact]
+    public void ABacklogFoundOnWaking_ThatDrainsInTheGrace_SaysNothing()
+    {
+        var waking = StalledFor(TimeSpan.FromHours(60), pending: 2);
+
+        Assert.Equal(new UploadHealthChange(null, false), At(TimeSpan.Zero, waking));
+        Assert.Equal(new UploadHealthChange(null, false), At(TimeSpan.FromMinutes(1), Healthy()));
+
+        Assert.Null(At(UploadHealthPolicy.StallGrace, waking).Show);
     }
 
     /// <summary>The outbox drained: the connection is back, and a toast saying otherwise must leave.</summary>
     [Fact]
     public void Stalled_ResolvingWithdrawsTheNotice()
     {
-        At(TimeSpan.Zero, StalledFor(TimeSpan.FromHours(25)));
+        PastTheStallGrace(StalledFor(TimeSpan.FromHours(25)));
 
-        var change = At(TimeSpan.FromMinutes(5), Healthy());
+        var change = At(TimeSpan.FromMinutes(20), Healthy());
 
         Assert.True(change.Withdraw);
         Assert.Null(change.Show);
-        Assert.False(At(TimeSpan.FromMinutes(6), Healthy()).Withdraw); // once
+        Assert.False(At(TimeSpan.FromMinutes(21), Healthy()).Withdraw); // once
     }
 
     /// <summary>A day signed out is also a day of unsent minutes; the notice names the cause, not a stall.</summary>
@@ -138,7 +167,8 @@ public class UploadHealthPolicyTests
     {
         var both = StalledFor(TimeSpan.FromHours(25)) with { RejectedWindows = 4 };
 
-        Assert.Equal(UploadProblem.Stalled, At(TimeSpan.Zero, both).Show!.Problem);
+        Assert.Null(At(TimeSpan.Zero, both).Show); // not during the stall's grace either
+        Assert.Equal(UploadProblem.Stalled, At(UploadHealthPolicy.StallGrace, both).Show!.Problem);
         Assert.Null(At(TimeSpan.FromHours(1), both).Show);
 
         var change = At(TimeSpan.FromHours(2), Healthy() with { RejectedWindows = 4 });
@@ -152,30 +182,34 @@ public class UploadHealthPolicyTests
     [Fact]
     public void ALastingProblem_IsShownOnce_AndAgainOnlyAfterADay()
     {
-        Assert.NotNull(At(TimeSpan.Zero, StalledFor(TimeSpan.FromHours(25))).Show);
+        Assert.NotNull(PastTheStallGrace(StalledFor(TimeSpan.FromHours(25))).Show);
 
         for (var hours = 1; hours < 24; hours++)
             Assert.Null(At(TimeSpan.FromHours(hours), StalledFor(TimeSpan.FromHours(25 + hours))).Show);
 
         // The snapshots are built against the first instant, so the oldest minute is a day older again by now.
-        var again = At(UploadHealthPolicy.RepeatEvery, StalledFor(TimeSpan.FromHours(49))).Show;
-        Assert.Equal(TimeSpan.FromHours(73), again!.StalledFor);
-        Assert.Null(At(UploadHealthPolicy.RepeatEvery + TimeSpan.FromHours(1), StalledFor(TimeSpan.FromHours(50))).Show);
+        var repeat = UploadHealthPolicy.StallGrace + UploadHealthPolicy.RepeatEvery;
+        var again = At(repeat, StalledFor(TimeSpan.FromHours(49))).Show;
+        Assert.Equal(TimeSpan.FromHours(73) + UploadHealthPolicy.StallGrace, again!.StalledFor);
+        Assert.Null(At(repeat + TimeSpan.FromHours(1), StalledFor(TimeSpan.FromHours(50))).Show);
     }
 
+    /// <summary>The daily limit is per episode: past its own grace, a stall that came back is shown the same day.</summary>
     [Fact]
-    public void AProblemThatReturns_IsANewEpisode_AndShownAtOnce()
+    public void AProblemThatReturns_IsANewEpisode_NotHeldBackByTheDailyLimit()
     {
-        At(TimeSpan.Zero, StalledFor(TimeSpan.FromHours(25)));
+        PastTheStallGrace(StalledFor(TimeSpan.FromHours(25)));
         At(TimeSpan.FromHours(1), Healthy());
 
-        Assert.NotNull(At(TimeSpan.FromHours(2), StalledFor(TimeSpan.FromHours(24))).Show);
+        var returned = StalledFor(TimeSpan.FromHours(24));
+        Assert.Null(At(TimeSpan.FromHours(2), returned).Show);
+        Assert.NotNull(At(TimeSpan.FromHours(2) + UploadHealthPolicy.StallGrace, returned).Show);
     }
 
     [Fact]
     public void ADifferentProblem_IsNotHeldBackByTheOnesCooldown()
     {
-        Assert.Equal(UploadProblem.Stalled, At(TimeSpan.Zero, StalledFor(TimeSpan.FromHours(25))).Show!.Problem);
+        Assert.Equal(UploadProblem.Stalled, PastTheStallGrace(StalledFor(TimeSpan.FromHours(25))).Show!.Problem);
 
         var signedOut = SignedOut();
         At(TimeSpan.FromHours(1), signedOut);
@@ -200,7 +234,7 @@ public class UploadHealthPolicyTests
     [Fact]
     public void AProblemThatResolvesDuringAPause_StillWithdrawsItsToast()
     {
-        At(TimeSpan.Zero, StalledFor(TimeSpan.FromHours(25)));
+        PastTheStallGrace(StalledFor(TimeSpan.FromHours(25)));
 
         Assert.True(At(TimeSpan.FromHours(1), Healthy() with { IsPaused = true }).Withdraw);
     }
@@ -208,10 +242,12 @@ public class UploadHealthPolicyTests
     [Fact]
     public void WhenSwitchedOff_NothingIsShown_AndTurningOffWithdrawsWhatIsOut()
     {
-        Assert.Null(At(TimeSpan.Zero, StalledFor(TimeSpan.FromHours(30)), enabled: false).Show);
+        var stalled = StalledFor(TimeSpan.FromHours(30));
+        Assert.Null(At(TimeSpan.Zero, stalled, enabled: false).Show);
+        Assert.Null(At(UploadHealthPolicy.StallGrace, stalled, enabled: false).Show);
 
-        _policy.Evaluate(Now, StalledFor(TimeSpan.FromHours(30)), enabled: true);
-        var change = At(TimeSpan.FromMinutes(1), StalledFor(TimeSpan.FromHours(30)), enabled: false);
+        Assert.NotNull(At(UploadHealthPolicy.StallGrace, stalled, enabled: true).Show); // the grace ran while it was off
+        var change = At(UploadHealthPolicy.StallGrace + TimeSpan.FromMinutes(1), stalled, enabled: false);
 
         Assert.True(change.Withdraw);
         Assert.Null(change.Show);
