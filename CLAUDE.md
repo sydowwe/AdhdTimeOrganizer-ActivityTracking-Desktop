@@ -27,7 +27,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/WindowLimits.cs` | The server's validation rules, applied before a window is queued |
 | `Services/WindowTitleNormalizer.cs` | Strips counters, unsaved markers and app-name suffixes from titles |
 | `Services/OutboxStore.cs` | Finished windows as JSON files under `%LOCALAPPDATA%\…Desktop\outbox` until sent |
-| `Services/ApiClient.cs` | Login, 2FA, token refresh, heartbeat (and its answer), the server-rules and mapping-coverage downloads, the start ramp's Start now; `Classify` decides retry vs. drop per status code |
+| `Services/ApiClient.cs` | Login, 2FA, token refresh, heartbeat (and its answer), the server-rules and mapping-coverage downloads, the start ramp's Start now and Not this one; `Classify` decides retry vs. drop per status code |
 | `Services/RefreshPolicy.cs` | **Pure** refresh decisions: save / sign out / keep, whether an attempt left the token possibly rotated, how long to hold it back |
 | `Services/TodayTotal.cs` | Today's recorded foreground time on this PC, for the tray glance; saved to `today.json` |
 | `Services/PrivacyFilter.cs` | Recording-time privacy: local rules and private browser windows → keep, hide the title, or drop |
@@ -209,8 +209,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   `GetPackageFamilyName` on the limited handle (`ProcessInfo.PackageFamilyName`); a desktop app by its path.
 
 ### Nudges and notifications
-- Nudges are **client-side**: their decisions never involve the server, and the one thing a nudge sends is the start
-  ramp's Start now (below). The policies live in `HyperfocusPolicy`, `DriftPolicy` and `StartRampPolicy`, pure like
+- Nudges are **client-side**: their decisions never involve the server, and the two things a nudge sends are the start
+  ramp's Start now and Not this one (below). The policies live in `HyperfocusPolicy`, `DriftPolicy` and `StartRampPolicy`, pure like
   `ActivityRecorder` — keep clocks, Win32 and toasts out of them.
 - **Drift nudges** are fed from the **send** loop, a minute at a time, with the server's verdicts; the policy only
   counts them. Off by default, ≥ 10 min, one per planned block ("Snooze" asks for exactly one more after 30 min).
@@ -228,9 +228,10 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     heartbeat's plan (`PlanView`: `planned`, `next`, `timerRunning`, the minute's verdict), trusted for 3 minutes like a
     drift minute; it fires from the poll loop.
   - **Late.** "Started 20 min ago", but only while ≥ 10 min are left; a block nearly over is settled without a word.
-  - **Skipped** when the block is `inProgress` or the minute was on plan. **Held** while a countdown or pomodoro runs
-    (`timerRunning`), under the quiet conditions, and within the gap to the other families. A server from before
-    2026-10-19 sends no `timerRunning`, so the ramp stays quiet against it.
+  - **Skipped** when the block is `inProgress` or the minute was on plan. **Held** while a countdown, pomodoro or
+    stopwatch runs (`timerRunning`; a paused one has no alarm rows, so the server can't see it), under the quiet conditions,
+    and within the gap to the other families. A server from before 2026-10-19 sends no `timerRunning`, so the ramp stays
+    quiet against it.
   - **Asks once per block.** A *reminder* toast (stays until answered).
     - **Start now** does two things side by side. It calls `POST …/tracker/desktop/start-block` (the block goes in progress
       in the planner, so the start counts even if the browser never gets there). It also opens
@@ -238,7 +239,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
       timer itself lives only in the browser: there is no server timer to start.
     - **In 2 minutes** asks exactly once more, without that button.
     - **Not this one** also silences the drift nudge for that block (`DriftPolicy.QuietBlock`, saved in `drift.json`):
-      after an explicit decision, "you slid off it" would only shame.
+      after an explicit decision, "you slid off it" would only shame. For the same reason it calls
+      `POST …/tracker/desktop/skip-block` (not started → cancelled, the phone push's Skip), or the planner would announce the
+      block as missed when it ends. It isn't retried: offline, the local half stands and the block stays open on the server.
     - A toast still out leaves when the block is started, worked on, or over; another block's toast replaces it.
   - **State.** Saved to `start-ramp.json` beside `drift.json`: settled blocks by id, kept a day past their end (an
     extended block keeps its id), and a pending "In 2 minutes". A restart neither asks twice nor forgets the repeat.

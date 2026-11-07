@@ -7,7 +7,7 @@ using Xunit;
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Tests;
 
 /// <summary>
-/// The start ramp's Start now on the wire: one authorized POST naming the block, and an answer that is only ever true or
+/// The start ramp's Start now and Not this one on the wire: one authorized POST naming the block, and an answer that is only ever true or
 /// false — a 409 (the block is no longer open), a 404 (a server from before the route) or no network must not throw into
 /// the button press that sent it.
 /// </summary>
@@ -53,6 +53,37 @@ public sealed class StartBlockClientTests : IDisposable
         Assert.False(await _api.StartBlockAsync(7, TestContext.Current.CancellationToken));
     }
 
+    // ---- Not this one: the same POST, on its own route ----------------------
+
+    [Fact]
+    public async Task SkipBlock_PostsTheBlock_ToItsOwnRoute_WithTheSessionsToken()
+    {
+        Assert.True(await _api.SkipBlockAsync(7, TestContext.Current.CancellationToken));
+
+        var request = Assert.Single(_server.SkipRequests);
+        Assert.Equal("""{"plannerTaskId":7}""", request.Body);
+        Assert.Equal("Bearer access", request.Authorization);
+        Assert.Empty(_server.StartRequests);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Conflict)]
+    [InlineData(HttpStatusCode.NotFound)]
+    public async Task SkipBlock_AnythingButSuccess_IsFalse(HttpStatusCode status)
+    {
+        _server.SkipStatus = status;
+
+        Assert.False(await _api.SkipBlockAsync(7, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task SkipBlock_NoNetwork_IsFalse_NotAnException()
+    {
+        _server.Offline = true;
+
+        Assert.False(await _api.SkipBlockAsync(7, TestContext.Current.CancellationToken));
+    }
+
     [Fact]
     public async Task SignedOut_SendsNothing()
     {
@@ -72,6 +103,8 @@ public sealed class StartBlockClientTests : IDisposable
     {
         public List<(string Body, string? Authorization)> StartRequests { get; } = [];
         public HttpStatusCode StartStatus { get; set; } = HttpStatusCode.NoContent;
+        public List<(string Body, string? Authorization)> SkipRequests { get; } = [];
+        public HttpStatusCode SkipStatus { get; set; } = HttpStatusCode.NoContent;
         public bool Offline { get; set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -89,6 +122,10 @@ public sealed class StartBlockClientTests : IDisposable
                 case "/api/tracker/desktop/start-block" when request.Method == HttpMethod.Post:
                     StartRequests.Add((await request.Content!.ReadAsStringAsync(ct), request.Headers.Authorization?.ToString()));
                     return new HttpResponseMessage(StartStatus);
+
+                case "/api/tracker/desktop/skip-block" when request.Method == HttpMethod.Post:
+                    SkipRequests.Add((await request.Content!.ReadAsStringAsync(ct), request.Headers.Authorization?.ToString()));
+                    return new HttpResponseMessage(SkipStatus);
 
                 default:
                     return new HttpResponseMessage(HttpStatusCode.NotFound);

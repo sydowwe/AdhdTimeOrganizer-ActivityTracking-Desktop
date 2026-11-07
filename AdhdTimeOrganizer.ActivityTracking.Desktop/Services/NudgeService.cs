@@ -9,8 +9,8 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 /// <summary>
 /// Hyperfocus, break, drift and start-ramp nudges: feeds each poll to <see cref="HyperfocusPolicy"/>, each sent minute's
 /// server verdict to <see cref="DriftPolicy"/> and its plan to <see cref="StartRampPolicy"/>, and shows what they ask for.
-/// The drift nudge and the ramp only read what the heartbeat answered; the one thing that reaches the server is the
-/// ramp's Start now, which starts the block in the planner.
+/// The drift nudge and the ramp only read what the heartbeat answered; the two things that reach the server are the
+/// ramp's Start now, which starts the block in the planner, and its Not this one, which cancels it there.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -69,6 +69,7 @@ public sealed class NudgeService : IDisposable
     private readonly Action? _signIn;
     private readonly Action<string> _openFolder;
     private readonly Func<long, Task<bool>> _startBlock;
+    private readonly Func<long, Task<bool>> _skipBlock;
     private readonly string _driftStatePath;
     private readonly string _rampStatePath;
     private readonly ILogger _log = Log.ForContext<NudgeService>();
@@ -96,10 +97,11 @@ public sealed class NudgeService : IDisposable
     /// <param name="uiContext">Where button presses are handled; the tray's.</param>
     /// <param name="signIn">"Sign in" on an upload notice; opens the sign-in form on the UI thread. Null does nothing.</param>
     /// <param name="startBlock">The start ramp's "Start now" on the server; null starts nothing there.</param>
+    /// <param name="skipBlock">The start ramp's "Not this one" on the server; null skips nothing there.</param>
     public NudgeService(AppConfig config, SynchronizationContext? uiContext, Action? signIn = null,
-        Func<long, Task<bool>>? startBlock = null)
+        Func<long, Task<bool>>? startBlock = null, Func<long, Task<bool>>? skipBlock = null)
         : this(config, uiContext, onActivated => new NudgeNotifier(onActivated), OpenInBrowser, DefaultDriftStatePath, signIn,
-            startBlock: startBlock)
+            startBlock: startBlock, skipBlock: skipBlock)
     {
     }
 
@@ -111,9 +113,11 @@ public sealed class NudgeService : IDisposable
     /// <param name="signIn">"Sign in"; tests count it.</param>
     /// <param name="openFolder">"Open log folder"; tests record the path instead.</param>
     /// <param name="startBlock">"Start now" on the server; tests record the id instead.</param>
+    /// <param name="skipBlock">"Not this one" on the server; tests record the id instead.</param>
     internal NudgeService(AppConfig config, SynchronizationContext? uiContext,
         Func<Action<NudgeActivation>, INudgeNotifier> createNotifier, Action<Uri> openInBrowser, string driftStatePath,
-        Action? signIn = null, Action<string>? openFolder = null, Func<long, Task<bool>>? startBlock = null)
+        Action? signIn = null, Action<string>? openFolder = null, Func<long, Task<bool>>? startBlock = null,
+        Func<long, Task<bool>>? skipBlock = null)
     {
         _config = config;
         _uiContext = uiContext;
@@ -121,6 +125,7 @@ public sealed class NudgeService : IDisposable
         _signIn = signIn;
         _openFolder = openFolder ?? OpenFolder;
         _startBlock = startBlock ?? (_ => Task.FromResult(false));
+        _skipBlock = skipBlock ?? (_ => Task.FromResult(false));
         _driftStatePath = driftStatePath;
         _rampStatePath = Path.Combine(Path.GetDirectoryName(driftStatePath)!, StartRampStateFileName);
         if (LoadState<DriftState>(_driftStatePath, "drift nudge") is { } drift) _drift.Restore(drift);
@@ -485,7 +490,8 @@ public sealed class NudgeService : IDisposable
     /// <summary>
     /// A press on a start-ramp toast. <b>Start now</b> starts the block on the server and opens its timer in the web app,
     /// side by side: the browser does not wait for the server, and the server's start counts even if the browser never
-    /// gets there. <b>Not this one</b> also ends drift nudges in the block. <b>In 2 minutes</b> is the policy's alone.
+    /// gets there. <b>Not this one</b> also ends drift nudges in the block and cancels it on the server, so the planner
+    /// doesn't announce it as missed; offline, the local half still stands. <b>In 2 minutes</b> is the policy's alone.
     /// </summary>
     private void HandleRampResponse(NudgeActivation activation)
     {
@@ -510,26 +516,36 @@ public sealed class NudgeService : IDisposable
 
         _log.Information("Start ramp for block {PlannerTaskId} answered: {Response}", block.PlannerTaskId, activation.Response);
         if (activation.Response == NudgeResponse.StartNow) StartNow(block.PlannerTaskId);
+        if (activation.Response == NudgeResponse.NotThisOne) TellServer(_skipBlock, "skipped", block.PlannerTaskId);
 
         Evaluate(nowUtc); // saves the state, withdraws a drift toast for a block now quiet
     }
 
+    /// <summary>
+    /// Fire and forget: a button press never waits on the network. The test toast's block is not a planner task, so nothing
+    /// is sent for it.
+    /// </summary>
+    private void TellServer(Func<long, Task<bool>> call, string done, long plannerTaskId)
+    {
+        if (plannerTaskId <= 0) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (!await call(plannerTaskId))
+                    _log.Information("Block {PlannerTaskId} was not {Done} on the server", plannerTaskId, done);
+            }
+            catch (Exception ex)
+            {
+                _log.Warning(ex, "Block {PlannerTaskId} could not be {Done}", plannerTaskId, done);
+            }
+        });
+    }
+
     private void StartNow(long plannerTaskId)
     {
-        // The test toast's block is not a planner task: open the page, start nothing.
-        if (plannerTaskId > 0)
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    if (!await _startBlock(plannerTaskId))
-                        _log.Information("Block {PlannerTaskId} was not started on the server", plannerTaskId);
-                }
-                catch (Exception ex)
-                {
-                    _log.Warning(ex, "Starting block {PlannerTaskId} failed", plannerTaskId);
-                }
-            });
+        TellServer(_startBlock, "started", plannerTaskId);
 
         try
         {

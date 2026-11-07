@@ -48,8 +48,9 @@ public sealed record StartRampState(Dictionary<long, DateTime> Settled, long? Ag
 /// </para>
 /// <para>
 /// <b>Skipped</b> when the block is already under way: started in the planner (the web app's timer marks it), or the
-/// minute was on plan. <b>Held</b> while a timer runs, and under the quiet conditions: the timer rings at its own end,
-/// which is the moment to move on to the plan.
+/// minute was on plan. <b>Held</b> under the quiet conditions, and while a countdown, pomodoro or stopwatch runs: the user
+/// is timing something already, and Start now would land on a dialog offering to throw it away. Stopping it is the moment
+/// to move on to the plan.
 /// </para>
 /// <para>
 /// <b>Not nagging.</b> One toast per block. <b>In 2 minutes</b> asks exactly once more, without that button, so it can't

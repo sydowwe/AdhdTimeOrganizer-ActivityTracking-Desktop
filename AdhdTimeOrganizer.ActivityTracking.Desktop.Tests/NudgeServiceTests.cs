@@ -30,6 +30,7 @@ public sealed class NudgeServiceTests : IDisposable
     private readonly List<NudgeService> _services = [];
     private readonly List<string> _folders = [];
     private readonly ConcurrentQueue<long> _startedBlocks = new(); // filled from the thread pool
+    private readonly ConcurrentQueue<long> _skippedBlocks = new(); // filled from the thread pool
     private int _signIns;
 
     private DateTime _start = DateTime.UtcNow.AddHours(-2);
@@ -184,7 +185,7 @@ public sealed class NudgeServiceTests : IDisposable
 
     /// <summary>
     /// "Not this one" ends drift nudges in that block too: twenty-five minutes off plan in it — past the gap between the
-    /// families — and no drift toast. The press changes nothing on the server.
+    /// families — and no drift toast. On the server it skips the block, and starts nothing.
     /// </summary>
     [Fact]
     public void NotThisOne_OnTheRamp_AlsoQuietsDriftInThatBlock()
@@ -203,6 +204,39 @@ public sealed class NudgeServiceTests : IDisposable
         Assert.Equal([NudgeKind.StartRamp], notifier.Shown.Select(n => n.Kind));
         Assert.Empty(opened);
         Assert.Empty(_startedBlocks);
+        Assert.True(SpinWait.SpinUntil(() => !_skippedBlocks.IsEmpty, TimeSpan.FromSeconds(5)), "the block is skipped on the server");
+        Assert.Equal(new[] { ramp.StartRamp!.PlannerTaskId }, _skippedBlocks);
+    }
+
+    /// <summary>"In 2 minutes" is still a maybe, and a second press on an answered toast is not current: neither skips.</summary>
+    [Fact]
+    public void OnlyACurrentNotThisOne_SkipsTheBlock()
+    {
+        _start = NextMinute().AddMinutes(-2);
+        var (service, notifier, _) = Create();
+        Present(service, _start.AddSeconds(30));
+        Minutes(service, 1, onPlan: false, withPlan: true);
+        var ramp = Assert.Single(notifier.Shown);
+
+        service.OnActivated(new NudgeActivation(NudgeKind.StartRamp, ramp.Id, NudgeResponse.Later));
+        service.OnActivated(new NudgeActivation(NudgeKind.StartRamp, ramp.Id, NudgeResponse.NotThisOne));
+
+        Assert.False(SpinWait.SpinUntil(() => !_skippedBlocks.IsEmpty, TimeSpan.FromMilliseconds(200)));
+    }
+
+    /// <summary>The test toast's block is not a planner task: nothing reaches the server for it, whichever button.</summary>
+    [Theory]
+    [InlineData(NudgeResponse.StartNow)]
+    [InlineData(NudgeResponse.NotThisOne)]
+    public void TheTestToast_TellsTheServerNothing(NudgeResponse response)
+    {
+        var (service, notifier, _) = Create();
+        service.ShowTest(NudgeKind.StartRamp);
+        var ramp = Assert.Single(notifier.Shown);
+
+        service.OnActivated(new NudgeActivation(NudgeKind.StartRamp, ramp.Id, response));
+
+        Assert.False(SpinWait.SpinUntil(() => !_startedBlocks.IsEmpty || !_skippedBlocks.IsEmpty, TimeSpan.FromMilliseconds(200)));
     }
 
     /// <summary>The ramp's state is kept beside drift.json, so a restart in the block doesn't offer it again.</summary>
@@ -328,6 +362,11 @@ public sealed class NudgeServiceTests : IDisposable
             startBlock: id =>
             {
                 _startedBlocks.Enqueue(id);
+                return Task.FromResult(true);
+            },
+            skipBlock: id =>
+            {
+                _skippedBlocks.Enqueue(id);
                 return Task.FromResult(true);
             });
         _services.Add(service);

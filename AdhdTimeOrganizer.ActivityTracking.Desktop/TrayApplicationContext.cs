@@ -56,7 +56,8 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         // Button presses on a nudge are handed to this, the UI, thread.
         _nudges = new NudgeService(config, new WindowsFormsSynchronizationContext(), signIn: SignInFromNotice,
-            startBlock: plannerTaskId => _apiClient.StartBlockAsync(plannerTaskId, CancellationToken.None));
+            startBlock: plannerTaskId => _apiClient.StartBlockAsync(plannerTaskId, CancellationToken.None),
+            skipBlock: plannerTaskId => _apiClient.SkipBlockAsync(plannerTaskId, CancellationToken.None));
         _tracker = new ActivityTrackerService(config, _apiClient, _nudges);
 
         // Opens today's breakdown. A submenu rather than a left-click flyout: double-click already pauses and resumes,

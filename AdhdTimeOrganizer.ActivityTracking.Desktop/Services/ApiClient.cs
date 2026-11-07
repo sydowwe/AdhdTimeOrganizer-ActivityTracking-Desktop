@@ -76,6 +76,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     private const string TrackerUnmappedPath = "/api/tracker/desktop/unmapped";
     private const string EveningMomentPath = "/api/tracker/evening-shutdown-moment";
     private const string TrackerStartBlockPath = "/api/tracker/desktop/start-block";
+    private const string TrackerSkipBlockPath = "/api/tracker/desktop/skip-block";
 
     /// <summary>
     /// How long a refresh already sent may still finish after its caller was cancelled — an exit, a session end.
@@ -393,13 +394,24 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     /// either way, and the web app marks the block started too. A 409 is a block no longer open (done, skipped, moved off
     /// today); a 404 is a server from before the route.
     /// </summary>
-    public async Task<bool> StartBlockAsync(long plannerTaskId, CancellationToken ct)
+    public Task<bool> StartBlockAsync(long plannerTaskId, CancellationToken ct) =>
+        PostBlockAsync(TrackerStartBlockPath, plannerTaskId, ct);
+
+    /// <summary>
+    /// The start ramp's Not this one: the planned block is cancelled on the server, so it isn't announced as missed when it
+    /// ends. True when it is skipped afterwards. Never throws but for the caller's cancellation, and nothing waits on it — the
+    /// toast's own decision stands locally either way. A 409 is a block started or finished meanwhile, which stays as it is.
+    /// </summary>
+    public Task<bool> SkipBlockAsync(long plannerTaskId, CancellationToken ct) =>
+        PostBlockAsync(TrackerSkipBlockPath, plannerTaskId, ct);
+
+    private async Task<bool> PostBlockAsync(string path, long plannerTaskId, CancellationToken ct)
     {
         if (!HasSession) return false;
 
         try
         {
-            var (response, _) = await SendAuthorizedAsync(() => new HttpRequestMessage(HttpMethod.Post, BuildUri(TrackerStartBlockPath))
+            var (response, _) = await SendAuthorizedAsync(() => new HttpRequestMessage(HttpMethod.Post, BuildUri(path))
             {
                 Content = JsonContent.Create(new { plannerTaskId })
             }, ct);
@@ -407,7 +419,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
             using var owned = response;
 
             if (response.IsSuccessStatusCode) return true;
-            _log.Information("Start block {PlannerTaskId} answered {StatusCode}", plannerTaskId, (int)response.StatusCode);
+            _log.Information("{Path} for block {PlannerTaskId} answered {StatusCode}", path, plannerTaskId, (int)response.StatusCode);
             return false;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -416,7 +428,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
         }
         catch (Exception ex)
         {
-            _log.Warning(ex, "Start block {PlannerTaskId} failed", plannerTaskId);
+            _log.Warning(ex, "{Path} for block {PlannerTaskId} failed", path, plannerTaskId);
             return false;
         }
     }

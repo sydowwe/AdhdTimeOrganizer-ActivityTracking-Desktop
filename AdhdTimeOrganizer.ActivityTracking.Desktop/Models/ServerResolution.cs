@@ -29,9 +29,9 @@ public sealed record HeartbeatResponse
     public PlannedBlock? Next { get; init; }
 
     /// <summary>
-    /// A countdown or pomodoro is running in the web app, as far as the server knows (a stopwatch doesn't count). Null
-    /// from a server older than the start ramp (2026-10-19), which can't say whether a block was started either — the
-    /// ramp stays quiet against one.
+    /// A countdown, pomodoro or stopwatch is running in the web app, as far as the server knows (a paused one isn't
+    /// visible to it). Null from a server older than the start ramp (2026-10-19), which can't say whether a block was
+    /// started either — the ramp stays quiet against one.
     /// </summary>
     [JsonPropertyName("timerRunning")]
     public bool? TimerRunning { get; init; }

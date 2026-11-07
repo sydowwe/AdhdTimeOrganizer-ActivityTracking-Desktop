@@ -115,7 +115,7 @@ public class StartRampPolicyTests
         Assert.Null(run.Poll(Eleven.AddMinutes(2)));
     }
 
-    /// <summary>A pomodoro rings at its own end; that is the moment to move on to the plan.</summary>
+    /// <summary>Timing something already (a countdown, a pomodoro, a stopwatch): its end is the moment to move on to the plan.</summary>
     [Fact]
     public void ARunningTimer_HoldsIt_UntilTheTimerStops()
     {
