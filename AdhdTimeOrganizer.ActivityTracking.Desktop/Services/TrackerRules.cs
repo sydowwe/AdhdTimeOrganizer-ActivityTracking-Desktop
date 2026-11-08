@@ -81,7 +81,7 @@ public sealed class TrackerRules
 
     /// <summary>
     /// <paramref name="window"/> without the entries an ignoring rule covers: the same instance when nothing is
-    /// dropped, null when everything is (the heartbeat refuses an empty window, so there is nothing to send).
+    /// dropped, null when everything is (no minute is left to store, and an older server refuses an empty window).
     /// </summary>
     public ActivityWindow? Filter(ActivityWindow window)
     {

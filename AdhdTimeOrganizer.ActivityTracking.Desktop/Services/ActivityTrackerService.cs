@@ -70,6 +70,7 @@ public sealed class ActivityTrackerService : IDisposable
     private readonly PrivacyFilter _privacy = new();      // poll loop only
     private readonly TrackerRules _trackerRules = new();      // filtered on the send loop only
     private readonly UnmappedReviewService _review;       // ticked on the send loop only
+    private readonly PauseKeepAlive _keepAlive = new();   // send loop only
 
     private readonly CancellationTokenSource _lifetimeCts = new();
     private readonly SemaphoreSlim _sendSignal = new(0, 1);
@@ -613,6 +614,16 @@ public sealed class ActivityTrackerService : IDisposable
 
             try
             {
+                await KeepAliveWhilePausedAsync(ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                _log.Error(ex, "Keep-alive failed");
+            }
+
+            try
+            {
                 await RefreshCoverageAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
@@ -646,7 +657,7 @@ public sealed class ActivityTrackerService : IDisposable
     /// Each window first loses the entries the user's server rules ignore (<see cref="TrackerRules"/>), with rules
     /// fetched at most <see cref="TrackerRulesRefreshInterval"/> ago — a backlog sent after a day offline is
     /// filtered with today's rules, not with the ones it was recorded under. A window nothing is left of is
-    /// removed here: the heartbeat refuses an empty one.
+    /// removed here: a server from before empty heartbeats refuses one, and there is no minute left to store anyway.
     /// </remarks>
     private async Task SendPendingAsync(CancellationToken ct)
     {
@@ -698,6 +709,22 @@ public sealed class ActivityTrackerService : IDisposable
                     return;
             }
         }
+    }
+
+    /// <summary>
+    /// Tells the server a paused tracker is still here (<see cref="PauseKeepAlive"/>). Deliberately beside the send pass, not
+    /// in it: no outbox, and no outcome reaches the status, so a refusal is never counted as a lost minute.
+    /// </summary>
+    private async Task KeepAliveWhilePausedAsync(CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        DateTime? lastStored;
+        lock (_lock) lastStored = _lastSentUtc;
+        if (!_keepAlive.IsDue(IsPaused(now), _apiClient.HasSession, lastStored, now)) return;
+
+        var outcome = await _apiClient.SendActivityWindowAsync(PauseKeepAlive.Window(now), ct);
+        _keepAlive.Answered(outcome.Result, now);
+        _log.Debug("Keep-alive while paused: {Result}, no minute rides on it", outcome.Result);
     }
 
     /// <summary>

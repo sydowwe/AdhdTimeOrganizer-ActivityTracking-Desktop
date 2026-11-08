@@ -39,6 +39,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/UploadHealthPolicy.cs` | **Pure** "is tracked time arriving?" decisions: signed out, stalled a day, windows the server refused → show / withdraw a notice |
 | `Services/UnmappedReviewPolicy.cs` | **Pure** evening-invite decisions: is the evening due / missed / handled, the invite's text from the server's answer; plus `UnmappedReviewStore` (the last handled evening, `unmapped-review.json`) |
 | `Services/UnmappedReviewService.cs` | The send loop's evening tick: holds the server's evening moment, asks the server for today's unmapped time when it comes, hands the invite on |
+| `Services/PauseKeepAlive.cs` | **Pure** when a paused tracker sends its empty heartbeat, and what that heartbeat is |
 | `Services/DiagnosticsReport.cs` | **Pure** text of the tray's "Copy diagnostics" (state, settings as counts, scrubbed log tail) and the log-tail reader |
 | `Services/NudgeService.cs` | Feeds polls to the policy, checks quiet conditions, shows and withdraws toasts, handles button presses |
 | `Services/NudgeNotifier.cs`, `NudgeToast.cs` | Windows App SDK notifications: registration, toast text and buttons, parsing a press |
@@ -85,6 +86,11 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 - **Every request names the build**: `X-Client-Version: desktop/<csproj Version>`, set once on the `HttpClient`
   (`AppVersion`). The server keeps the last one per tracker kind with "last seen" and calls a silent tracker "out of date"
   below its configured minimum. Keep the `desktop/` prefix and a plain SemVer after it — the server parses it.
+- **A paused tracker still says it's alive** (servers from 2026-11-05). The server calls a tracker silent after 48 h
+  without a report, and a pause reports nothing. So while paused and signed in, the send loop posts a heartbeat with
+  `entries: []` at most every 6 h (`PauseKeepAlive`), the same as the phone's empty sync; a window stored in that time
+  counts instead. It is not a minute: it skips the outbox, and its outcome reaches neither `LastSendResult`,
+  `RejectedWindows` nor today's total. A server from before it answers 400, which waits the full 6 h and costs nothing.
 - **Never send null or a blank title.** Missing product names and paths go out as `""`, and an untitled
   window takes its product or process name (`ActivityRecorder`). The current server accepts nulls, but
   servers from before 2026-10-18 answer a null with a 500 and a blank title with a 400, and a user's

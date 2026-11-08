@@ -141,6 +141,85 @@ public sealed class SendLoopTests : IDisposable
         Assert.Equal(0, _server.CoverageRequests);
     }
 
+    /// <summary>
+    /// A pause reports nothing, so the server would call the tracker silent. The keep-alive says otherwise, once per
+    /// interval, without looking like a stored minute anywhere the tray or the upload notice reads.
+    /// </summary>
+    [Fact]
+    public async Task APausedTracker_SendsOneEmptyHeartbeat_AndItIsNotAMinute()
+    {
+        _config.PausedUntilUtc = DateTime.MaxValue;
+
+        using var tracker = Start();
+        await WaitUntil(() => _server.HeartbeatCount > 0);
+
+        tracker.RequestSend();
+        await Task.Delay(500);
+
+        Assert.Contains("\"entries\":[]", Assert.Single(_server.HeartbeatsSoFar()));
+        var status = tracker.GetStatus();
+        Assert.Null(status.LastSentUtc);
+        Assert.Null(status.LastSendResult);
+        Assert.Null(status.LastResolved);
+        Assert.Equal(TimeSpan.Zero, status.TodayOnThisPc);
+        Assert.Empty(tracker.GetTodayTop(5));
+    }
+
+    /// <summary>A server from before empty heartbeats answers 400. A refused window is a lost minute; this is not one.</summary>
+    [Fact]
+    public async Task AnOlderServersRefusalOfTheKeepAlive_IsNotALostMinute()
+    {
+        _config.PausedUntilUtc = DateTime.MaxValue;
+        _server.HeartbeatStatus = HttpStatusCode.BadRequest;
+
+        using var tracker = Start();
+        await WaitUntil(() => _server.HeartbeatCount > 0);
+
+        tracker.RequestSend();
+        await Task.Delay(500);
+
+        Assert.Single(_server.HeartbeatsSoFar());
+        var status = tracker.GetStatus();
+        Assert.Equal(0, status.RejectedWindows);
+        Assert.Null(status.LastSendResult);
+    }
+
+    [Fact]
+    public async Task NoKeepAlive_WhileRecording_OrSignedOut()
+    {
+        using (var recording = Start())
+        {
+            recording.RequestSend();
+            await Task.Delay(500);
+        }
+
+        _config.PausedUntilUtc = DateTime.MaxValue;
+        _config.RefreshToken = null;
+        using (var signedOut = Start())
+        {
+            signedOut.RequestSend();
+            await Task.Delay(500);
+        }
+
+        Assert.Equal(0, _server.HeartbeatCount);
+    }
+
+    /// <summary>A backlog sent during a pause already told the server: the window goes, and no keep-alive follows it.</summary>
+    [Fact]
+    public async Task ABacklogSentDuringAPause_MakesTheKeepAliveUnnecessary()
+    {
+        _config.PausedUntilUtc = DateTime.MaxValue;
+        Queue(("code", 40));
+
+        using var tracker = Start();
+        await WaitFor(tracker, s => s.PendingWindows == 0);
+
+        tracker.RequestSend();
+        await Task.Delay(500);
+
+        Assert.Contains("\"code\"", Assert.Single(_server.HeartbeatsSoFar()));
+    }
+
     // ---- helpers ---------------------------------------------------------
 
     /// <summary>What the poll loop does with a finished window: to the outbox, and into today's total.</summary>
@@ -198,6 +277,13 @@ public sealed class SendLoopTests : IDisposable
         public bool HasCoverageRoute { get; set; } = true;
         public List<string> Heartbeats { get; } = [];
         public int CoverageRequests => Volatile.Read(ref _coverageRequests);
+        public int HeartbeatCount => HeartbeatsSoFar().Count;
+
+        /// <summary>A copy, for a test reading while the send loop may still be adding.</summary>
+        public List<string> HeartbeatsSoFar()
+        {
+            lock (Heartbeats) return [.. Heartbeats];
+        }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
