@@ -32,6 +32,7 @@ public sealed class NudgeServiceTests : IDisposable
     private readonly ConcurrentQueue<long> _startedBlocks = new(); // filled from the thread pool
     private readonly ConcurrentQueue<long> _skippedBlocks = new(); // filled from the thread pool
     private int _signIns;
+    private int _captureBoxes;
 
     private DateTime _start = DateTime.UtcNow.AddHours(-2);
     private AppConfig _config = null!; // the latest Create()'s
@@ -84,6 +85,25 @@ public sealed class NudgeServiceTests : IDisposable
         service.OnActivated(new NudgeActivation(NudgeKind.Drift, notifier.Shown[^1].Id, NudgeResponse.SwitchPlan));
 
         Assert.Equal("https://app.test/day-planner", Assert.Single(opened).AbsoluteUri);
+    }
+
+    /// <summary>
+    /// "Capture a thought" (desktop prompt 08) opens the capture box, opens nothing in the browser, and settles the block like
+    /// "Back to it": parking the thought that pulled the user away is getting back, so no second nudge follows in the block.
+    /// </summary>
+    [Fact]
+    public void Capture_OnADriftToast_OpensTheBox_AndSettlesTheBlock()
+    {
+        var (service, notifier, opened) = Create();
+        OffPlan(service, 10);
+
+        service.OnActivated(new NudgeActivation(NudgeKind.Drift, notifier.Shown[^1].Id, NudgeResponse.Capture));
+        OffPlan(service, 30);
+
+        Assert.Equal(1, _captureBoxes);
+        Assert.Empty(opened);
+        Assert.True(_config.DriftNudgesEnabled);
+        Assert.Single(notifier.Shown);
     }
 
     /// <summary>Back on plan, the toast still in the notification centre is out of date and leaves it.</summary>
@@ -433,7 +453,8 @@ public sealed class NudgeServiceTests : IDisposable
                 _skippedBlocks.Enqueue(id);
                 return Task.FromResult(true);
             },
-            zone: _zone);
+            zone: _zone,
+            capture: () => _captureBoxes++);
         _services.Add(service);
         return (service, notifier, opened);
     }

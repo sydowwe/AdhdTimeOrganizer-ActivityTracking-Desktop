@@ -1,4 +1,5 @@
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Native;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 using Xunit;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Tests;
@@ -67,6 +68,50 @@ public class NativeSmokeTests
 
         ForegroundEvents.Uninstall();
         Assert.False(ForegroundEvents.IsInstalled);
+    }
+
+    /// <summary>
+    /// The capture hotkey (desktop prompt 08). A chord nobody uses registers, and a second hold of the same chord is refused
+    /// as "taken" — the one failure the tray must tell apart. A wrong signature would read every chord as taken, or none.
+    /// The window is message-only and this thread has no message loop: nothing is pressed, only the registration is pinned.
+    /// </summary>
+    [Fact]
+    public void GlobalHotkey_Registers_AndASecondHoldIsTaken()
+    {
+        var chord = HotkeyChord.TryParse("Ctrl+Alt+Shift+F23")!;
+        using var first = new GlobalHotkey();
+        using var second = new GlobalHotkey();
+
+        Assert.Equal(HotkeyRegistration.Registered, first.Register(chord));
+        Assert.Equal(HotkeyRegistration.Taken, second.Register(chord));
+        Assert.Equal(HotkeyRegistration.Off, first.Register(null));
+        Assert.Equal(HotkeyRegistration.Registered, second.Register(chord));
+    }
+
+    /// <summary>
+    /// The recommended default is free on this machine. Skipped, not failed, when something holds it — a running tracker of
+    /// this build does — since that is a fact about the machine, which the tray reports itself.
+    /// </summary>
+    [Fact]
+    public void TheDefaultCaptureHotkey_IsFreeHere()
+    {
+        using var hotkey = new GlobalHotkey();
+
+        var registration = hotkey.Register(HotkeyChord.TryParse(HotkeyChord.Default));
+
+        if (registration == HotkeyRegistration.Taken)
+            Assert.Skip($"{HotkeyChord.Default} is held by another app here (a running tracker holds it too).");
+        Assert.Equal(HotkeyRegistration.Registered, registration);
+    }
+
+    /// <summary>The capture box hands focus back with these; a wrong signature fails silently and leaves the user in the box's wake.</summary>
+    [Fact]
+    public void FocusCalls_DoNotThrow()
+    {
+        Assert.NotEqual(0u, Win32.GetCurrentThreadId());
+        Assert.False(Win32.IsWindow(nint.Zero));
+        Assert.False(Win32.BringToFront(nint.Zero));
+        Assert.All(ForegroundEvents.RecentForeignForegrounds(), h => Assert.NotEqual(nint.Zero, h));
     }
 
     /// <summary>

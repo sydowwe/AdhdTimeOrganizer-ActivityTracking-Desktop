@@ -37,8 +37,10 @@ internal static class NudgeToast
         }
         else if (nudge.Kind == NudgeKind.Drift)
         {
+            // Five, the most a toast takes. Capture parks the thought that pulled the user away, then counts as Back to it.
             builder.SetDuration(AppNotificationDuration.Long)
                 .AddButton(Button("Back to it", nudge, NudgeResponse.Dismiss))
+                .AddButton(Button("Capture a thought", nudge, NudgeResponse.Capture))
                 .AddButton(Button("Switch plan", nudge, NudgeResponse.SwitchPlan))
                 .AddButton(Button("Snooze 30 min", nudge, NudgeResponse.Snooze))
                 .AddButton(Button("Turn off", nudge, NudgeResponse.TurnOff));

@@ -37,5 +37,7 @@
     "date": "2026-10-19",
     "previousMomentUtc": "2026-10-18T20:30:00Z",
     "previousDate": "2026-10-18"
-  }
+  },
+  "captureRequest": { "text": "Email the landlord" },
+  "captured": { "outcome": "added", "todoListItemId": 41, "todoListId": 3 }
 }

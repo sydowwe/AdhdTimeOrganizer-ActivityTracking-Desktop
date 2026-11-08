@@ -197,6 +197,14 @@ public sealed class AppConfig
     /// </summary>
     public List<ChimeChoice> TimeChimeChoices { get; set; } = [];
 
+    // ── Quick capture (see CaptureQueue) ──────────────────────────────────────
+
+    /// <summary>
+    /// The global hotkey that opens the capture box, as <see cref="Services.HotkeyChord"/> writes it ("Win+Alt+N"). Empty
+    /// switches the hotkey off; the tray's "Capture a thought…" stays either way.
+    /// </summary>
+    public string CaptureHotkey { get; set; } = Services.HotkeyChord.Default;
+
     // ── Upload problems (see UploadHealthPolicy) ──────────────────────────────
 
     /// <summary>

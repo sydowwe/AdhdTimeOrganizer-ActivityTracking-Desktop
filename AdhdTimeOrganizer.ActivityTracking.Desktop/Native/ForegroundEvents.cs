@@ -37,7 +37,28 @@ internal static class ForegroundEvents
     private static nint _nameChangeHook;
     private static uint _nameChangePid;
 
+    /// <summary>How many of other processes' recent foreground windows are kept for the capture box (<see cref="RecentForeignForegrounds"/>).</summary>
+    private const int RecentForeignCount = 4;
+
+    private static readonly uint OwnPid = (uint)Environment.ProcessId;
+    private static readonly nint[] RecentForeign = new nint[RecentForeignCount];
+    private static int _recentForeignNext;
+
     public static bool IsInstalled => _foregroundHook != nint.Zero;
+
+    /// <summary>
+    /// The last few windows of other processes that came to the front, newest first — where the capture box hands focus back
+    /// after a tray click, whose own foreground is the taskbar and then the tray's menu. Empty while the hook is not installed
+    /// (tracking paused). Handles only; whether one is still a real window is the caller's to check.
+    /// </summary>
+    public static IReadOnlyList<nint> RecentForeignForegrounds()
+    {
+        lock (Gate)
+            return Enumerable.Range(1, RecentForeignCount)
+                .Select(i => RecentForeign[(_recentForeignNext - i + RecentForeignCount) % RecentForeignCount])
+                .Where(h => h != nint.Zero)
+                .ToList();
+    }
 
     /// <summary>Starts listening. A failed install leaves the tracker on polling alone, which still works.</summary>
     public static unsafe bool Install()
@@ -60,7 +81,11 @@ internal static class ForegroundEvents
         _nameChangeHook = _foregroundHook = nint.Zero;
         _nameChangePid = 0;
 
-        lock (Gate) Pending.Clear();
+        lock (Gate)
+        {
+            Pending.Clear();
+            Array.Clear(RecentForeign);
+        }
     }
 
     /// <summary>
@@ -91,14 +116,22 @@ internal static class ForegroundEvents
         {
             if (idObject != Win32.OBJID_WINDOW || idChild != Win32.CHILDID_SELF) return;
 
-            if (eventType == Win32.EVENT_SYSTEM_FOREGROUND)
-                FollowForegroundProcess(hWnd);
+            var isForegroundChange = eventType == Win32.EVENT_SYSTEM_FOREGROUND;
+            var pid = 0u;
+            if (isForegroundChange)
+                pid = FollowForegroundProcess(hWnd);
             else if (hWnd != Win32.GetForegroundWindow())
                 return; // a title change of a window not in front says nothing about what the user is looking at
 
             var now = Stopwatch.GetTimestamp();
             lock (Gate)
             {
+                if (isForegroundChange && pid != 0 && pid != OwnPid && RecentForeign[(_recentForeignNext + RecentForeignCount - 1) % RecentForeignCount] != hWnd)
+                {
+                    RecentForeign[_recentForeignNext] = hWnd;
+                    _recentForeignNext = (_recentForeignNext + 1) % RecentForeignCount;
+                }
+
                 if (Pending.Count >= MaxQueued) return;
                 Pending.Enqueue(now);
             }
@@ -111,15 +144,19 @@ internal static class ForegroundEvents
         }
     }
 
-    /// <summary>Points the title-change hook at <paramref name="hWnd"/>'s process. Runs on the UI thread, inside the callback or the install.</summary>
-    private static unsafe void FollowForegroundProcess(nint hWnd)
+    /// <summary>
+    /// Points the title-change hook at <paramref name="hWnd"/>'s process, and returns that process. Runs on the UI thread,
+    /// inside the callback or the install.
+    /// </summary>
+    private static unsafe uint FollowForegroundProcess(nint hWnd)
     {
         var pid = (uint)Win32.GetWindowProcessId(hWnd);
-        if (pid == 0 || pid == _nameChangePid) return;
+        if (pid == 0 || pid == _nameChangePid) return pid;
 
         if (_nameChangeHook != nint.Zero) Win32.UnhookWinEvent(_nameChangeHook);
         _nameChangeHook = Win32.SetWinEventHook(
             Win32.EVENT_OBJECT_NAMECHANGE, Win32.EVENT_OBJECT_NAMECHANGE, nint.Zero, &OnEvent, pid, 0, Win32.WINEVENT_OUTOFCONTEXT);
         _nameChangePid = _nameChangeHook != nint.Zero ? pid : 0;
+        return pid;
     }
 }

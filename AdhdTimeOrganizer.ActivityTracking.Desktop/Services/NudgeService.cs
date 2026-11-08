@@ -72,6 +72,7 @@ public sealed class NudgeService : IDisposable
     private readonly Action<string> _openFolder;
     private readonly Func<long, Task<bool>> _startBlock;
     private readonly Func<long, Task<bool>> _skipBlock;
+    private readonly Action? _capture;
     private readonly string _driftStatePath;
     private readonly string _rampStatePath;
     private readonly string _chimeStatePath;
@@ -103,10 +104,11 @@ public sealed class NudgeService : IDisposable
     /// <param name="signIn">"Sign in" on an upload notice; opens the sign-in form on the UI thread. Null does nothing.</param>
     /// <param name="startBlock">The start ramp's "Start now" on the server; null starts nothing there.</param>
     /// <param name="skipBlock">The start ramp's "Not this one" on the server; null skips nothing there.</param>
+    /// <param name="capture">A drift toast's "Capture a thought": opens the capture box on the UI thread. Null does nothing.</param>
     public NudgeService(AppConfig config, SynchronizationContext? uiContext, Action? signIn = null,
-        Func<long, Task<bool>>? startBlock = null, Func<long, Task<bool>>? skipBlock = null)
+        Func<long, Task<bool>>? startBlock = null, Func<long, Task<bool>>? skipBlock = null, Action? capture = null)
         : this(config, uiContext, onActivated => new NudgeNotifier(onActivated), OpenInBrowser, DefaultDriftStatePath, signIn,
-            startBlock: startBlock, skipBlock: skipBlock)
+            startBlock: startBlock, skipBlock: skipBlock, capture: capture)
     {
     }
 
@@ -120,11 +122,13 @@ public sealed class NudgeService : IDisposable
     /// <param name="startBlock">"Start now" on the server; tests record the id instead.</param>
     /// <param name="skipBlock">"Not this one" on the server; tests record the id instead.</param>
     /// <param name="zone">Where the time chime's "today" ends; tests pin it.</param>
+    /// <param name="capture">"Capture a thought" on a drift toast; tests count it.</param>
     internal NudgeService(AppConfig config, SynchronizationContext? uiContext,
         Func<Action<NudgeActivation>, INudgeNotifier> createNotifier, Action<Uri> openInBrowser, string driftStatePath,
         Action? signIn = null, Action<string>? openFolder = null, Func<long, Task<bool>>? startBlock = null,
-        Func<long, Task<bool>>? skipBlock = null, TimeZoneInfo? zone = null)
+        Func<long, Task<bool>>? skipBlock = null, TimeZoneInfo? zone = null, Action? capture = null)
     {
+        _capture = capture;
         _chime = new ChimeSchedule(zone ?? TimeZoneInfo.Local);
         _chimeStatePath = Path.Combine(Path.GetDirectoryName(driftStatePath)!, ChimeStateFileName);
         if (LoadState<ChimeState>(_chimeStatePath, "time chime") is { } chime) _chime.Restore(chime);
@@ -473,6 +477,8 @@ public sealed class NudgeService : IDisposable
                 TurnOff(isDrift);
             if (activation.Response == NudgeResponse.SwitchPlan)
                 OpenPlanner();
+            if (activation.Response == NudgeResponse.Capture)
+                _capture?.Invoke();
 
             var nowUtc = DateTime.UtcNow;
             bool isCurrent;

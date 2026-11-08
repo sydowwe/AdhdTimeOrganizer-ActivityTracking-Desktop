@@ -41,6 +41,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/UnmappedReviewPolicy.cs` | **Pure** evening-invite decisions: is the evening due / missed / handled, the invite's text from the server's answer; plus `UnmappedReviewStore` (the last handled evening, `unmapped-review.json`) |
 | `Services/UnmappedReviewService.cs` | The send loop's evening tick: holds the server's evening moment, asks the server for today's unmapped time when it comes, hands the invite on |
 | `Services/PauseKeepAlive.cs` | **Pure** when a paused tracker sends its empty heartbeat, and what that heartbeat is |
+| `Services/CaptureQueue.cs`, `Services/CaptureDelivery.cs` | Quick capture: parked thoughts as JSON files under `%LOCALAPPDATA%\…Desktop\captures` (**pure** rules: trim, cut, what each answer means) and the send loop's tick that delivers them |
+| `Services/CaptureFocus.cs`, `Services/HotkeyChord.cs` | **Pure** capture-box rules (where focus goes back, what the tracker credits while it is open, the plan line) and the hotkey as written in Settings ("Win+Alt+N") |
+| `CaptureForm.cs`, `Native/GlobalHotkey.cs`, `Native/CaptureBoxHandles.cs` | The one-line capture box, the `RegisterHotKey` window that opens it, and the handles the poll loop reads to stand the box in for the work |
 | `Services/DiagnosticsReport.cs` | **Pure** text of the tray's "Copy diagnostics" (state, settings as counts, scrubbed log tail) and the log-tail reader |
 | `Services/NudgeService.cs` | Feeds polls to the policy, checks quiet conditions, shows and withdraws toasts, handles button presses |
 | `Services/NudgeNotifier.cs`, `NudgeToast.cs` | Windows App SDK notifications: registration, toast text and buttons, parsing a press |
@@ -347,6 +350,43 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 - The toast names **apps** (product or process name), never a window title, and the log carries counts only.
 - Both answers are pinned by `DesktopTrackerWire.samples.json` (`unmapped`, `eveningMoment`) like the others. The tray's
   "Map apps for drift nudges…" stays: it is the week's view, tied to drift nudges, and opens the same grid.
+
+### Quick capture
+- **Why:** a stray thought mid-focus either derails the block or is lost. **Win+Alt+N** (the default, `HotkeyChord.Default`;
+  `AppConfig.CaptureHotkey`, empty = off), the tray's "Capture a thought…" or a drift toast's **Capture a thought** opens a
+  one-line box: Enter parks it, Esc cancels, and the keyboard goes back to the window that had it. The thought becomes a
+  to-do on the user's capture list ("Inbox" unless the web app's To-do settings point elsewhere).
+- **The route is shared with the phone**: `POST /api/tracker/capture` (servers from 2026-11-08), `{ "text": … }` only — the
+  phone's share sheet also sends `url`, the desktop never has one. Pinned by `captureRequest` / `captured` in
+  `DesktopTrackerWire.samples.json` like the other answers. The server makes the item (`ITodoCaptureSink`); the tracker reads
+  no to-dos and decides nothing about them.
+- **Never lost, never logged.** The box hands the text to `ActivityTrackerService.Capture`, which writes a file to
+  `CaptureQueue` before anything sends it; paused, offline and signed out it waits there. The send loop delivers captures
+  first in each pass (`CaptureDelivery`), oldest first, stopping at the first that must wait. Only a 2xx removes a file; a
+  400/413/422 keeps it as refused and never sends it again; an unreadable file is skipped, **never deleted** (unlike the
+  outbox's — it may be the only copy of a thought). A 404 (a server from before the route) or 409 `noPriority` holds the
+  whole queue `CaptureQueue.HoldFor` (30 min), and the tray item says why; a new capture asks at once. Text is cut to the
+  server's 10 000 characters before queuing. Logs carry capture ids and lengths, **never the text** — and not the server's
+  answer body either, which can quote it.
+- **The box is not a window the user went to.** `CaptureForm` is a tool window (no taskbar button, not in Alt-Tab, and so
+  never one of `MonitorHelper`'s background windows). Before it can come to the front it publishes itself and the window it
+  returns to in `CaptureBoxHandles`, and the poll loop credits that window instead (`ForegroundAsCredited` →
+  `CaptureFocus.StandIn`): parking a thought is neither a switch nor time of its own. With nowhere to return to it credits
+  nothing in front, like the tray's own menu.
+- **Focus.** The return target is the foreground at the hotkey or toast press, else the newest of the last four other
+  processes' foreground windows that is still a real window (`ForegroundEvents.RecentForeignForegrounds`, filled by the
+  WinEvent hook — a tray click's own foreground is the taskbar and then the menu; empty while paused). Windows lets a
+  process take the foreground only right after the user spoke to it: the hotkey does, a toast button may not, so
+  `Win32.BringToFront` falls back to borrowing the front thread's input (`AttachThreadInput`) for the one call. Clicking away
+  from an empty box closes it; from a typed one, it stays. Exit parks what was typed.
+- **The hotkey** is `Native/GlobalHotkey`, a message-only window created, registered and disposed **on the UI thread** like
+  `ForegroundEvents` (`WM_HOTKEY` comes through its message loop). A chord another app holds is `Taken`: said in the tray
+  item ("Win+Alt+N is used by another app") and, at start or after a change in Settings, a balloon. `NativeSmokeTests` pins
+  the registration, the "taken" answer, and that the default is free on the machine the tests run on.
+- **The plan line** ("Thesis until 11:30 — park it and get back") comes from the newest resolved minute while it is
+  `DriftPolicy.FreshFor` old at most — a started block before a merely planned one — and is absent otherwise.
+- **The drift toast's fifth button** (the most a toast takes) opens the box and settles the block like Back to it
+  (`NudgeResponse.Capture`).
 
 ### Privacy before upload
 - Two layers. **At recording** (`PrivacyFilter`, poll loop): the user's `LocalRules` (stored under the old

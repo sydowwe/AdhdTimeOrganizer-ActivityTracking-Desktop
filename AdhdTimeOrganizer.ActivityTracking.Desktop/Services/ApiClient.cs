@@ -78,6 +78,9 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     private const string TrackerStartBlockPath = "/api/tracker/desktop/start-block";
     private const string TrackerSkipBlockPath = "/api/tracker/desktop/skip-block";
 
+    /// <summary>Shared with the phone, so not under <c>desktop/</c>. Servers from 2026-11-08; an older one answers 404.</summary>
+    private const string CapturePath = "/api/tracker/capture";
+
     /// <summary>
     /// How long a refresh already sent may still finish after its caller was cancelled — an exit, a session end.
     /// Cancelling it outright throws its answer away, and with it the rotated token the server already committed.
@@ -404,6 +407,41 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     /// </summary>
     public Task<bool> SkipBlockAsync(long plannerTaskId, CancellationToken ct) =>
         PostBlockAsync(TrackerSkipBlockPath, plannerTaskId, ct);
+
+    /// <summary>
+    /// Quick capture: one parked thought onto the user's capture list. Never throws but for the caller's cancellation; what
+    /// each answer means for the queue is <see cref="CaptureQueue.Classify"/>. The text and the body of the answer are never
+    /// logged — the text is the user's, and a validation answer may quote it.
+    /// </summary>
+    public async Task<CaptureSendResult> SendCaptureAsync(string text, CancellationToken ct)
+    {
+        if (!HasSession) return CaptureSendResult.SignedOut;
+
+        try
+        {
+            var (response, outcome) = await SendAuthorizedAsync(() => new HttpRequestMessage(HttpMethod.Post, BuildUri(CapturePath))
+            {
+                Content = JsonContent.Create(new CaptureRequest(text))
+            }, ct);
+            if (response is null)
+                return outcome == RefreshOutcome.Rejected ? CaptureSendResult.SignedOut : CaptureSendResult.Later;
+            using var owned = response;
+
+            var result = CaptureQueue.Classify(response.StatusCode);
+            if (result != CaptureSendResult.Delivered)
+                _log.Warning("Capture answered {StatusCode} ({Result})", (int)response.StatusCode, result);
+            return result;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Capture send failed — will retry");
+            return CaptureSendResult.Later;
+        }
+    }
 
     private async Task<bool> PostBlockAsync(string path, long plannerTaskId, CancellationToken ct)
     {

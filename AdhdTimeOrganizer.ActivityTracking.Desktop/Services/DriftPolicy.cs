@@ -193,7 +193,7 @@ public sealed class DriftPolicy
         }
         else
         {
-            // Back to it, Switch plan, Turn off: the block is settled either way.
+            // Back to it, Capture a thought, Switch plan, Turn off: the block is settled either way.
             ResetStreak();
         }
         return true;

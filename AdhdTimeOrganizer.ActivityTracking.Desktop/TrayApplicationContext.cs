@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Helpers;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Native;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop;
@@ -44,6 +45,11 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _autoStartItem;
     private readonly ToolStripMenuItem _signInOutItem;
     private readonly ToolStripMenuItem _updateItem;
+    private readonly ToolStripMenuItem _captureItem;
+    private readonly GlobalHotkey _hotkey;
+
+    private HotkeyRegistration _hotkeyState;
+    private CaptureForm? _captureForm;
 
     private bool _isInitializing = true;
 
@@ -60,8 +66,14 @@ public sealed class TrayApplicationContext : ApplicationContext
         // Button presses on a nudge are handed to this, the UI, thread.
         _nudges = new NudgeService(config, new WindowsFormsSynchronizationContext(), signIn: SignInFromNotice,
             startBlock: plannerTaskId => _apiClient.StartBlockAsync(plannerTaskId, CancellationToken.None),
-            skipBlock: plannerTaskId => _apiClient.SkipBlockAsync(plannerTaskId, CancellationToken.None));
+            skipBlock: plannerTaskId => _apiClient.SkipBlockAsync(plannerTaskId, CancellationToken.None),
+            capture: OpenCapture);
         _tracker = new ActivityTrackerService(config, _apiClient, _nudges);
+
+        // On this, the UI, thread: WM_HOTKEY comes through its message loop (see GlobalHotkey).
+        _hotkey = new GlobalHotkey();
+        _hotkey.Pressed += OpenCapture;
+        _captureItem = new ToolStripMenuItem("Capture a thought…", null, (_, _) => OpenCapture());
 
         // Opens today's breakdown. A submenu rather than a left-click flyout: double-click already pauses and resumes,
         // and a single click is half of every double-click. Filled when opened, so a refresh never rebuilds it under the mouse.
@@ -91,6 +103,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         contextMenu.Items.Add(_glanceItem);
         contextMenu.Items.Add(_statusItem);
         contextMenu.Items.Add(_mapAppsItem);
+        contextMenu.Items.Add(new ToolStripSeparator());
+        contextMenu.Items.Add(_captureItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(_toggleItem);
         contextMenu.Items.Add(pauseForItem);
@@ -134,6 +148,8 @@ public sealed class TrayApplicationContext : ApplicationContext
             _balloonOpensMapping = false;
         };
         _trayIcon.BalloonTipClosed += (_, _) => _balloonOpensMapping = false;
+
+        RegisterCaptureHotkey(announceProblem: true);
 
         // Status is pulled on the UI thread rather than pushed from the tracker's threads, so nothing
         // here is ever touched cross-thread.
@@ -224,6 +240,80 @@ public sealed class TrayApplicationContext : ApplicationContext
         if (restart is not null) _updateItem.Text = restart;
 
         RefreshMappingPrompt(status.Coverage);
+        _captureItem.Text = DescribeCaptureItem(_hotkeyState, _config.CaptureHotkey, _tracker.GetCaptureStatus());
+    }
+
+    // ── Quick capture ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// (Re)registers the capture hotkey from the config. A chord another app holds is said in the tray item, and — at start
+    /// only — in a balloon, since nothing else would tell the user why the keys do nothing.
+    /// </summary>
+    private void RegisterCaptureHotkey(bool announceProblem)
+    {
+        var chord = HotkeyChord.TryParse(_config.CaptureHotkey);
+        _hotkeyState = string.IsNullOrWhiteSpace(_config.CaptureHotkey) ? HotkeyRegistration.Off
+            : chord is null ? HotkeyRegistration.Failed
+            : _hotkey.Register(chord);
+        Serilog.Log.Information("Capture hotkey: {State}", _hotkeyState);
+
+        _captureItem.ShortcutKeyDisplayString = _hotkeyState == HotkeyRegistration.Registered ? chord!.ToString() : null;
+        _captureItem.Text = DescribeCaptureItem(_hotkeyState, _config.CaptureHotkey, _tracker.GetCaptureStatus());
+
+        if (!announceProblem || _hotkeyState is HotkeyRegistration.Off or HotkeyRegistration.Registered) return;
+        _balloonOpensMapping = false;
+        _trayIcon.ShowBalloonTip(10_000, "Capture hotkey not set",
+            $"{DescribeHotkeyProblem(_hotkeyState, _config.CaptureHotkey)}. Pick another in Settings; \"Capture a thought…\" in this menu works meanwhile.",
+            ToolTipIcon.Warning);
+    }
+
+    /// <summary>
+    /// "Capture a thought… (2 waiting)" — with what is wrong with the hotkey, and why parked thoughts wait, when either is
+    /// the case. Counts only: the thoughts are the user's.
+    /// </summary>
+    internal static string DescribeCaptureItem(HotkeyRegistration hotkey, string? hotkeyText, CaptureStatus? captures)
+    {
+        var notes = new List<string>();
+        if (hotkey is HotkeyRegistration.Taken or HotkeyRegistration.Failed) notes.Add(DescribeHotkeyProblem(hotkey, hotkeyText));
+        if (captures is { Pending: > 0 } waiting)
+            notes.Add(waiting.Held switch
+            {
+                CaptureSendResult.NotSupported => $"{waiting.Pending} waiting: the server can't take them yet",
+                CaptureSendResult.NoPriority => $"{waiting.Pending} waiting: add a task priority in the web app",
+                _ => $"{waiting.Pending} waiting to upload"
+            });
+        return notes.Count == 0 ? "Capture a thought…" : $"Capture a thought… ({string.Join("; ", notes)})";
+    }
+
+    private static string DescribeHotkeyProblem(HotkeyRegistration hotkey, string? hotkeyText) =>
+        hotkey == HotkeyRegistration.Taken ? $"{hotkeyText} is used by another app" : $"{hotkeyText} can't be used as a hotkey";
+
+    /// <summary>
+    /// Opens the capture box, or brings the open one back. Focus goes back afterwards to the window the user was in: the
+    /// foreground for the hotkey and a toast's button, the window before the tray for a tray click.
+    /// </summary>
+    private void OpenCapture()
+    {
+        if (_captureForm is { IsDisposed: false } open)
+        {
+            open.Reactivate();
+            return;
+        }
+
+        var ownPid = Environment.ProcessId;
+        var returnTo = CaptureFocus.PickReturnTarget(
+            [Native.Win32.GetForegroundWindow(), .. Native.ForegroundEvents.RecentForeignForegrounds()],
+            h => Native.Win32.GetWindowProcessId(h) != ownPid && Native.Win32.IsRealWindow(h));
+        var planLine = CaptureFocus.PlanLine(_tracker.GetStatus().LastResolved, DateTime.UtcNow, TimeZoneInfo.Local);
+
+        _captureForm = new CaptureForm(planLine, returnTo, _tracker.Capture);
+        // A modeless form disposes itself on close.
+        _captureForm.FormClosed += (_, _) =>
+        {
+            _captureForm = null;
+            RefreshStatus();
+        };
+        _captureForm.Show();
     }
 
     /// <summary>
@@ -447,12 +537,17 @@ public sealed class TrayApplicationContext : ApplicationContext
         var previousUrl = _config.ApiBaseUrl;
         var previousPollInterval = _config.PollIntervalMs;
         var hadDriftNudges = _config.DriftNudgesEnabled;
+        var previousHotkey = _config.CaptureHotkey;
 
         using var settingsForm = new SettingsForm(_config, ChimeChoices.Candidates(
             _tracker.GetTodayTop(SettingsChimeLines), _nudges.GetChimeDistractions(), _config.TimeChimeChoices));
         if (settingsForm.ShowDialog() != DialogResult.OK) return;
 
         _config.Save();
+
+        // A new chord another app holds is said at once, like at start; the tray item keeps saying it.
+        if (!string.Equals(previousHotkey, _config.CaptureHotkey, StringComparison.Ordinal))
+            RegisterCaptureHotkey(announceProblem: true);
 
         // Turned on: ask for the coverage now, and say once what is missing.
         if (_config.DriftNudgesEnabled && !hadDriftNudges)
@@ -530,6 +625,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     private void OnExit(object? sender, EventArgs e)
     {
         _statusTimer.Stop();
+        _captureForm?.ParkAndClose(); // before the tracker goes: a typed thought is parked, not lost to the exit
+        _hotkey.Dispose();
         _updates.Dispose();
         _tracker.Dispose(); // flushes the minute in progress to the outbox
         _nudges.Dispose();  // after the poll loop, which feeds it; clears its toasts

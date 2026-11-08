@@ -243,8 +243,80 @@ public sealed class SendLoopTests : IDisposable
         _today.Add(window.WindowStart, entries.Sum(e => e.ActiveSeconds));
     }
 
-    private ActivityTrackerService Start() =>
-        new(_config, new ApiClient(_config, _server), _outbox, _today);
+    // ---- quick capture (desktop prompt 08) ----------------------------------
+
+    /// <summary>
+    /// A parked thought goes to the shared route with the session's token, as exactly <c>{"text": …}</c> (the wire sample's
+    /// shape), and leaves the queue once the server has it.
+    /// </summary>
+    [Fact]
+    public async Task AParkedThought_IsDelivered_AndLeavesTheQueue()
+    {
+        var captures = new CaptureQueue(Path.Combine(_dir, "captures"));
+
+        using (var tracker = Start(captures))
+        {
+            Assert.True(tracker.Capture("  Email the landlord "));
+            await WaitUntil(() => tracker.GetCaptureStatus() is { Pending: 0 });
+        }
+
+        Assert.Equal("""{"text":"Email the landlord"}""", Assert.Single(_server.CapturesSoFar()));
+        Assert.Equal(new CaptureSummary(0, 0), captures.Summary());
+    }
+
+    /// <summary>A server from before the route keeps the thought on disk and says so; a later one gets it.</summary>
+    [Fact]
+    public async Task AnOldServer_KeepsTheThought_AndSaysWhy()
+    {
+        _server.CaptureStatus = HttpStatusCode.NotFound;
+        var captures = new CaptureQueue(Path.Combine(_dir, "captures"));
+
+        using var tracker = Start(captures);
+        tracker.Capture("Email the landlord");
+        var status = await WaitForCaptures(tracker, s => s.Held == CaptureSendResult.NotSupported);
+
+        Assert.Equal(1, status.Pending);
+        Assert.Equal(1, captures.Summary().Pending);
+    }
+
+    /// <summary>Signed out, nothing is sent and nothing is lost: the thought waits for the next sign-in.</summary>
+    [Fact]
+    public async Task SignedOut_TheThoughtWaitsOnDisk()
+    {
+        _config.RefreshToken = null;
+        var captures = new CaptureQueue(Path.Combine(_dir, "captures"));
+
+        using (var tracker = Start(captures))
+        {
+            tracker.Capture("Email the landlord");
+            tracker.RequestSend();
+            await Task.Delay(300);
+        }
+
+        Assert.Empty(_server.CapturesSoFar());
+        Assert.Equal(1, captures.Summary().Pending);
+    }
+
+    [Fact]
+    public void Nothing_IsNotParked_AndATrackerWithoutAQueueParksNothing()
+    {
+        using var withQueue = Start(new CaptureQueue(Path.Combine(_dir, "captures")));
+        using var withoutQueue = Start();
+
+        Assert.False(withQueue.Capture("   "));
+        Assert.False(withoutQueue.Capture("Email the landlord"));
+        Assert.Null(withoutQueue.GetCaptureStatus());
+    }
+
+    private static async Task<CaptureStatus> WaitForCaptures(ActivityTrackerService tracker, Func<CaptureStatus, bool> condition)
+    {
+        CaptureStatus? status = null;
+        await WaitUntil(() => (status = tracker.GetCaptureStatus()) is { } s && condition(s));
+        return status!;
+    }
+
+    private ActivityTrackerService Start(CaptureQueue? captures = null) =>
+        new(_config, new ApiClient(_config, _server), _outbox, _today, captures: captures);
 
     private static async Task<TrackerStatus> WaitFor(ActivityTrackerService tracker, Func<TrackerStatus, bool> condition)
     {
@@ -276,7 +348,14 @@ public sealed class SendLoopTests : IDisposable
         public string HeartbeatBody { get; set; } = Answer;
         public bool HasCoverageRoute { get; set; } = true;
         public List<string> Heartbeats { get; } = [];
+        public HttpStatusCode CaptureStatus { get; set; } = HttpStatusCode.OK;
+        private List<string> Captures { get; } = [];
         public int CoverageRequests => Volatile.Read(ref _coverageRequests);
+
+        public List<string> CapturesSoFar()
+        {
+            lock (Captures) return [.. Captures];
+        }
         public int HeartbeatCount => HeartbeatsSoFar().Count;
 
         /// <summary>A copy, for a test reading while the send loop may still be adding.</summary>
@@ -299,6 +378,12 @@ public sealed class SendLoopTests : IDisposable
                     var body = await request.Content!.ReadAsStringAsync(ct);
                     lock (Heartbeats) Heartbeats.Add(body);
                     return Json(HeartbeatBody, HeartbeatStatus);
+
+                case "/api/tracker/capture":
+                    Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
+                    var capture = await request.Content!.ReadAsStringAsync(ct);
+                    lock (Captures) Captures.Add(capture);
+                    return Json("""{ "outcome": "added", "todoListItemId": 41, "todoListId": 3 }""", CaptureStatus);
 
                 case "/api/tracker/desktop/coverage":
                     Interlocked.Increment(ref _coverageRequests);

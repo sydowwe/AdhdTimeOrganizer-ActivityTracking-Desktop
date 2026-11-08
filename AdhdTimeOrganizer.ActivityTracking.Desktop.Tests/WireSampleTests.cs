@@ -111,12 +111,33 @@ public class WireSampleTests
         Assert.Equal(new DateOnly(2026, 10, 18), moment.PreviousDate);
     }
 
+    /// <summary>
+    /// Quick capture (prompt 08), the one thing the tracker writes besides minutes, so the other way round: what it sends must
+    /// be exactly the sample, which the server checks binds. A renamed <c>text</c> is a 400 the queue keeps for good.
+    /// </summary>
+    [Fact]
+    public void TheCaptureRequest_IsWrittenAsTheSample()
+    {
+        var written = JsonSerializer.SerializeToNode(new CaptureRequest("Email the landlord"));
+
+        Assert.True(JsonNode.DeepEquals(Samples.Value["captureRequest"], written), written?.ToJsonString());
+    }
+
+    [Fact]
+    public void TheCapturedSample_ReadsThroughTheTrackerModels()
+    {
+        var captured = Samples.Value["captured"]!.Deserialize<CaptureResponse>();
+
+        Assert.Equal(("added", 41L, 3L), (captured!.Outcome, captured.TodoListItemId, captured.TodoListId));
+    }
+
     /// <summary>A field the server sends and the tracker's model has no member for is a field the tracker can never read.</summary>
     [Theory]
     [InlineData("heartbeat", typeof(HeartbeatResponse))]
     [InlineData("coverage", typeof(TrackerCoverage))]
     [InlineData("unmapped", typeof(UnmappedToday))]
     [InlineData("eveningMoment", typeof(EveningMoment))]
+    [InlineData("captured", typeof(CaptureResponse))]
     public void TheTrackerModels_HaveEveryFieldTheServerSends(string sample, Type model)
     {
         var node = Samples.Value[sample]!;

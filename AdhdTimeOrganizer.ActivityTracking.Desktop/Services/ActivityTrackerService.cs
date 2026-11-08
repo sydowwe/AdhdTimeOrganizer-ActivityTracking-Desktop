@@ -71,6 +71,8 @@ public sealed class ActivityTrackerService : IDisposable
     private readonly TrackerRules _trackerRules = new();      // filtered on the send loop only
     private readonly UnmappedReviewService _review;       // ticked on the send loop only
     private readonly PauseKeepAlive _keepAlive = new();   // send loop only
+    private readonly CaptureQueue? _captureQueue;
+    private readonly CaptureDelivery? _captureDelivery;   // ticked on the send loop
 
     private readonly CancellationTokenSource _lifetimeCts = new();
     private readonly SemaphoreSlim _sendSignal = new(0, 1);
@@ -94,19 +96,23 @@ public sealed class ActivityTrackerService : IDisposable
 
     public ActivityTrackerService(AppConfig config, ApiClient apiClient, NudgeService? nudges)
         : this(config, apiClient, new OutboxStore(OutboxStore.DefaultDirectory, OutboxRetention),
-            new TodayTotal(TodayTotal.DefaultPath, TimeZoneInfo.Local), nudges, new UnmappedReviewStore(UnmappedReviewStore.DefaultPath))
+            new TodayTotal(TodayTotal.DefaultPath, TimeZoneInfo.Local), nudges, new UnmappedReviewStore(UnmappedReviewStore.DefaultPath),
+            new CaptureQueue(CaptureQueue.DefaultDirectory))
     {
     }
 
     /// <param name="reviewStore">Where the last handled evening is kept; null keeps it in memory, which is what tests want.</param>
+    /// <param name="captures">Parked thoughts to deliver; null delivers none, so a test never reads the user's real queue.</param>
     public ActivityTrackerService(AppConfig config, ApiClient apiClient, OutboxStore outbox, TodayTotal today, NudgeService? nudges = null,
-        UnmappedReviewStore? reviewStore = null)
+        UnmappedReviewStore? reviewStore = null, CaptureQueue? captures = null)
     {
         _config = config;
         _apiClient = apiClient;
         _outbox = outbox;
         _today = today;
         _nudges = nudges;
+        _captureQueue = captures;
+        _captureDelivery = captures is null ? null : new CaptureDelivery(captures, apiClient.SendCaptureAsync);
         _review = new UnmappedReviewService(config, apiClient, reviewStore ?? new UnmappedReviewStore(), invite => nudges?.ShowUnmappedReview(invite), IsPaused);
         var maxCreditedGap = MaxCreditedGapFor(PollInterval);
         _recorder = new ActivityRecorder(maxCreditedGap, HoldBackFor(maxCreditedGap));
@@ -238,6 +244,26 @@ public sealed class ActivityTrackerService : IDisposable
         catch (SemaphoreFullException) { /* already signalled */ }
     }
 
+    /// <summary>
+    /// Parks a thought from the capture box: on disk first, then the send loop is woken to deliver it. False when there was
+    /// nothing to park (blank) or no queue. Works paused, offline and signed out alike — the file waits.
+    /// </summary>
+    public bool Capture(string? text)
+    {
+        if (_captureQueue is null || _captureDelivery is null) return false;
+
+        var item = _captureQueue.Add(text, DateTime.UtcNow);
+        if (item is null) return false;
+
+        _log.Information("Capture {CaptureId} parked ({Length} characters)", item.Id, item.Text.Length);
+        _captureDelivery.Wake();
+        RequestSend();
+        return true;
+    }
+
+    /// <summary>The capture queue's counts, for the tray; null without a queue. A file count only — no text is read out.</summary>
+    public CaptureStatus? GetCaptureStatus() => _captureDelivery?.Status();
+
     /// <summary>How many server rules are held; null before the first download. A count only — the patterns are the user's.</summary>
     public int? ServerRuleCount => _trackerRules.IsKnown ? _trackerRules.Count : null;
 
@@ -357,7 +383,7 @@ public sealed class ActivityTrackerService : IDisposable
         CreditUntil(session, changedAt);
         if (Win32.GetIdleTime().TotalSeconds >= _config.IdleThresholdSeconds) return;
 
-        var hwnd = Win32.GetForegroundWindow();
+        var hwnd = ForegroundAsCredited();
         var sample = CaptureWindow(hwnd, out var pid, out var process);
         if (sample is null)
         {
@@ -435,7 +461,7 @@ public sealed class ActivityTrackerService : IDisposable
         var idleSeconds = (int)idleTime.TotalSeconds;
         var monitors = MonitorHelper.GetMonitors();
         var audio = AudioSessionHelper.GetActiveAudioInfo();
-        var foregroundHwnd = Win32.GetForegroundWindow();
+        var foregroundHwnd = ForegroundAsCredited();
         session.Audio = audio;
         RefreshMicrophone(session);
 
@@ -538,6 +564,14 @@ public sealed class ActivityTrackerService : IDisposable
     internal static bool IsPassivelyPresent(int idleSeconds, bool isForegroundPlayingSound, int maxPassiveIdleMinutes) =>
         isForegroundPlayingSound && idleSeconds < maxPassiveIdleMinutes * 60;
 
+    /// <summary>
+    /// The window in front as the tracker credits it: the capture box stands for the window it gives focus back to
+    /// (<see cref="CaptureFocus"/>), so parking a thought is neither a switch nor time of its own. The box is a tool window,
+    /// so it never shows up among the background windows either.
+    /// </summary>
+    private static nint ForegroundAsCredited() =>
+        CaptureFocus.StandIn(Win32.GetForegroundWindow(), CaptureBoxHandles.Box, CaptureBoxHandles.ReturnTo);
+
     private ActivitySample? CaptureWindow(nint hWnd, out int pid, out ProcessInfo? process)
     {
         pid = 0;
@@ -602,6 +636,17 @@ public sealed class ActivityTrackerService : IDisposable
     {
         while (!ct.IsCancellationRequested)
         {
+            // First: a thought is a few bytes, and the user just parked it; it should not wait behind an offline afternoon.
+            try
+            {
+                if (_captureDelivery is not null) await _captureDelivery.TickAsync(DateTime.UtcNow, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                _log.Error(ex, "Capture delivery failed");
+            }
+
             try
             {
                 await SendPendingAsync(ct);

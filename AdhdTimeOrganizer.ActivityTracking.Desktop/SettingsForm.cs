@@ -34,6 +34,7 @@ public sealed class SettingsForm : Form
     private readonly ComboBox _chimeIntervalBox;
     private readonly CheckBox _chimeDistractionsBox;
     private readonly CheckedListBox _chimeTargetsBox;
+    private readonly TextBox _captureHotkeyBox;
     private readonly IReadOnlyList<ChimeCandidate> _chimeCandidates;
     private readonly Label _errorLabel;
 
@@ -134,6 +135,10 @@ public sealed class SettingsForm : Form
         AddRow(layout, "Chime on:", _chimeTargetsBox,
             _chimeCandidates.Count == 0 ? "Nothing sent today yet: what you use today appears here." : "Today's activities, your distractions and earlier choices.");
 
+        _captureHotkeyBox = new TextBox { Text = config.CaptureHotkey, Width = 160 };
+        AddRow(layout, "Capture hotkey:", _captureHotkeyBox,
+            $"Opens a one-line box that parks a thought on your capture list. Like {HotkeyChord.Default} or Ctrl+Shift+F9; empty turns it off. The tray menu's \"Capture a thought…\" works either way.");
+
         AddRow(layout, "Stay quiet while:", _quietFullscreenBox, null);
         AddRow(layout, "", _quietMicrophoneBox, null);
 
@@ -205,8 +210,17 @@ public sealed class SettingsForm : Form
             return;
         }
 
+        var hotkeyText = _captureHotkeyBox.Text.Trim();
+        var hotkey = HotkeyChord.TryParse(hotkeyText);
+        if (hotkeyText.Length > 0 && hotkey is null)
+        {
+            _errorLabel.Text = "Capture hotkey: Ctrl, Alt or Win (and Shift if you like) with a letter, a digit, F1–F24 or Space, like Win+Alt+N.";
+            return;
+        }
+
         _config.ApiBaseUrl = url;
         _config.WebAppUrl = webAppUrl;
+        _config.CaptureHotkey = hotkey?.ToString() ?? "";
         _config.PollIntervalMs = (int)_pollIntervalBox.Value;
         _config.IdleThresholdSeconds = (int)_idleThresholdBox.Value;
         _config.MaxPassiveIdleMinutes = (int)_passiveIdleBox.Value;

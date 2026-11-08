@@ -47,6 +47,8 @@ public enum NudgeResponse
     Dismiss,
     /// <summary>Drift only: open the planner to change the plan.</summary>
     SwitchPlan,
+    /// <summary>Drift only: open the capture box to park the thought that pulled the user away; settles the block like Back to it.</summary>
+    Capture,
     /// <summary>Upload health only: open the sign-in form.</summary>
     SignIn,
     /// <summary>Upload health only: open the log folder.</summary>

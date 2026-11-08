@@ -80,7 +80,35 @@ internal static partial class Win32
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool UnhookWinEvent(nint hWinEventHook);
 
+    /// <summary>Fails with <see cref="ERROR_HOTKEY_ALREADY_REGISTERED"/> when another app (or this one) holds the chord.</summary>
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool RegisterHotKey(nint hWnd, int id, uint fsModifiers, uint vk);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool UnregisterHotKey(nint hWnd, int id);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool SetForegroundWindow(nint hWnd);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool fAttach);
+
+    [LibraryImport("kernel32.dll")]
+    internal static partial uint GetCurrentThreadId();
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool IsWindow(nint hWnd);
+
     // ── Constants ────────────────────────────────────────────────────────────
+
+    internal const int WM_HOTKEY = 0x0312;
+    internal const uint MOD_NOREPEAT = 0x4000;
+    internal const int ERROR_HOTKEY_ALREADY_REGISTERED = 1409;
 
     internal const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
     internal const uint EVENT_OBJECT_NAMECHANGE = 0x800C;
@@ -178,6 +206,25 @@ internal static partial class Win32
             or UserNotificationState.App
             or UserNotificationState.NotPresent
             or UserNotificationState.QuietTime;
+
+    /// <summary>
+    /// Brings <paramref name="hWnd"/> to the front with the keyboard. Windows lets a process do that only right after the user
+    /// spoke to it — a hotkey it registered, a click on it — and a toast button may not count; then the input of the thread in
+    /// front is borrowed for the one call, the documented way around the foreground lock.
+    /// </summary>
+    public static bool BringToFront(nint hWnd)
+    {
+        if (hWnd == nint.Zero || !IsWindow(hWnd)) return false;
+        if (SetForegroundWindow(hWnd) && GetForegroundWindow() == hWnd) return true;
+
+        var ownThread = GetCurrentThreadId();
+        var frontThread = GetWindowThreadProcessId(GetForegroundWindow(), out _);
+        if (frontThread == 0 || frontThread == ownThread) return SetForegroundWindow(hWnd);
+
+        AttachThreadInput(ownThread, frontThread, true);
+        try { return SetForegroundWindow(hWnd); }
+        finally { AttachThreadInput(ownThread, frontThread, false); }
+    }
 
     public static int GetWindowProcessId(nint hWnd)
     {

@@ -50,7 +50,7 @@ public class NudgeToastTests
     [InlineData(NudgeKind.Stretch, new[] { NudgeResponse.TakeBreak, NudgeResponse.Snooze, NudgeResponse.NotNow, NudgeResponse.TurnOff })]
     [InlineData(NudgeKind.AppStretch, new[] { NudgeResponse.TakeBreak, NudgeResponse.Snooze, NudgeResponse.NotNow, NudgeResponse.TurnOff })]
     [InlineData(NudgeKind.BreakOver, new[] { NudgeResponse.Dismiss, NudgeResponse.Snooze })]
-    [InlineData(NudgeKind.Drift, new[] { NudgeResponse.Dismiss, NudgeResponse.SwitchPlan, NudgeResponse.Snooze, NudgeResponse.TurnOff })]
+    [InlineData(NudgeKind.Drift, new[] { NudgeResponse.Dismiss, NudgeResponse.Capture, NudgeResponse.SwitchPlan, NudgeResponse.Snooze, NudgeResponse.TurnOff })]
     [InlineData(NudgeKind.TimeChime, new[] { NudgeResponse.StopForToday })]
     public void Build_EveryKind_EveryButtonCarriesTheNudgeAndItsAnswer(NudgeKind kind, NudgeResponse[] responses)
     {
