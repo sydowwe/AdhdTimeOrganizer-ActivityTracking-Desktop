@@ -233,16 +233,16 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     minute): "Thesis starts now (until 11:30) · 45 min planned. Start the timer?". It is fed by the send loop with the
     heartbeat's plan (`PlanView`: `planned`, `next`, `timerRunning`, the minute's verdict), trusted for 3 minutes like a
     drift minute; it fires from the poll loop.
+  - **Which blocks.** `StartRampBlocks`, a Settings choice: Every block / All but Optional (default) / Critical only, from
+    the heartbeat's `isOptional` / `isCritical` (server-computed, the phone's rule and default, since 2026-11-08). A block left
+    out isn't settled, so widening the choice mid-block asks about it. A server without the flags reads every block as
+    neither, so "Critical only" stays quiet against it.
   - **Late.** "Started 20 min ago", but only while ≥ 10 min are left; a block nearly over is settled without a word.
   - **Skipped** when the block is `inProgress` or the minute was on plan. **Held** while a countdown, pomodoro or
     stopwatch runs (`timerRunning`; a paused one has no alarm rows, so the server can't see it), under the quiet conditions,
     and within the gap to the other families. A server from before 2026-10-19 sends no `timerRunning`, so the ramp stays
     quiet against it.
   - **Asks once per block.** A *reminder* toast (stays until answered).
-  - **Which blocks.** `StartRampBlocks`, a Settings choice: Every block / All but Optional (default) / Critical only, from
-    the heartbeat's `isOptional` / `isCritical` (server-computed, the phone's rule and default, since 2026-11-08). A block left
-    out isn't settled, so widening the choice mid-block asks about it. A server without the flags reads every block as
-    neither, so "Critical only" stays quiet against it.
     - **Start now** does two things side by side. It calls `POST …/tracker/desktop/start-block` (the block goes in progress
       in the planner, so the start counts even if the browser never gets there). It also opens
       `WebAppUrl/?track=<plannerTaskId>`, which the web app's home turns into the block's countdown, already running. The
