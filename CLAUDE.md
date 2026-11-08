@@ -36,6 +36,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/HyperfocusPolicy.cs` | **Pure** nudge decisions: stretches, breaks, app stretches, snooze / repeat / "not now", the break timer |
 | `Services/DriftPolicy.cs` | **Pure** drift-nudge decisions over the server's per-minute plan verdicts (`MinuteVerdict`) |
 | `Services/StartRampPolicy.cs` | **Pure** start-ramp decisions: offer a planned block at its start, from the heartbeat's plan (`PlanView`) |
+| `Services/ChimeSchedule.cs` | **Pure** time-chime decisions over the server's per-minute resolution, and which lines are chosen (`ChimeSettings`, `ChimeChoices`) |
 | `Services/UploadHealthPolicy.cs` | **Pure** "is tracked time arriving?" decisions: signed out, stalled a day, windows the server refused → show / withdraw a notice |
 | `Services/UnmappedReviewPolicy.cs` | **Pure** evening-invite decisions: is the evening due / missed / handled, the invite's text from the server's answer; plus `UnmappedReviewStore` (the last handled evening, `unmapped-review.json`) |
 | `Services/UnmappedReviewService.cs` | The send loop's evening tick: holds the server's evening moment, asks the server for today's unmapped time when it comes, hands the invite on |
@@ -216,7 +217,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 
 ### Nudges and notifications
 - Nudges are **client-side**: their decisions never involve the server, and the two things a nudge sends are the start
-  ramp's Start now and Not this one (below). The policies live in `HyperfocusPolicy`, `DriftPolicy` and `StartRampPolicy`, pure like
+  ramp's Start now and Not this one (below). The policies live in `HyperfocusPolicy`, `DriftPolicy`, `StartRampPolicy` and `ChimeSchedule`, pure like
   `ActivityRecorder` — keep clocks, Win32 and toasts out of them.
 - **Drift nudges** are fed from the **send** loop, a minute at a time, with the server's verdicts; the policy only
   counts them. Off by default, ≥ 10 min, one per planned block ("Snooze" asks for exactly one more after 30 min).
@@ -257,9 +258,34 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
       block's toast replaces it.
   - **State.** Saved to `start-ramp.json` beside `drift.json`: settled blocks by id, kept a day past their end (an
     extended block keeps its id), and a pending "In 2 minutes". A restart neither asks twice nor forgets the repeat.
+- **The time chime** (`ChimeSchedule`, `NudgeKind.TimeChime`, off by default, `TimeChimeEnabled`) makes time felt
+  *outside* a plan: "15 min on YouTube", silently, at each interval of continuous time in a chosen activity.
+  - **What is chosen is the server's answer, never a process list** — YouTube in Chrome chimes, docs in Chrome don't. It
+    reads each minute's `resolution` (which `MinuteVerdict.Slices` carries from the send loop, so the chime needs no send-loop
+    code of its own), keyed like today's breakdown (`activity:<id>`, `label:<role · category>`; a renamed role or category
+    is a new key). Chosen = the server's `isDistraction` (servers from 2026-11-08; `TimeChimeDistractions`, on by default)
+    plus `TimeChimeChoices` ticked by hand, minus distractions unticked by hand. A choice that only repeats the default is
+    dropped (`ChimeChoices.With`), so a flag set later on the server still decides every line the user never touched.
+    Unmapped time can't be chosen. Picked from the tray's today submenu ("Chime every 15 min", which also turns the chime
+    on) or in Settings (today's lines, the known distractions, earlier choices).
+  - **The stretch.** The chosen activities are one stretch, named by the busiest of them in the latest minute. A minute
+    counts when chosen time holds at least half of its tracked time. A gap over 3 min (another activity, idle, locked)
+    starts it over; a shorter one only pauses it. A minute older than `FreshFor` when sent is skipped, like drift's.
+  - **When.** At each multiple of `TimeChimeMinutes` (5/10/15/20/30, default 15), the same interval every time — no
+    escalation. A mark is passed once: one due under a quiet condition is **skipped, not held** (a late "15 min" is wrong),
+    and one inside a planned block while drift nudges are on is passed silently — one voice per block — though the minutes
+    still count. "Stop for today" lasts to local midnight; the stretch keeps counting through it.
+  - **Not in the gap between families**: it holds none of them and none holds it (a chime held 10 min says the wrong
+    number). It only waits for an evaluation in which no other toast was shown — the next poll.
+  - **The toast**: `MuteAudio`, the short duration, `Expiration` 2 min (`ChimeSchedule.ToastLifetime`), one button. The
+    next chime replaces it by its tag. State in `time-chime.json` beside `drift.json`, so a restart neither repeats a mark
+    nor forgets the stop; it also keeps the keys the server last flagged, which the tray and Settings show as chimed.
+    Logs carry minutes only; diagnostics count the choices and never name them.
+  - The phone's own chime (android prompt 11) made the same choices; its decisions are in the server repo's
+    `review/androidTrackerPrompts/decisions.md` (11-2, 11-3, 11-5, 11-6, 11-7).
 - The three families keep `HyperfocusPolicy.MinGapBetweenKinds` (10 min) apart: a nudge due within it of another
   family's is held like under a quiet condition, never dropped by it. The start ramp is evaluated first (a block's start
-  doesn't come again). The break-over nudge is exempt.
+  doesn't come again). The break-over nudge and the time chime are exempt.
 - Today's total and its top-5 breakdown (`TodayTotal`, `today.json`) count a window **once, when settled**: the total
   at queue time less what was never stored, the breakdown from the heartbeat's answer. The breakdown is the tray
   glance's submenu, not a left-click flyout — double-click already pauses.
