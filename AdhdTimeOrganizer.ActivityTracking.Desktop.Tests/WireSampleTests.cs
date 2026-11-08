@@ -45,6 +45,7 @@ public class WireSampleTests
         Assert.Equal(new DateTime(2026, 10, 18, 9, 30, 0, DateTimeKind.Utc), block.EndsAtUtc);
         Assert.Equal(DateTimeKind.Utc, block.EndsAtUtc.Kind);
         Assert.True(block.InProgress);
+        Assert.Equal((false, true), (block.IsOptional, block.IsCritical));
 
         // And it means what the server meant: 25 s on plan against 15 s off, the unmapped 12 s left out.
         var verdict = MinuteVerdict.From(block.StartsAtUtc, response);
@@ -56,6 +57,7 @@ public class WireSampleTests
         Assert.NotNull(next);
         Assert.Equal((8L, 15L, "Email", false), (next.PlannerTaskId, next.ActivityId, next.ActivityName, next.InProgress));
         Assert.Equal(new DateTime(2026, 10, 18, 9, 30, 0, DateTimeKind.Utc), next.StartsAtUtc);
+        Assert.Equal((true, false), (next.IsOptional, next.IsCritical));
         Assert.False(response.TimerRunning);
     }
 

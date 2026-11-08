@@ -233,6 +233,10 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     and within the gap to the other families. A server from before 2026-10-19 sends no `timerRunning`, so the ramp stays
     quiet against it.
   - **Asks once per block.** A *reminder* toast (stays until answered).
+  - **Which blocks.** `StartRampBlocks`, a Settings choice: Every block / All but Optional (default) / Critical only, from
+    the heartbeat's `isOptional` / `isCritical` (server-computed, the phone's rule and default, since 2026-11-08). A block left
+    out isn't settled, so widening the choice mid-block asks about it. A server without the flags reads every block as
+    neither, so "Critical only" stays quiet against it.
     - **Start now** does two things side by side. It calls `POST …/tracker/desktop/start-block` (the block goes in progress
       in the planner, so the start counts even if the browser never gets there). It also opens
       `WebAppUrl/?track=<plannerTaskId>`, which the web app's home turns into the block's countdown, already running. The
@@ -242,7 +246,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
       after an explicit decision, "you slid off it" would only shame. For the same reason it calls
       `POST …/tracker/desktop/skip-block` (not started → cancelled, the phone push's Skip), or the planner would announce the
       block as missed when it ends. It isn't retried: offline, the local half stands and the block stays open on the server.
-    - A toast still out leaves when the block is started, worked on, or over; another block's toast replaces it.
+    - A toast still out leaves when the block is started, worked on, or over (at its latest end, if extended), and when a
+      minute inside the block no longer lists it (cancelled or moved, in the planner or by the phone's Not this one). Another
+      block's toast replaces it.
   - **State.** Saved to `start-ramp.json` beside `drift.json`: settled blocks by id, kept a day past their end (an
     extended block keeps its id), and a pending "In 2 minutes". A restart neither asks twice nor forgets the repeat.
 - The three families keep `HyperfocusPolicy.MinGapBetweenKinds` (10 min) apart: a nudge due within it of another

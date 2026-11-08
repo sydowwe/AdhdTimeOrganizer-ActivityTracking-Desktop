@@ -26,6 +26,7 @@ public sealed class SettingsForm : Form
     private readonly CheckBox _driftEnabledBox;
     private readonly NumericUpDown _driftAfterBox;
     private readonly CheckBox _startRampBox;
+    private readonly ComboBox _startRampBlocksBox;
     private readonly CheckBox _uploadNoticesBox;
     private readonly CheckBox _unmappedReviewBox;
     private readonly Label _errorLabel;
@@ -97,6 +98,12 @@ public sealed class SettingsForm : Form
         _startRampBox = new CheckBox { Text = "On", Checked = config.StartRampEnabled, AutoSize = true };
         AddRow(layout, "Start ramp:", _startRampBox,
             "When a planned block starts and you are at the computer: one notice to start its timer. Needs no drift nudges.");
+
+        // In the order of RampBlocks, so the selected index is the setting.
+        _startRampBlocksBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
+        _startRampBlocksBox.Items.AddRange(["Every block", "All but Optional", "Critical only"]);
+        _startRampBlocksBox.SelectedIndex = (int)config.StartRampBlocks;
+        AddRow(layout, "Start ramp asks about:", _startRampBlocksBox, "By the importance a block has in your planner.");
 
         AddRow(layout, "Stay quiet while:", _quietFullscreenBox, null);
         AddRow(layout, "", _quietMicrophoneBox, null);
@@ -186,6 +193,7 @@ public sealed class SettingsForm : Form
         _config.DriftNudgesEnabled = _driftEnabledBox.Checked;
         _config.DriftNudgeMinutes = (int)_driftAfterBox.Value;
         _config.StartRampEnabled = _startRampBox.Checked;
+        _config.StartRampBlocks = (RampBlocks)_startRampBlocksBox.SelectedIndex;
         _config.UploadNoticesEnabled = _uploadNoticesBox.Checked;
         _config.UnmappedReviewEnabled = _unmappedReviewBox.Checked;
 

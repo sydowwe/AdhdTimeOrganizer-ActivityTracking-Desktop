@@ -21,9 +21,20 @@ public sealed record PlanView(
 public sealed record StartRampDetails(
     long PlannerTaskId, string PlannedName, DateTime StartsUtc, DateTime EndsUtc, TimeSpan LateBy, bool CanDefer);
 
-public sealed record StartRampSettings(bool Enabled)
+public sealed record StartRampSettings(bool Enabled, RampBlocks Blocks = RampBlocks.NotOptional)
 {
-    public static StartRampSettings From(AppConfig config) => new(config.StartRampEnabled);
+    public static StartRampSettings From(AppConfig config) => new(config.StartRampEnabled, config.StartRampBlocks);
+
+    /// <summary>
+    /// Whether the user wants to be asked about this block. A server from before the flags reads every block as neither, so
+    /// under <see cref="RampBlocks.Critical"/> it says nothing rather than guess.
+    /// </summary>
+    public bool Admits(PlannedBlock block) => Blocks switch
+    {
+        RampBlocks.All => true,
+        RampBlocks.Critical => block.IsCritical,
+        _ => !block.IsOptional
+    };
 }
 
 /// <summary>
@@ -47,6 +58,10 @@ public sealed record StartRampState(Dictionary<long, DateTime> Settled, long? Ag
 /// moved.
 /// </para>
 /// <para>
+/// <b>Which blocks</b> — <see cref="RampBlocks"/>, from the planner's importance; All but Optional by default. A block left
+/// out isn't settled, so changing the setting mid-block takes effect.
+/// </para>
+/// <para>
 /// <b>Skipped</b> when the block is already under way: started in the planner (the web app's timer marks it), or the
 /// minute was on plan. <b>Held</b> under the quiet conditions, and while a countdown, pomodoro or stopwatch runs: the user
 /// is timing something already, and Start now would land on a dialog offering to throw it away. Stopping it is the moment
@@ -55,7 +70,8 @@ public sealed record StartRampState(Dictionary<long, DateTime> Settled, long? Ag
 /// <para>
 /// <b>Not nagging.</b> One toast per block. <b>In 2 minutes</b> asks exactly once more, without that button, so it can't
 /// become a snooze loop; <b>Start now</b> and <b>Not this one</b> settle the block, and so does ignoring the toast. A
-/// toast still out leaves when the block is started, the user gets on with it, or the block ends.
+/// toast still out leaves when the block is started, the user gets on with it, the block ends, or the block is no longer
+/// on the plan (cancelled or moved, here or on the phone).
 /// </para>
 /// </remarks>
 public sealed class StartRampPolicy
@@ -92,7 +108,29 @@ public sealed class StartRampPolicy
         if (_plan is { } known && plan.WindowStartUtc < known.WindowStartUtc) return;
         _plan = plan;
 
-        if (_outstanding is { Block: var block } && IsUnderWay(block.PlannerTaskId, plan))
+        FollowTheToastOut(plan);
+    }
+
+    /// <summary>
+    /// The toast still out, against a new answer. A minute at or past the block's start must list the block among those
+    /// covering it, or the block has left the plan; an earlier minute can't say (it would be <c>next</c> at best, and another
+    /// block may come first). A block still listed may have been extended, and the toast then stays to its new end. The test
+    /// toast's block is not a planner task, so no answer lists it.
+    /// </summary>
+    private void FollowTheToastOut(PlanView plan)
+    {
+        if (_outstanding is not { } outstanding) return;
+
+        var id = outstanding.Block.PlannerTaskId;
+        if (IsUnderWay(id, plan))
+        {
+            Withdraw();
+            return;
+        }
+
+        if (plan.Covering.FirstOrDefault(b => b.PlannerTaskId == id) is { } listed)
+            _outstanding = (outstanding.Id, listed, outstanding.CanDefer);
+        else if (id > 0 && plan.WindowStartUtc >= MinuteVerdict.AsUtc(outstanding.Block.StartsAtUtc))
             Withdraw();
     }
 
@@ -112,7 +150,7 @@ public sealed class StartRampPolicy
         foreach (var block in Started(plan, nowUtc))
         {
             var id = block.PlannerTaskId;
-            if (_settled.ContainsKey(id)) continue;
+            if (!settings.Admits(block) || _settled.ContainsKey(id)) continue;
 
             var isAgain = _again?.Id == id;
             if (isAgain && nowUtc < _again!.Value.AtUtc) continue;

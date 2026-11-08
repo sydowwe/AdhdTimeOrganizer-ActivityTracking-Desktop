@@ -8,9 +8,9 @@
       { "target": "Ignored", "activityId": null, "name": null, "activeSeconds": 8, "onPlan": null }
     ],
     "planned": [
-      { "plannerTaskId": 7, "activityId": 12, "activityName": "Thesis", "startsAt": "2026-10-18T09:00:00Z", "endsAt": "2026-10-18T09:30:00Z", "inProgress": true }
+      { "plannerTaskId": 7, "activityId": 12, "activityName": "Thesis", "startsAt": "2026-10-18T09:00:00Z", "endsAt": "2026-10-18T09:30:00Z", "inProgress": true, "isOptional": false, "isCritical": true }
     ],
-    "next": { "plannerTaskId": 8, "activityId": 15, "activityName": "Email", "startsAt": "2026-10-18T09:30:00Z", "endsAt": "2026-10-18T10:00:00Z", "inProgress": false },
+    "next": { "plannerTaskId": 8, "activityId": 15, "activityName": "Email", "startsAt": "2026-10-18T09:30:00Z", "endsAt": "2026-10-18T10:00:00Z", "inProgress": false, "isOptional": true, "isCritical": false },
     "timerRunning": false
   },
   "coverage": {

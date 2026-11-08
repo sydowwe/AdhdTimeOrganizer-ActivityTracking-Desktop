@@ -65,7 +65,7 @@ public static class DiagnosticsReport
         text.AppendLine($"Hyperfocus nudges: {OnOff(config.HyperfocusNudgesEnabled)}, after {config.HyperfocusNudgeMinutes} min, " +
                         $"same app {config.AppHyperfocusNudgeMinutes} min, a break is {config.BreakMinutes} min, break timer {config.BreakTimerMinutes} min");
         text.AppendLine($"Drift nudges: {OnOff(config.DriftNudgesEnabled)}, after {config.DriftNudgeMinutes} min");
-        text.AppendLine($"Start ramp: {OnOff(config.StartRampEnabled)}");
+        text.AppendLine($"Start ramp: {OnOff(config.StartRampEnabled)}, blocks {config.StartRampBlocks}");
         text.AppendLine($"Quiet while: full screen {OnOff(config.QuietWhenFullscreen)}, microphone {OnOff(config.QuietWhenMicrophoneInUse)}");
         text.AppendLine($"Upload notices: {OnOff(config.UploadNoticesEnabled)}");
         text.AppendLine($"Evening review: {OnOff(config.UnmappedReviewEnabled)}");

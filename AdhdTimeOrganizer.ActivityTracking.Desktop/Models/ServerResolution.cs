@@ -86,6 +86,14 @@ public sealed record PlannedBlock
     /// <summary>Started in the planner (the web app's timer, the phone's push, or the start ramp's Start now).</summary>
     [JsonPropertyName("inProgress")]
     public bool InProgress { get; init; }
+
+    /// <summary>Its importance is Optional: the start ramp's "All but Optional" leaves it out. False from an older server.</summary>
+    [JsonPropertyName("isOptional")]
+    public bool IsOptional { get; init; }
+
+    /// <summary>Critical or ranked above it: all the start ramp's "Critical only" asks about. False from an older server.</summary>
+    [JsonPropertyName("isCritical")]
+    public bool IsCritical { get; init; }
 }
 
 /// <summary>

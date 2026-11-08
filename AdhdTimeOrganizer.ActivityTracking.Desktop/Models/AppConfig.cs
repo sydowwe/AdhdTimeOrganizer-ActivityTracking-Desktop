@@ -15,6 +15,19 @@ public enum LocalRuleAction
     HideTitle
 }
 
+/// <summary>Which planned blocks the start ramp asks about. The phone's choice, with the same default.</summary>
+public enum RampBlocks
+{
+    /// <summary>Every planned block.</summary>
+    All,
+
+    /// <summary>All but the Optional ones: those the user already said they may skip.</summary>
+    NotOptional,
+
+    /// <summary>Critical, or a level the user ranked above it.</summary>
+    Critical
+}
+
 /// <summary>What a private browser window or a <see cref="LocalRuleAction.HideTitle"/> window turns into.</summary>
 public enum PrivateWindowHandling
 {
@@ -148,6 +161,10 @@ public sealed class AppConfig
     /// asks once per block.
     /// </summary>
     public bool StartRampEnabled { get; set; } = true;
+
+    /// <summary>Which planned blocks it asks about, by the importance the planner already gives them.</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter<RampBlocks>))]
+    public RampBlocks StartRampBlocks { get; set; } = RampBlocks.NotOptional;
 
     // ── Upload problems (see UploadHealthPolicy) ──────────────────────────────
 

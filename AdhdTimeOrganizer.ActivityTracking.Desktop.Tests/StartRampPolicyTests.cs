@@ -92,6 +92,55 @@ public class StartRampPolicyTests
         Assert.Equal("Meds", run.Poll(Eleven.AddSeconds(30))!.StartRamp!.PlannedName);
     }
 
+    // ---- which blocks -----------------------------------------------------
+
+    [Fact]
+    public void WhichBlocks_FollowsThePlannersImportance()
+    {
+        var optional = Thesis with { IsOptional = true };
+        var critical = Thesis with { IsCritical = true };
+
+        Nudge? Offered(PlannedBlock block, RampBlocks blocks)
+        {
+            var run = new Run { Settings = new StartRampSettings(Enabled: true, blocks) };
+            run.Answer(Eleven.AddMinutes(-1), next: block);
+            return run.Poll(Eleven);
+        }
+
+        Assert.Null(Offered(optional, RampBlocks.NotOptional));
+        Assert.NotNull(Offered(optional, RampBlocks.All));
+        Assert.NotNull(Offered(Thesis, RampBlocks.NotOptional));
+        Assert.Null(Offered(Thesis, RampBlocks.Critical));
+        Assert.NotNull(Offered(critical, RampBlocks.Critical));
+    }
+
+    /// <summary>The default is the phone's, so a config.json from before the setting asks about all but Optional.</summary>
+    [Fact]
+    public void WhichBlocks_DefaultsToAllButOptional_AndSurvivesTheConfigFile()
+    {
+        var old = JsonSerializer.Deserialize<AppConfig>("{}")!;
+        Assert.Equal(RampBlocks.NotOptional, old.StartRampBlocks);
+
+        var saved = JsonSerializer.Serialize(new AppConfig { StartRampBlocks = RampBlocks.Critical });
+        Assert.Contains("\"StartRampBlocks\":\"Critical\"", saved);
+        Assert.Equal(RampBlocks.Critical, JsonSerializer.Deserialize<AppConfig>(saved)!.StartRampBlocks);
+    }
+
+    /// <summary>A block left out isn't spent: widening the setting mid-block asks about it, as the late form.</summary>
+    [Fact]
+    public void ABlockLeftOut_IsAskedAbout_OnceTheSettingAdmitsIt()
+    {
+        var optional = Thesis with { IsOptional = true };
+        var run = new Run();
+        run.Answer(Eleven.AddMinutes(-1), next: optional);
+        Assert.Null(run.Poll(Eleven));
+
+        run.Settings = new StartRampSettings(Enabled: true, RampBlocks.All);
+        run.Answer(Eleven, covering: [optional]);
+
+        Assert.Equal(TimeSpan.FromMinutes(1), run.Poll(Eleven.AddMinutes(1))!.StartRamp!.LateBy);
+    }
+
     // ---- when it doesn't --------------------------------------------------
 
     [Fact]
@@ -251,6 +300,66 @@ public class StartRampPolicyTests
         run.Poll(Eleven.AddMinutes(45));
 
         Assert.True(run.Policy.TakeWithdrawn());
+    }
+
+    /// <summary>
+    /// Cancelled or moved while the toast is out — in the planner, or by Not this one on the phone: the first minute inside the
+    /// block no longer lists it, so the toast leaves rather than offering a Start now the server would refuse.
+    /// </summary>
+    [Fact]
+    public void TheToast_Leaves_WhenTheBlockLeavesThePlan_AndALatePressIsNotCurrent()
+    {
+        var run = new Run();
+        run.Answer(Eleven.AddMinutes(-1), next: Thesis);
+        var nudge = run.Poll(Eleven)!;
+
+        run.Answer(Eleven, covering: []);
+
+        Assert.True(run.Policy.TakeWithdrawn());
+        Assert.Null(run.Respond(nudge, NudgeResponse.StartNow, Eleven.AddMinutes(2)));
+    }
+
+    /// <summary>An answer for a minute before the block can't say it left: a block added ahead of it just takes over <c>next</c>.</summary>
+    [Fact]
+    public void TheToast_Stays_OnAnAnswerFromBeforeTheBlock()
+    {
+        var run = new Run();
+        run.Answer(Eleven.AddMinutes(-2), next: Thesis);
+        var nudge = run.Poll(Eleven)!;
+
+        run.Answer(Eleven.AddMinutes(-1), next: null, receivedAt: Eleven.AddSeconds(45));
+
+        Assert.False(run.Policy.TakeWithdrawn());
+        Assert.Equal(Thesis, run.Respond(nudge, NudgeResponse.StartNow, Eleven.AddMinutes(1)));
+    }
+
+    /// <summary>The block extended while the toast is out: it stays until the new end, not the one it was shown with.</summary>
+    [Fact]
+    public void TheToast_Stays_UntilTheNewEnd_WhenTheBlockIsExtended()
+    {
+        var extended = Thesis with { EndsAtUtc = Eleven.AddMinutes(60) };
+        var run = new Run();
+        run.Answer(Eleven.AddMinutes(-1), next: Thesis);
+        run.Poll(Eleven);
+
+        run.Answer(Eleven, covering: [extended]);
+
+        run.Poll(Eleven.AddMinutes(45));
+        Assert.False(run.Policy.TakeWithdrawn());
+        run.Poll(Eleven.AddMinutes(60));
+        Assert.True(run.Policy.TakeWithdrawn());
+    }
+
+    /// <summary>The toast tried by hand from the tray has no planner task behind it, so no answer lists it: it stays until pressed.</summary>
+    [Fact]
+    public void TheTestToast_Stays_ThoughNoAnswerListsIt()
+    {
+        var run = new Run();
+        run.Policy.IssueForTest(Eleven);
+
+        run.Answer(Eleven.AddMinutes(1), covering: []);
+
+        Assert.False(run.Policy.TakeWithdrawn());
     }
 
     /// <summary>A second block starting while the first one's toast is ignored replaces it: the old press is no longer current.</summary>
