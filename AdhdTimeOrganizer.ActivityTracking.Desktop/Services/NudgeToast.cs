@@ -53,6 +53,13 @@ internal static class NudgeToast
                 builder.AddButton(Button("In 2 minutes", nudge, NudgeResponse.Later));
             builder.AddButton(Button("Not this one", nudge, NudgeResponse.NotThisOne));
         }
+        else if (nudge.Kind == NudgeKind.TimeChime)
+        {
+            // A time check, not a nudge: no sound, the short on-screen duration, gone from the notification centre soon
+            // after (Expiration, below). The next chime replaces it by its tag.
+            builder.MuteAudio()
+                .AddButton(Button("Stop for today", nudge, NudgeResponse.StopForToday));
+        }
         else if (nudge.Kind == NudgeKind.UploadHealth)
         {
             builder.SetDuration(AppNotificationDuration.Long);
@@ -79,6 +86,8 @@ internal static class NudgeToast
         var notification = builder.BuildNotification();
         notification.Tag = Tag(nudge.Kind);
         notification.Group = Group;
+        if (nudge.Kind == NudgeKind.TimeChime)
+            notification.Expiration = DateTimeOffset.Now + ChimeSchedule.ToastLifetime;
         return notification;
     }
 
@@ -103,6 +112,7 @@ internal static class NudgeToast
             ($"Planned: {drift.PlannedName} (until {TimeZoneInfo.ConvertTimeFromUtc(drift.PlannedEndsUtc, TimeZoneInfo.Local):HH:mm})",
                 $"Last {FormatLength(nudge.Length)}: {nudge.AppName}."),
         NudgeKind.StartRamp when nudge.StartRamp is { } ramp => StartRampText(ramp),
+        NudgeKind.TimeChime => ($"{FormatLength(nudge.Length)} on {nudge.AppName}", "A time check, nothing more."),
         NudgeKind.UploadHealth when nudge.Upload is { } upload => UploadText(upload),
         NudgeKind.UnmappedReview when nudge.Review is { } review => UnmappedReviewPolicy.Text(review),
         _ => ("Break's over", $"That was {FormatLength(nudge.Length)}. Ready to get back to it?")

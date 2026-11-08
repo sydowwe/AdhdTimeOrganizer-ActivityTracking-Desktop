@@ -58,6 +58,13 @@ public sealed record ResolvedTime
     [JsonPropertyName("onPlan")]
     public bool? OnPlan { get; init; }
 
+    /// <summary>
+    /// The user marked this activity (or its category) a distraction, on the server (2026-11-08). The time chime follows it
+    /// unless unticked. False from an older server, and for ignored and unmapped time.
+    /// </summary>
+    [JsonPropertyName("isDistraction")]
+    public bool IsDistraction { get; init; }
+
     [JsonIgnore]
     public bool IsUnmapped => Target is null;
 

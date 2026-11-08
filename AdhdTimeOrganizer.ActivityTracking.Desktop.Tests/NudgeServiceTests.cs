@@ -35,6 +35,7 @@ public sealed class NudgeServiceTests : IDisposable
 
     private DateTime _start = DateTime.UtcNow.AddHours(-2);
     private AppConfig _config = null!; // the latest Create()'s
+    private readonly TimeZoneInfo _zone = NoonNow();
 
     [Fact]
     public void ResolvedMinutes_ReachTheDriftPolicy_AndItsNudgeIsShown()
@@ -343,7 +344,70 @@ public sealed class NudgeServiceTests : IDisposable
         Assert.Equal(Program.LogDirectory, Assert.Single(_folders));
     }
 
+    /// <summary>
+    /// The chime is fed the server's resolution with the drift verdict, outside any planned block. "Stop for today" removes
+    /// it, is saved, and holds after a restart; nothing else is switched off.
+    /// </summary>
+    [Fact]
+    public void TimeChime_ComesFromResolvedMinutes_AndStopForToday_OutlivesARestart()
+    {
+        var (service, notifier, _) = Create();
+        _config.TimeChimeEnabled = true;
+        _config.TimeChimeChoices = [new ChimeChoice("activity:7", "YouTube", true)];
+
+        YouTubeMinutes(service, 15);
+
+        var chime = Assert.Single(notifier.Shown);
+        Assert.Equal((NudgeKind.TimeChime, "YouTube", TimeSpan.FromMinutes(15)), (chime.Kind, chime.AppName, chime.Length));
+
+        service.OnActivated(new NudgeActivation(NudgeKind.TimeChime, chime.Id, NudgeResponse.StopForToday));
+        Assert.Contains(NudgeKind.TimeChime, notifier.Removed);
+        Assert.True(_config.TimeChimeEnabled);
+        Assert.True(File.Exists(Path.Combine(_dir, "time-chime.json")));
+
+        var (restarted, restartedNotifier, _) = Create();
+        _config.TimeChimeEnabled = true;
+        _config.TimeChimeChoices = [new ChimeChoice("activity:7", "YouTube", true)];
+        YouTubeMinutes(restarted, 15);
+        Assert.Empty(restartedNotifier.Shown);
+    }
+
+    [Fact]
+    public void TimeChime_IsQuietInsideAPlannedBlock_WhileDriftNudgesAreOn()
+    {
+        var (service, notifier, _) = Create();
+        _config.TimeChimeEnabled = true;
+        _config.TimeChimeChoices = [new ChimeChoice("activity:7", "YouTube", true)];
+
+        YouTubeMinutes(service, 15, Thesis);
+
+        Assert.DoesNotContain(notifier.Shown, n => n.Kind == NudgeKind.TimeChime);
+    }
+
     // ---- helpers ---------------------------------------------------------
+
+    /// <summary>Minutes spent on the YouTube activity, outside any block unless one is given, answered as the send loop would.</summary>
+    private void YouTubeMinutes(NudgeService service, int count, PlannedBlock? block = null)
+    {
+        ResolvedTime[] youTube = [new() { Target = "Activity", ActivityId = 7, Name = "YouTube", ActiveSeconds = 60, OnPlan = block is null ? null : false }];
+        for (var i = 0; i < count; i++)
+        {
+            var windowStart = _start;
+            _start = _start.AddMinutes(1);
+            service.OnMinuteResolved(windowStart.AddSeconds(65),
+                new MinuteVerdict(windowStart, block, block is null ? null : false, block is null ? null : "YouTube", youTube));
+        }
+    }
+
+    /// <summary>
+    /// A zone in which it is about noon now, so the two hours of minutes these tests replay never cross the chime's local
+    /// midnight, whenever the suite runs.
+    /// </summary>
+    private static TimeZoneInfo NoonNow()
+    {
+        var offset = TimeSpan.FromMinutes(Math.Round((TimeSpan.FromHours(12) - DateTime.UtcNow.TimeOfDay).TotalMinutes));
+        return TimeZoneInfo.CreateCustomTimeZone("noon-now", offset, "noon-now", "noon-now");
+    }
 
     private (NudgeService Service, FakeNotifier Notifier, List<Uri> Opened) Create()
     {
@@ -368,7 +432,8 @@ public sealed class NudgeServiceTests : IDisposable
             {
                 _skippedBlocks.Enqueue(id);
                 return Task.FromResult(true);
-            });
+            },
+            zone: _zone);
         _services.Add(service);
         return (service, notifier, opened);
     }

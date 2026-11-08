@@ -41,6 +41,9 @@ public sealed class TodayTotal(string path, TimeZoneInfo zone)
     /// <summary>What unmapped time is listed as.</summary>
     internal const string NotMappedName = "Not mapped";
 
+    /// <summary>The key of unmapped time: a line of the breakdown, but nothing the time chime can be set on.</summary>
+    internal const string UnmappedKey = "unmapped";
+
     private readonly ILogger _log = Log.ForContext<TodayTotal>();
     private readonly Lock _gate = new();
     private State? _state;
@@ -98,10 +101,13 @@ public sealed class TodayTotal(string path, TimeZoneInfo zone)
         }
     }
 
-    /// <summary>The same activity is one line even if renamed during the day; role/category and unmapped time go by their label.</summary>
-    private static (string Key, string Name) KeyOf(ResolvedTime slice) =>
+    /// <summary>
+    /// The same activity is one line even if renamed during the day; role/category and unmapped time go by their label.
+    /// The time chime's choices use the same keys, so a line of the breakdown is what the tray's "Chime" item ticks.
+    /// </summary>
+    internal static (string Key, string Name) KeyOf(ResolvedTime slice) =>
         slice.ActivityId is { } activityId ? ($"activity:{activityId}", slice.Name ?? NotMappedName)
-        : slice.IsUnmapped ? ("unmapped", NotMappedName)
+        : slice.IsUnmapped ? (UnmappedKey, NotMappedName)
         : ($"label:{slice.Name}", slice.Name ?? NotMappedName);
 
     private void Update(DateTime windowStartUtc, Func<State, State> change)

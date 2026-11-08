@@ -23,6 +23,9 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private const int TopActivityCount = 5;
 
+    /// <summary>How many of today's lines Settings offers for the time chime, beside the distractions and earlier choices.</summary>
+    private const int SettingsChimeLines = 20;
+
     /// <summary>How much of the log "Copy diagnostics" carries.</summary>
     private const int DiagnosticsLines = 200;
 
@@ -105,6 +108,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         testNudge.DropDownItems.Add("Break over", null, (_, _) => _nudges.ShowTest(NudgeKind.BreakOver));
         testNudge.DropDownItems.Add("Drift", null, (_, _) => _nudges.ShowTest(NudgeKind.Drift));
         testNudge.DropDownItems.Add("Start ramp", null, (_, _) => _nudges.ShowTest(NudgeKind.StartRamp));
+        testNudge.DropDownItems.Add("Time chime", null, (_, _) => _nudges.ShowTest(NudgeKind.TimeChime));
         testNudge.DropDownItems.Add("Upload problem", null, (_, _) => _nudges.ShowTest(NudgeKind.UploadHealth));
         contextMenu.Items.Add(testNudge);
 #endif
@@ -260,13 +264,45 @@ public sealed class TrayApplicationContext : ApplicationContext
         return top is null ? null : top.Name ?? (top.IsUnmapped ? "not mapped" : null);
     }
 
+    /// <summary>
+    /// Each line of the breakdown opens one checkable item, "Chime every 15 min" — where the user sees where the time
+    /// went is where they choose to hear about it. Unmapped time has nothing to chime on and stays a plain line.
+    /// </summary>
     private void FillTodayBreakdown()
     {
         _glanceItem.DropDownItems.Clear();
-        foreach (var line in DescribeTodayBreakdown(_tracker.GetTodayTop(TopActivityCount)))
-            _glanceItem.DropDownItems.Add(new ToolStripMenuItem(line) { Enabled = false });
+        var top = _tracker.GetTodayTop(TopActivityCount);
+        var lines = DescribeTodayBreakdown(top);
+        var settings = ChimeSettings.From(_config);
+        var distractions = _nudges.GetChimeDistractions();
+
+        for (var i = 0; i < lines.Count; i++)
+        {
+            if (i >= top.Count || top[i].Key == TodayTotal.UnmappedKey)
+            {
+                _glanceItem.DropDownItems.Add(new ToolStripMenuItem(lines[i]) { Enabled = false });
+                continue;
+            }
+
+            var total = top[i];
+            var isDistraction = distractions.ContainsKey(total.Key);
+            var isChimed = settings.Enabled && settings.Chimes(total.Key, isDistraction);
+            var line = new ToolStripMenuItem(lines[i]);
+            line.DropDownItems.Add(new ToolStripMenuItem($"Chime every {(int)settings.Interval.TotalMinutes} min", null,
+                (_, _) => SetChime(total, isDistraction, !isChimed)) { Checked = isChimed });
+            _glanceItem.DropDownItems.Add(line);
+        }
         _glanceItem.DropDownItems.Add(new ToolStripSeparator());
         _glanceItem.DropDownItems.Add("Open dashboard", null, (_, _) => OpenWebApp(DashboardPath));
+    }
+
+    /// <summary>Ticking a line also turns the chime on: asking for it is the opt-in.</summary>
+    private void SetChime(ActivityTotal total, bool isDistraction, bool chime)
+    {
+        _config.TimeChimeChoices = ChimeChoices.With(
+            _config.TimeChimeChoices, total.Key, total.Name, chime, isDistraction, _config.TimeChimeDistractions);
+        if (chime) _config.TimeChimeEnabled = true;
+        _config.Save();
     }
 
     /// <summary>"Thesis — 2 h 10 m", busiest first; one line saying there is nothing yet when there isn't.</summary>
@@ -412,7 +448,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         var previousPollInterval = _config.PollIntervalMs;
         var hadDriftNudges = _config.DriftNudgesEnabled;
 
-        using var settingsForm = new SettingsForm(_config);
+        using var settingsForm = new SettingsForm(_config, ChimeChoices.Candidates(
+            _tracker.GetTodayTop(SettingsChimeLines), _nudges.GetChimeDistractions(), _config.TimeChimeChoices));
         if (settingsForm.ShowDialog() != DialogResult.OK) return;
 
         _config.Save();

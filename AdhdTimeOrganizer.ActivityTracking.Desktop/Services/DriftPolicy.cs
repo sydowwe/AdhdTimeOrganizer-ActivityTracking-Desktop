@@ -12,7 +12,9 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 /// could be judged — unmapped or ignored windows, or nothing planned. Unmapped time never tips it either way.
 /// </param>
 /// <param name="OffPlanName">What most of the off-plan time mapped to — "YouTube" in "Last 10 min: YouTube".</param>
-public sealed record MinuteVerdict(DateTime WindowStartUtc, PlannedBlock? Block, bool? OnPlan, string? OffPlanName)
+/// <param name="Slices">The server's whole resolution of the minute, for the time chime (<see cref="ChimeSchedule"/>).</param>
+public sealed record MinuteVerdict(
+    DateTime WindowStartUtc, PlannedBlock? Block, bool? OnPlan, string? OffPlanName, IReadOnlyList<ResolvedTime>? Slices = null)
 {
     public static MinuteVerdict From(DateTime windowStartUtc, HeartbeatResponse response)
     {
@@ -24,7 +26,8 @@ public sealed record MinuteVerdict(DateTime WindowStartUtc, PlannedBlock? Block,
             AsUtc(windowStartUtc),
             response.Planned.FirstOrDefault(),
             onPlan + offPlanSeconds == 0 ? null : onPlan >= offPlanSeconds,
-            offPlan.MaxBy(r => r.ActiveSeconds)?.Name);
+            offPlan.MaxBy(r => r.ActiveSeconds)?.Name,
+            response.Resolution);
     }
 
     internal static DateTime AsUtc(DateTime value) =>

@@ -1,4 +1,5 @@
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop;
 
@@ -29,11 +30,18 @@ public sealed class SettingsForm : Form
     private readonly ComboBox _startRampBlocksBox;
     private readonly CheckBox _uploadNoticesBox;
     private readonly CheckBox _unmappedReviewBox;
+    private readonly CheckBox _chimeEnabledBox;
+    private readonly ComboBox _chimeIntervalBox;
+    private readonly CheckBox _chimeDistractionsBox;
+    private readonly CheckedListBox _chimeTargetsBox;
+    private readonly IReadOnlyList<ChimeCandidate> _chimeCandidates;
     private readonly Label _errorLabel;
 
-    public SettingsForm(AppConfig config)
+    /// <param name="chimeCandidates">The lines the time chime can be set on (<see cref="ChimeChoices.Candidates"/>).</param>
+    public SettingsForm(AppConfig config, IReadOnlyList<ChimeCandidate>? chimeCandidates = null)
     {
         _config = config;
+        _chimeCandidates = chimeCandidates ?? [];
 
         Text = "Activity Tracker - Settings";
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -104,6 +112,27 @@ public sealed class SettingsForm : Form
         _startRampBlocksBox.Items.AddRange(["Every block", "All but Optional", "Critical only"]);
         _startRampBlocksBox.SelectedIndex = (int)config.StartRampBlocks;
         AddRow(layout, "Start ramp asks about:", _startRampBlocksBox, "By the importance a block has in your planner.");
+
+        var chime = ChimeSettings.From(config);
+        _chimeEnabledBox = new CheckBox { Text = "On", Checked = config.TimeChimeEnabled, AutoSize = true };
+        AddRow(layout, "Time chime:", _chimeEnabledBox,
+            "A silent \"15 min on YouTube\" now and then, while you stay on something you chose. Quiet inside a planned block while drift nudges are on.");
+
+        _chimeIntervalBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 100 };
+        _chimeIntervalBox.Items.AddRange(ChimeSettings.IntervalChoices.Select(m => (object)$"{m} min").ToArray());
+        _chimeIntervalBox.SelectedIndex = Array.IndexOf(ChimeSettings.IntervalChoices, (int)chime.Interval.TotalMinutes);
+        AddRow(layout, "Chime every:", _chimeIntervalBox, "Of continuous time. More than 3 minutes on something else starts it over.");
+
+        _chimeDistractionsBox = new CheckBox { Text = "Chime my distractions", Checked = config.TimeChimeDistractions, AutoSize = true };
+        AddRow(layout, "", _chimeDistractionsBox, "The activities and categories you marked a distraction in the web app.");
+
+        _chimeTargetsBox = new CheckedListBox { CheckOnClick = true, Width = 260, Height = 110, IntegralHeight = false };
+        foreach (var candidate in _chimeCandidates)
+            _chimeTargetsBox.Items.Add(candidate.IsDistraction ? $"{candidate.Name} (distraction)" : candidate.Name,
+                chime.Chimes(candidate.Key, candidate.IsDistraction));
+        _chimeDistractionsBox.CheckedChanged += (_, _) => FollowDistractions(_chimeDistractionsBox.Checked);
+        AddRow(layout, "Chime on:", _chimeTargetsBox,
+            _chimeCandidates.Count == 0 ? "Nothing sent today yet: what you use today appears here." : "Today's activities, your distractions and earlier choices.");
 
         AddRow(layout, "Stay quiet while:", _quietFullscreenBox, null);
         AddRow(layout, "", _quietMicrophoneBox, null);
@@ -196,9 +225,32 @@ public sealed class SettingsForm : Form
         _config.StartRampBlocks = (RampBlocks)_startRampBlocksBox.SelectedIndex;
         _config.UploadNoticesEnabled = _uploadNoticesBox.Checked;
         _config.UnmappedReviewEnabled = _unmappedReviewBox.Checked;
+        _config.TimeChimeEnabled = _chimeEnabledBox.Checked;
+        _config.TimeChimeMinutes = ChimeSettings.IntervalChoices[Math.Max(0, _chimeIntervalBox.SelectedIndex)];
+        _config.TimeChimeDistractions = _chimeDistractionsBox.Checked;
+        var choices = _config.TimeChimeChoices;
+        for (var i = 0; i < _chimeCandidates.Count; i++)
+        {
+            var candidate = _chimeCandidates[i];
+            choices = ChimeChoices.With(choices, candidate.Key, candidate.Name, _chimeTargetsBox.GetItemChecked(i),
+                candidate.IsDistraction, _chimeDistractionsBox.Checked);
+        }
+        _config.TimeChimeChoices = choices;
 
         DialogResult = DialogResult.OK;
         Close();
+    }
+
+    /// <summary>
+    /// Following distractions or not moves the tick of every distraction the user never set by hand, so saving keeps
+    /// them following the server's flag instead of turning the old default into a choice.
+    /// </summary>
+    private void FollowDistractions(bool follow)
+    {
+        var handSet = _config.TimeChimeChoices.Select(c => c.Key).ToHashSet();
+        for (var i = 0; i < _chimeCandidates.Count; i++)
+            if (_chimeCandidates[i].IsDistraction && !handSet.Contains(_chimeCandidates[i].Key))
+                _chimeTargetsBox.SetItemChecked(i, follow);
     }
 
     private static bool IsHttpUrl(string url) =>

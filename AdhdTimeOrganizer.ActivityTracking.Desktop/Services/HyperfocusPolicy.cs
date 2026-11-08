@@ -20,6 +20,12 @@ public enum NudgeKind
     StartRamp,
 
     /// <summary>
+    /// "15 min on YouTube": a silent, short-lived time check in a chosen activity (<see cref="ChimeSchedule"/>). Outside the
+    /// gap between the families: it holds none of them and none holds it.
+    /// </summary>
+    TimeChime,
+
+    /// <summary>
     /// Not a nudge: uploads are stuck, the session ended or the server refused windows (<see cref="UploadHealthPolicy"/>).
     /// It shares the toast plumbing and has a switch of its own.
     /// </summary>
@@ -54,7 +60,9 @@ public enum NudgeResponse
     /// <summary>Start ramp only: ask once more in two minutes.</summary>
     Later,
     /// <summary>Start ramp only: not this block — and no drift nudge in it either.</summary>
-    NotThisOne
+    NotThisOne,
+    /// <summary>Time chime only: no more chimes until local midnight.</summary>
+    StopForToday
 }
 
 /// <summary>What a drift nudge says about the plan. <see cref="PlannedName"/> is user-authored: never log it.</summary>

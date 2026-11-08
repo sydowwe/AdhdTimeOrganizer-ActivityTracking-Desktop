@@ -62,6 +62,8 @@ public sealed class NudgeService : IDisposable
 
     private const string StartRampStateFileName = "start-ramp.json";
 
+    private const string ChimeStateFileName = "time-chime.json";
+
     private readonly AppConfig _config;
     private readonly SynchronizationContext? _uiContext;
     private readonly INudgeNotifier _notifier;
@@ -72,6 +74,7 @@ public sealed class NudgeService : IDisposable
     private readonly Func<long, Task<bool>> _skipBlock;
     private readonly string _driftStatePath;
     private readonly string _rampStatePath;
+    private readonly string _chimeStatePath;
     private readonly ILogger _log = Log.ForContext<NudgeService>();
 
     private readonly Lock _lock = new();
@@ -79,6 +82,7 @@ public sealed class NudgeService : IDisposable
     private readonly HyperfocusPolicy _policy = new(TimeSpan.FromSeconds(10));
     private readonly DriftPolicy _drift = new();
     private readonly StartRampPolicy _ramp = new();
+    private readonly ChimeSchedule _chime;
     private readonly UploadHealthPolicy _upload = new();
     private readonly System.Threading.Timer _breakTimer;
 
@@ -93,6 +97,7 @@ public sealed class NudgeService : IDisposable
     private DateTime? _rampShownUtc;
     private bool _driftChanged;
     private bool _rampChanged;
+    private bool _chimeChanged;
 
     /// <param name="uiContext">Where button presses are handled; the tray's.</param>
     /// <param name="signIn">"Sign in" on an upload notice; opens the sign-in form on the UI thread. Null does nothing.</param>
@@ -114,11 +119,15 @@ public sealed class NudgeService : IDisposable
     /// <param name="openFolder">"Open log folder"; tests record the path instead.</param>
     /// <param name="startBlock">"Start now" on the server; tests record the id instead.</param>
     /// <param name="skipBlock">"Not this one" on the server; tests record the id instead.</param>
+    /// <param name="zone">Where the time chime's "today" ends; tests pin it.</param>
     internal NudgeService(AppConfig config, SynchronizationContext? uiContext,
         Func<Action<NudgeActivation>, INudgeNotifier> createNotifier, Action<Uri> openInBrowser, string driftStatePath,
         Action? signIn = null, Action<string>? openFolder = null, Func<long, Task<bool>>? startBlock = null,
-        Func<long, Task<bool>>? skipBlock = null)
+        Func<long, Task<bool>>? skipBlock = null, TimeZoneInfo? zone = null)
     {
+        _chime = new ChimeSchedule(zone ?? TimeZoneInfo.Local);
+        _chimeStatePath = Path.Combine(Path.GetDirectoryName(driftStatePath)!, ChimeStateFileName);
+        if (LoadState<ChimeState>(_chimeStatePath, "time chime") is { } chime) _chime.Restore(chime);
         _config = config;
         _uiContext = uiContext;
         _openInBrowser = openInBrowser;
@@ -173,11 +182,14 @@ public sealed class NudgeService : IDisposable
     {
         try
         {
+            var chimeSettings = ChimeSettings.From(_config);
             lock (_lock)
             {
                 _drift.Record(nowUtc, minute);
                 _driftChanged = true;
                 if (plan is not null) _ramp.Record(nowUtc, plan);
+                _chime.Record(nowUtc, minute, chimeSettings);
+                _chimeChanged = true;
             }
             Evaluate(nowUtc);
         }
@@ -236,6 +248,15 @@ public sealed class NudgeService : IDisposable
         lock (_lock) return _policy.GetStatus(DateTime.UtcNow);
     }
 
+    /// <summary>
+    /// The today-breakdown keys the server last called a distraction, with their names: the tray and Settings show them as
+    /// chimed before anything is ticked. Names are user-authored.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> GetChimeDistractions()
+    {
+        lock (_lock) return _chime.Distractions;
+    }
+
     /// <summary>Shows a nudge of <paramref name="kind"/> right away, with working buttons. For trying toasts by hand.</summary>
     public void ShowTest(NudgeKind kind)
     {
@@ -245,6 +266,7 @@ public sealed class NudgeService : IDisposable
             {
                 NudgeKind.Drift => _drift.IssueForTest(DateTime.UtcNow),
                 NudgeKind.StartRamp => _ramp.IssueForTest(DateTime.UtcNow),
+                NudgeKind.TimeChime => _chime.IssueForTest(),
                 NudgeKind.UploadHealth => new Nudge(1, kind, TimeSpan.FromHours(26), null,
                     Upload: new UploadNotice(UploadProblem.Stalled, 90, TimeSpan.FromHours(26), 0)),
                 NudgeKind.UnmappedReview => new Nudge(1, kind, TimeSpan.FromMinutes(130), null, Review: new UnmappedInvite(
@@ -259,12 +281,18 @@ public sealed class NudgeService : IDisposable
     /// apart among themselves: a due one is held, like under a quiet condition, rather than two toasts landing a minute
     /// apart. The start ramp goes first — a block's start is the one moment that won't come again. The break-over nudge is
     /// exempt, as it is from quiet conditions — the user set it.
+    /// <para>
+    /// The time chime is outside that gap: it holds no family and none holds it — a chime held 10 min would say the wrong
+    /// number. It only waits for a pass in which no other toast was shown, which is the next poll.
+    /// </para>
     /// </remarks>
     private void Evaluate(DateTime nowUtc)
     {
         Nudge? ramp;
         Nudge? nudge;
         Nudge? drift;
+        Nudge? chime = null;
+        ChimeState? chimeState = null;
         IReadOnlyList<NudgeKind> withdrawn;
         bool driftWithdrawn;
         bool rampWithdrawn;
@@ -275,6 +303,7 @@ public sealed class NudgeService : IDisposable
         var settings = NudgeSettings.From(_config);
         var driftSettings = DriftSettings.From(_config);
         var rampSettings = StartRampSettings.From(_config);
+        var chimeSettings = ChimeSettings.From(_config);
         lock (_lock)
         {
             ramp = _ramp.TakeDue(nowUtc, rampSettings, nowUtc - _presentUtc <= RampPresentFor,
@@ -295,6 +324,12 @@ public sealed class NudgeService : IDisposable
                 _driftChanged = true;
             }
 
+            if (ramp is null && nudge is null && drift is null)
+            {
+                chime = _chime.TakeDue(nowUtc, chimeSettings, () => IsQuiet(nowUtc), out var chimeChanged);
+                _chimeChanged |= chimeChanged;
+            }
+
             withdrawn = _policy.TakeWithdrawn();
             driftWithdrawn = _drift.TakeWithdrawn();
             rampWithdrawn = _ramp.TakeWithdrawn();
@@ -310,10 +345,16 @@ public sealed class NudgeService : IDisposable
                 rampState = _ramp.Snapshot();
                 _rampChanged = false;
             }
+            if (_chimeChanged)
+            {
+                chimeState = _chime.Snapshot();
+                _chimeChanged = false;
+            }
         }
 
         if (driftState is not null) SaveState(_driftStatePath, driftState, "drift nudge");
         if (rampState is not null) SaveState(_rampStatePath, rampState, "start ramp");
+        if (chimeState is not null) SaveState(_chimeStatePath, chimeState, "time chime");
 
         foreach (var kind in withdrawn) _notifier.Remove(kind);
         if (driftWithdrawn) _notifier.Remove(NudgeKind.Drift);
@@ -338,6 +379,13 @@ public sealed class NudgeService : IDisposable
             // No names: the planned activity and what the time went to are both the user's own words.
             _log.Information("Nudge {Kind} after {Minutes} min off plan", drift.Kind, (int)drift.Length.TotalMinutes);
             _notifier.Show(drift);
+        }
+
+        if (chime is not null)
+        {
+            // No name: what the time went to is the user's own words.
+            _log.Information("Time chime at {Minutes} min", (int)chime.Length.TotalMinutes);
+            _notifier.Show(chime);
         }
 
         ScheduleBreakTimer(breakEndsUtc, nowUtc);
@@ -414,6 +462,12 @@ public sealed class NudgeService : IDisposable
                 return;
             }
 
+            if (activation.Kind == NudgeKind.TimeChime)
+            {
+                HandleChimeResponse(activation.Response);
+                return;
+            }
+
             var isDrift = activation.Kind == NudgeKind.Drift;
             if (activation.Response == NudgeResponse.TurnOff)
                 TurnOff(isDrift);
@@ -485,6 +539,25 @@ public sealed class NudgeService : IDisposable
 
         _notifier.Remove(NudgeKind.UnmappedReview);
         _log.Information("Evening review answered: {Response}", response);
+    }
+
+    /// <summary>
+    /// "Stop for today" on a chime, whichever chime it was on: it is about the day, not about that toast. Turning the chime
+    /// off for good is a Settings switch.
+    /// </summary>
+    private void HandleChimeResponse(NudgeResponse response)
+    {
+        if (response != NudgeResponse.StopForToday) return;
+
+        var nowUtc = DateTime.UtcNow;
+        lock (_lock)
+        {
+            _chime.StopForToday(nowUtc);
+            _chimeChanged = true;
+        }
+        _notifier.Remove(NudgeKind.TimeChime);
+        _log.Information("Time chime stopped for today");
+        Evaluate(nowUtc); // saves the state
     }
 
     /// <summary>

@@ -73,6 +73,17 @@ public sealed class LocalRule
     public PatternMatchType WindowTitleMatchType { get; set; } = PatternMatchType.Exact;
 }
 
+/// <summary>
+/// The time chime set on, or off, by hand for one activity or role · category. <see cref="Key"/> is the today breakdown's
+/// (<c>activity:12</c>, <c>label:Leisure · Video</c>); <see cref="Name"/> is shown in Settings and is user-authored, so the
+/// diagnostics report counts choices and never names them.
+/// </summary>
+/// <param name="Chime">True: ticked. False: a distraction the user does not want chimed.</param>
+public sealed record ChimeChoice(
+    [property: JsonPropertyName("key")] string Key,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("chime")] bool Chime);
+
 public sealed class AppConfig
 {
     public static string ConfigDirectory { get; } = Path.Combine(
@@ -165,6 +176,26 @@ public sealed class AppConfig
     /// <summary>Which planned blocks it asks about, by the importance the planner already gives them.</summary>
     [JsonConverter(typeof(JsonStringEnumConverter<RampBlocks>))]
     public RampBlocks StartRampBlocks { get; set; } = RampBlocks.NotOptional;
+
+    // ── Time chime (see ChimeSchedule) ────────────────────────────────────────
+
+    /// <summary>
+    /// "15 min on YouTube", silently, every <see cref="TimeChimeMinutes"/> of continuous time in a chosen activity. Off by
+    /// default, like the phone's: ticking an activity in the tray's today menu turns it on.
+    /// </summary>
+    public bool TimeChimeEnabled { get; set; }
+
+    /// <summary>One interval for every chosen activity: 5, 10, 15, 20 or 30 (<see cref="Services.ChimeSettings.IntervalChoices"/>).</summary>
+    public int TimeChimeMinutes { get; set; } = 15;
+
+    /// <summary>Chime on what the server says the user marked a distraction, unless unticked in <see cref="TimeChimeChoices"/>.</summary>
+    public bool TimeChimeDistractions { get; set; } = true;
+
+    /// <summary>
+    /// Activities (or role · category) ticked or unticked by hand, by the today breakdown's key. Replaced as a whole on
+    /// change, never mutated: the send loop reads it on its own thread.
+    /// </summary>
+    public List<ChimeChoice> TimeChimeChoices { get; set; } = [];
 
     // ── Upload problems (see UploadHealthPolicy) ──────────────────────────────
 

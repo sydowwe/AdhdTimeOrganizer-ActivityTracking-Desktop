@@ -51,6 +51,7 @@ public class NudgeToastTests
     [InlineData(NudgeKind.AppStretch, new[] { NudgeResponse.TakeBreak, NudgeResponse.Snooze, NudgeResponse.NotNow, NudgeResponse.TurnOff })]
     [InlineData(NudgeKind.BreakOver, new[] { NudgeResponse.Dismiss, NudgeResponse.Snooze })]
     [InlineData(NudgeKind.Drift, new[] { NudgeResponse.Dismiss, NudgeResponse.SwitchPlan, NudgeResponse.Snooze, NudgeResponse.TurnOff })]
+    [InlineData(NudgeKind.TimeChime, new[] { NudgeResponse.StopForToday })]
     public void Build_EveryKind_EveryButtonCarriesTheNudgeAndItsAnswer(NudgeKind kind, NudgeResponse[] responses)
     {
         // User-authored names in both drift fields: the planned activity and what the time went to.
@@ -149,6 +150,26 @@ public class NudgeToastTests
 
     private static Nudge Ramp(StartRampDetails details) =>
         new(5, NudgeKind.StartRamp, details.EndsUtc - details.StartsUtc, null, StartRamp: details);
+
+    /// <summary>
+    /// A time check, not a nudge: it makes no sound, slides away on the short duration, and leaves the notification centre
+    /// soon after rather than piling up "15 min", "30 min", "45 min" there.
+    /// </summary>
+    [Fact]
+    public void Build_TimeChime_IsSilent_Short_AndExpires()
+    {
+        var nudge = new Nudge(2, NudgeKind.TimeChime, TimeSpan.FromMinutes(45), "YouTube");
+        var before = DateTimeOffset.Now;
+        var notification = NudgeToast.Build(nudge);
+        var toast = XDocument.Parse(notification.Payload).Root!;
+
+        Assert.Equal(("45 min on YouTube", "A time check, nothing more."), NudgeToast.Text(nudge));
+        Assert.Equal("true", (string?)toast.Element("audio")?.Attribute("silent"));
+        Assert.Null(toast.Attribute("scenario"));
+        Assert.Null(toast.Attribute("duration"));
+        Assert.InRange(notification.Expiration, before + ChimeSchedule.ToastLifetime, DateTimeOffset.Now + ChimeSchedule.ToastLifetime);
+        Assert.Equal("Stop for today", (string?)toast.Descendants("action").Single().Attribute("content"));
+    }
 
     [Fact]
     public void Build_BreakOver_IsAReminder_ThatStaysUntilAnswered()

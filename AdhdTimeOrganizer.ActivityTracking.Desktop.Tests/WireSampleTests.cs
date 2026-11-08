@@ -38,6 +38,8 @@ public class WireSampleTests
                 ("Ignored", null, null, 8, null)
             },
             response.Resolution.Select(r => (r.Target, r.ActivityId, r.Name, r.ActiveSeconds, r.OnPlan)));
+        // The time chime follows it: misread, every distraction reads as "no" and nothing is chimed unless ticked by hand.
+        Assert.Equal(new[] { false, true, false, false }, response.Resolution.Select(r => r.IsDistraction));
 
         var block = Assert.Single(response.Planned);
         Assert.Equal((7L, 12L, "Thesis"), (block.PlannerTaskId, block.ActivityId, block.ActivityName));
