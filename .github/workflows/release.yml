@@ -1,19 +1,32 @@
 # Packs and publishes a release when a tag v<version> is pushed; the version must match the csproj's <Version>.
-# See "Releasing" in CLAUDE.md. The upload uses the workflow's own GITHUB_TOKEN — no release token is stored anywhere.
+# Cut the tag with scripts/release-tag.ps1. See "Releasing" in CLAUDE.md. The upload uses the workflow's own
+# GITHUB_TOKEN — no release token is stored anywhere.
+#
+# Run it by hand (Actions → Release → Run workflow) for a dry run: the same tests and pack, nothing published; the
+# packages are kept as a workflow artifact for 3 days.
 name: Release
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+# Two releases never upload at once: the second one's delta is built against the first.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: windows-latest
     steps:
+      # The whole history and its tags: the release notes are the commits since the previous v* tag.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -29,5 +42,19 @@ jobs:
         run: ./scripts/test.ps1 -Class '*AutoStartHelperTests','*ClientVersionHeaderTests','*UpdatePolicyTests','*ActivityRecorderTests','*SendLoopTests','*RefreshPolicyTests'
 
       - name: Pack and upload
+        if: github.ref_type == 'tag'
         shell: pwsh
         run: ./scripts/release.ps1 -Upload -Token "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Pack (dry run)
+        if: github.ref_type != 'tag'
+        shell: pwsh
+        run: ./scripts/release.ps1
+
+      - name: Keep the dry run's packages
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run
+          path: artifacts-release/win-x64/releases/
+          retention-days: 3
