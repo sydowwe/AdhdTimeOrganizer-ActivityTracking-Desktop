@@ -45,19 +45,19 @@ public sealed class SettingsForm : Form
         _chimeCandidates = chimeCandidates ?? [];
 
         Text = "Activity Tracker - Settings";
-        FormBorderStyle = FormBorderStyle.FixedDialog;
+        // Sizable and scrolling, never auto-sized: the rows outgrew a laptop screen, and an auto-sized dialog put Save
+        // below its bottom edge. The rows scroll; the error line and the buttons stay in a footer (FitToScreen).
+        FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        AutoSize = true;
-        AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        Padding = new Padding(12);
 
         var layout = new TableLayoutPanel
         {
             ColumnCount = 2,
             AutoSize = true,
-            Dock = DockStyle.Fill
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Location = Point.Empty
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -155,22 +155,58 @@ public sealed class SettingsForm : Form
         layout.Controls.Add(ignoreRulesLink);
         layout.SetColumnSpan(ignoreRulesLink, 2);
 
-        _errorLabel = new Label { AutoSize = true, ForeColor = Color.Red };
-        layout.Controls.Add(_errorLabel);
-        layout.SetColumnSpan(_errorLabel, 2);
+        _errorLabel = new Label { AutoSize = true, ForeColor = Color.Red, MaximumSize = new Size(560, 0) };
 
         var okButton = new Button { Text = "Save", AutoSize = true };
         okButton.Click += OnSave;
         var cancelButton = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
 
-        var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Dock = DockStyle.Fill };
+        var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Anchor = AnchorStyles.Right };
         buttons.Controls.AddRange([cancelButton, okButton]);
-        layout.Controls.Add(buttons);
-        layout.SetColumnSpan(buttons, 2);
 
-        Controls.Add(layout);
+        // The error line above the buttons, both always in view.
+        var footer = new TableLayoutPanel
+        {
+            ColumnCount = 1,
+            Dock = DockStyle.Bottom,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Padding = new Padding(12, 6, 12, 12)
+        };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.Controls.Add(_errorLabel);
+        footer.Controls.Add(buttons);
+
+        var rows = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(12, 12, 12, 0) };
+        rows.Controls.Add(layout);
+
+        // The Fill panel first: docking runs from the last added, so the footer takes the bottom and the rows the rest.
+        Controls.Add(rows);
+        Controls.Add(footer);
         AcceptButton = okButton;
         CancelButton = cancelButton;
+
+        Load += (_, _) => FitToScreen(layout, rows, footer);
+    }
+
+    /// <summary>
+    /// As wide as the rows and as tall as they are, but never taller than most of the screen it opens on: past that the
+    /// rows scroll and the footer's Save stays in view.
+    /// </summary>
+    private void FitToScreen(TableLayoutPanel layout, Panel rows, TableLayoutPanel footer)
+    {
+        var area = Screen.FromPoint(Cursor.Position).WorkingArea;
+        var content = layout.GetPreferredSize(Size.Empty);
+        var frame = Size - ClientSize;
+
+        var width = content.Width + rows.Padding.Horizontal + SystemInformation.VerticalScrollBarWidth;
+        var height = content.Height + rows.Padding.Vertical + footer.GetPreferredSize(Size.Empty).Height;
+
+        ClientSize = new Size(
+            Math.Min(width, area.Width - frame.Width),
+            Math.Min(height, area.Height * 9 / 10 - frame.Height));
+        MinimumSize = new Size(Math.Min(Width, area.Width), Math.Min(320, area.Height));
+        Location = new Point(area.Left + (area.Width - Width) / 2, area.Top + (area.Height - Height) / 2);
     }
 
     private static NumericUpDown Number(int value, int min, int max, int increment = 1) => new()

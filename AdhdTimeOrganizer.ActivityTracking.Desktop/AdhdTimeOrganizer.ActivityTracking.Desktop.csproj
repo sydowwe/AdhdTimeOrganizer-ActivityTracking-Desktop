@@ -15,7 +15,7 @@
             The one version: the tray shows it, every request names it (X-Client-Version), and scripts/release.ps1 packs
             the installer under it. Raise it for every release — Velopack only offers a higher one. See "Releasing" in CLAUDE.md.
         -->
-        <Version>1.1.0</Version>
+        <Version>1.1.1</Version>
     </PropertyGroup>
 
     <!--
