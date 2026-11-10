@@ -452,8 +452,9 @@ updates from this repo's **GitHub Releases** (public, so no token ships in the a
    the csproj. The GitHub release's text is the commit subjects since the previous `v*` tag (the `release:` commit left out).
 4. Installed trackers find it within 6 h (`UpdatePolicy.CheckEvery`), or 2 min after their next start, download it quietly,
    and show "Restart to update" in the tray; otherwise it applies at the next start.
-5. To make the server's tracker-silence notification say "out of date" for older builds, raise
-   `TrackerMinimumClientVersion:Desktop` in its config. It is advisory only: nothing is refused.
+5. To make the server's tracker-silence notification say "out of date" for older builds, set the server's
+   `TRACKER_MINIMUM_CLIENT_VERSION_DESKTOP` env var (`TrackerMinimumClientVersion:Desktop`). It is advisory only: nothing
+   is refused. Not on every release — give installed trackers a few days to pick the new one up first.
 
 **Trying the pipeline without publishing:** Actions → Release → Run workflow (on `main`). It runs the same tests and pack,
 uploads nothing (`release.ps1` refuses `-Upload` off a tag in CI), and keeps the packages as the `release-dry-run` artifact
@@ -474,10 +475,14 @@ anyway"). Updates are fetched by Velopack's updater, not a browser, so they carr
   the entry. The installed build takes the entry over from a build run from source at start (`AutoStartHelper.Reconcile`).
   A build from source never moves an entry whose exe exists. The uninstall hook removes the entry if it starts the
   installed exe (`RemoveIfOwn`).
-- **An update goes through the normal exit.** A downloaded release applies at the next start (`VelopackApp.Run()`, first line
-  of `Program.cs`). "Restart to update" in the tray calls `WaitExitThenApplyUpdates` — the updater waits for this process —
-  and then the ordinary exit: flush, toasts removed, notifications unregistered, mutex released. Never use
-  `ApplyUpdatesAndRestart`: it ends the process itself and skips all of that.
+- **An update goes through the normal exit.** "Restart to update" in the tray calls `WaitExitThenApplyUpdates` — the
+  updater waits for this process — and then the ordinary exit: flush, toasts removed, notifications unregistered, mutex
+  released. Never use `ApplyUpdatesAndRestart`: it ends the process itself and skips all of that.
+- **Only the first instance applies an update at start.** Velopack's apply-on-start is off (`SetAutoApplyOnStartup(false)`
+  in `Program.cs`): it runs inside `VelopackApp.Run()`, before the single-instance mutex, and the updater stops every
+  process in the install folder — so a second launch (Start menu clicked while the tray runs) would end the running tracker
+  without its exit. `UpdateService.ApplyPendingAtStart` applies a downloaded release after the mutex, in the first
+  instance only and before anything starts (`UpdatePolicy.ApplyAtStart`); a second launch just says "already running".
 - **The published folder must hold the Windows App SDK runtime, the extracted Insights dll and the icon file.**
   `release.ps1` checks them after `dotnet publish` (self-contained: .NET and the Windows App SDK both travel with the app,
   about 165 MB before compression). `NativeSmokeTests` checks the same dll in a build.

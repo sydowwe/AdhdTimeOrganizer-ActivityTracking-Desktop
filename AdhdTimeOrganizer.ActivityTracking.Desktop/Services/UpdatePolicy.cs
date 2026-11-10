@@ -18,8 +18,8 @@ public enum UpdateCheckOutcome
 /// <remarks>
 /// <para>
 /// <b>Quiet download, applied at the next start.</b> A newer release is downloaded in the background and never applied
-/// under the user: Velopack applies it the next time the tracker starts (usually the next sign-in), and until then the
-/// tray offers "Restart to update". Restarting mid-work would cost the minute in progress and pop the tray out of place
+/// under the user: it is applied the next time the tracker starts (usually the next sign-in; see
+/// <see cref="ApplyAtStart"/>), and until then the tray offers "Restart to update". Restarting mid-work would cost the minute in progress and pop the tray out of place
 /// for nothing a sign-in won't do anyway.
 /// </para>
 /// <para>
@@ -53,4 +53,14 @@ public static class UpdatePolicy
     /// </summary>
     public static string VersionText(string version, bool installed) =>
         installed ? $"Version {version}" : $"Version {version} (built from source, no updates)";
+
+    /// <summary>
+    /// Whether this start applies the downloaded release before the tracker runs. Only the first instance does: Velopack's
+    /// updater stops every process running from the install folder, so a second launch (the Start menu clicked while the
+    /// tray already runs) applying it would end the running tracker without its exit — the minute in progress unsaved, its
+    /// toasts left behind. The second launch just says "already running", and the release waits for the next start or
+    /// "Restart to update".
+    /// </summary>
+    public static bool ApplyAtStart(bool installed, bool firstInstance, string? pendingVersion) =>
+        installed && firstInstance && pendingVersion is not null;
 }

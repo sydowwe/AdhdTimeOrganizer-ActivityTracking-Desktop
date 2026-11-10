@@ -1,14 +1,18 @@
 using AdhdTimeOrganizer.ActivityTracking.Desktop;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Helpers;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 using Serilog;
 using Velopack;
 
 // First, before anything else: the installer and the updater start the exe with hook arguments, and Run() handles them
-// and exits. It also applies a downloaded update at start (the "apply at the next start" half of UpdateService).
-// The uninstall hook removes the Run entry if it starts this exe; the data folder (config, outbox, state) is not in the
-// install folder and is left alone, so a reinstall picks up where it stopped.
+// and exits. The uninstall hook removes the Run entry if it starts this exe; the data folder (config, outbox, state) is
+// not in the install folder and is left alone, so a reinstall picks up where it stopped.
+// Run() does NOT apply a downloaded update: it would do so ahead of the single-instance check, and the updater stops every
+// process in the install folder — a second launch would end the running tracker without its exit. The update is applied
+// below, by the first instance only (UpdateService.ApplyPendingAtStart).
 VelopackApp.Build()
+    .SetAutoApplyOnStartup(false)
     .OnBeforeUninstallFastCallback(_ => AutoStartHelper.Current.RemoveIfOwn())
     .Run();
 
@@ -26,6 +30,15 @@ Log.Logger = new LoggerConfiguration()
 
 // Prevent multiple instances
 using var mutex = new Mutex(true, "AdhdTimeOrganizer_SingleInstance", out var isNew);
+
+// A release downloaded earlier is applied now, before anything runs: the updater waits for this process to exit (the
+// mutex goes with it) and starts the new build with the same arguments.
+if (UpdateService.ApplyPendingAtStart(isNew, args))
+{
+    Log.CloseAndFlush();
+    return;
+}
+
 if (!isNew)
 {
     Log.Warning("Another instance is already running — exiting");

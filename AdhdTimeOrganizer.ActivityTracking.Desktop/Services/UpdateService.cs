@@ -19,6 +19,9 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 /// flushed to the outbox, toasts removed, notifications unregistered — and the mutex is released before the updater
 /// starts the new build. <c>ApplyUpdatesAndRestart</c> is not used: it ends the process itself and skips all of that.
 /// </para>
+/// <para>
+/// <b>At start, only the first instance applies.</b> See <see cref="ApplyPendingAtStart"/>.
+/// </para>
 /// </remarks>
 public sealed class UpdateService : IDisposable
 {
@@ -73,6 +76,34 @@ public sealed class UpdateService : IDisposable
         catch (Exception ex)
         {
             _log.Warning(ex, "Could not start the updater for {Version}", pending.Version);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The "applied at the next start" half, run by <c>Program</c> once it knows whether it is the first instance and
+    /// before anything starts. Velopack's own apply-on-start is off: it runs inside <c>VelopackApp.Run()</c>, ahead of the
+    /// single-instance check (see <see cref="UpdatePolicy.ApplyAtStart"/>). True when the updater is waiting for this
+    /// process to exit — the caller then returns without starting the tracker, and the updater starts the new build with
+    /// <paramref name="args"/>.
+    /// </summary>
+    public static bool ApplyPendingAtStart(bool firstInstance, string[] args)
+    {
+        if (!IsInstalled || !firstInstance) return false;
+
+        try
+        {
+            var manager = CreateManager();
+            var pending = manager.UpdatePendingRestart;
+            if (!UpdatePolicy.ApplyAtStart(IsInstalled, firstInstance, pending?.Version.ToString())) return false;
+
+            manager.WaitExitThenApplyUpdates(pending!, silent: true, restart: true, restartArgs: args);
+            Log.ForContext<UpdateService>().Information("Applying update {Version} at start", pending!.Version);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.ForContext<UpdateService>().Warning(ex, "Could not apply the downloaded update at start; starting as is");
             return false;
         }
     }

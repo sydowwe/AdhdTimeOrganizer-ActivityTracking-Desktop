@@ -32,6 +32,20 @@ public class UpdatePolicyTests
     }
 
     [Fact]
+    public void AtStart_TheFirstInstanceOfTheInstalledBuild_AppliesAWaitingRelease() =>
+        Assert.True(UpdatePolicy.ApplyAtStart(installed: true, firstInstance: true, pendingVersion: "1.2.1"));
+
+    [Fact]
+    public void AtStart_ASecondLaunch_NeverApplies_TheUpdaterWouldEndTheRunningTracker() =>
+        Assert.False(UpdatePolicy.ApplyAtStart(installed: true, firstInstance: false, pendingVersion: "1.2.1"));
+
+    [Theory]
+    [InlineData(true, null)]     // nothing downloaded
+    [InlineData(false, "1.2.1")] // a build from source is not Velopack's to replace
+    public void AtStart_NothingToApply(bool installed, string? pendingVersion) =>
+        Assert.False(UpdatePolicy.ApplyAtStart(installed, firstInstance: true, pendingVersion));
+
+    [Fact]
     public void ABuildFromSource_SaysItDoesNotUpdate()
     {
         Assert.Equal("Version 1.1.0", UpdatePolicy.VersionText("1.1.0", installed: true));
