@@ -33,7 +33,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/PrivacyFilter.cs` | Recording-time privacy: local rules and private browser windows → keep, hide the title, or drop |
 | `Services/TrackerRules.cs` | Send-time privacy: the user's server rules (in memory) and the filter that drops entries an ignore rule wins |
 | `Services/Matching/` | **Port of the server's matcher** (`PatternMatcher`, `MappingRuleSet`) — see "Rule matching" below |
-| `Services/HyperfocusPolicy.cs` | **Pure** nudge decisions: stretches, breaks, app stretches, snooze / repeat / "not now", the break timer |
+| `Services/HyperfocusPolicy.cs` | **Pure** nudge decisions: stretches, breaks, app stretches, snooze / repeat / "not now", the break timer, and the `BreakReport`s of a break the user started |
+| `Services/BreakReporter.cs` | Hands the server the break the user started (`POST …/desktop/break`): the latest report only, retried, in memory; **pure** `Classify` and `IsWorthSending` |
 | `Services/DriftPolicy.cs` | **Pure** drift-nudge decisions over the server's per-minute plan verdicts (`MinuteVerdict`) |
 | `Services/StartRampPolicy.cs` | **Pure** start-ramp decisions: offer a planned block at its start, from the heartbeat's plan (`PlanView`) |
 | `Services/ChimeSchedule.cs` | **Pure** time-chime decisions over the server's per-minute resolution, and which lines are chosen (`ChimeSettings`, `ChimeChoices`) |
@@ -219,9 +220,28 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   `GetPackageFamilyName` on the limited handle (`ProcessInfo.PackageFamilyName`); a desktop app by its path.
 
 ### Nudges and notifications
-- Nudges are **client-side**: their decisions never involve the server, and the two things a nudge sends are the start
-  ramp's Start now and Not this one (below). The policies live in `HyperfocusPolicy`, `DriftPolicy`, `StartRampPolicy` and `ChimeSchedule`, pure like
+- Nudges are **client-side**: their decisions never involve the server. A nudge sends three things: the start ramp's
+  Start now and Not this one (below), and the break the user started (the next point). The policies live in `HyperfocusPolicy`, `DriftPolicy`, `StartRampPolicy` and `ChimeSchedule`, pure like
   `ActivityRecorder` — keep clocks, Win32 and toasts out of them.
+- **A break the user started is said where they are** (prompt 10, servers from 2026-11-10). "Taking a break" starts the
+  timer (`BreakTimerMinutes`). The phone may be where the break is spent, so:
+  - **Back at the desk ends it, silently.** A poll that finds the user present, after one found them away (or a gap the
+    poll loop didn't see), ends the break with no break-over toast and starts a new stretch. This holds before the timer's
+    end and after it.
+  - **At the timer's end the toast shows only to someone at the desk.** Someone away is the phone's to tell, so the toast
+    is held. Their return ends the break without it. The break timer is not re-armed for a held break: the next poll decides.
+  - **Reports.** Each change leaves a `BreakReport` (start, planned end, end) for `TakeBreakReport`: the press, "5 more
+    minutes" (a later end), "I'm back", and the return. The toast itself is not an end, because "5 more minutes" may still
+    follow.
+  - **Delivery.** `NudgeService` hands each report to `BreakReporter`, which sends `POST /api/tracker/desktop/break`
+    (`BreakRequest`, pinned as `breakRequest` in `DesktopTrackerWire.samples.json`). It keeps only the latest report, in
+    memory, and retries it each minute (offline, 5xx, 401, 429). It drops the report on a 404 (an older server), a 403 or a
+    400, and lets it go unsent 2 h past the planned end. It never touches the outbox or the heartbeat, so a server without
+    the route costs one 404 per break and no minute.
+  - **What is never reported.** A break the poll loop only *detects* (away for `BreakMinutes`) is not reported: the server
+    reads it off the ledger. The tray's test toast makes believe a break ran and reports nothing.
+  - The phone's side (android `BreakPolicy`) speaks only while the desk is idle. Decisions D10-1 to D10-3 are in the server
+    repo's `review/androidTrackerPrompts/decisions.md`.
 - **Drift nudges** are fed from the **send** loop, a minute at a time, with the server's verdicts; the policy only
   counts them. Off by default, ≥ 10 min, one per planned block ("Snooze" asks for exactly one more after 30 min).
   Unmapped and ignored minutes neither count nor reset — never treat "unmapped" as off-plan. A minute older than 3
@@ -313,7 +333,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 - Quiet conditions hold a due nudge until they end; they never drop it. "Full screen" means
   `SHQueryUserNotificationState`, Windows' own definition. A rectangle check also catches a maximised
   window behind an auto-hiding taskbar, and the desktop. The break-over nudge ignores quiet conditions
-  and the off switch, because the user set it.
+  and the off switch, because the user set it. It does not ignore absence: it shows only to someone at the desk (prompt 10).
 - Notifications use the **Windows App SDK, unpackaged and self-contained** (`Microsoft.WindowsAppSDK.Foundation`
   only; the metapackage adds ~100 MB of WinUI/AI/ML). Three things break it silently or at runtime only:
   - SDK 2.x self-contained omits `Microsoft.WindowsAppRuntime.Insights.Resource.dll`, and `Register` throws

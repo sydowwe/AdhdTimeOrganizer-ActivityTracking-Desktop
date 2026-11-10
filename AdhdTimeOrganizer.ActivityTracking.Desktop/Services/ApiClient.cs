@@ -77,6 +77,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     private const string EveningMomentPath = "/api/tracker/evening-shutdown-moment";
     private const string TrackerStartBlockPath = "/api/tracker/desktop/start-block";
     private const string TrackerSkipBlockPath = "/api/tracker/desktop/skip-block";
+    private const string TrackerBreakPath = "/api/tracker/desktop/break";
 
     /// <summary>Shared with the phone, so not under <c>desktop/</c>. Servers from 2026-11-08; an older one answers 404.</summary>
     private const string CapturePath = "/api/tracker/capture";
@@ -440,6 +441,40 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
         {
             _log.Warning(ex, "Capture send failed — will retry");
             return CaptureSendResult.Later;
+        }
+    }
+
+    /// <summary>
+    /// The break the user started (prompt 10), as it stands, so the server can hand it to the phone. Never throws but for the
+    /// caller's cancellation; what each answer means is <see cref="BreakReporter.Classify"/>. A 404 is a server from before the
+    /// route: the break simply stays the desk's own.
+    /// </summary>
+    public async Task<BreakSendResult> SendBreakAsync(BreakReport report, CancellationToken ct)
+    {
+        if (!HasSession) return BreakSendResult.Later;
+
+        try
+        {
+            var (response, _) = await SendAuthorizedAsync(() => new HttpRequestMessage(HttpMethod.Post, BuildUri(TrackerBreakPath))
+            {
+                Content = JsonContent.Create(BreakRequest.From(report))
+            }, ct);
+            if (response is null) return BreakSendResult.Later;
+            using var owned = response;
+
+            var result = BreakReporter.Classify(response.StatusCode);
+            if (result != BreakSendResult.Delivered)
+                _log.Warning("Break report answered {StatusCode} ({Result})", (int)response.StatusCode, result);
+            return result;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Break report send failed — will retry");
+            return BreakSendResult.Later;
         }
     }
 

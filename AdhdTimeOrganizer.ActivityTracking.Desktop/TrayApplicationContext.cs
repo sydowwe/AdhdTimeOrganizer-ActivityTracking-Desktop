@@ -34,6 +34,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly AppConfig _config;
     private readonly ApiClient _apiClient;
     private readonly NudgeService _nudges;
+    private readonly BreakReporter _breakReporter;
     private readonly ActivityTrackerService _tracker;
     private readonly UpdateService _updates = new();
     private readonly System.Windows.Forms.Timer _statusTimer;
@@ -62,12 +63,13 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _config = config;
         _apiClient = new ApiClient(config);
+        _breakReporter = new BreakReporter(_apiClient.SendBreakAsync);
 
         // Button presses on a nudge are handed to this, the UI, thread.
         _nudges = new NudgeService(config, new WindowsFormsSynchronizationContext(), signIn: SignInFromNotice,
             startBlock: plannerTaskId => _apiClient.StartBlockAsync(plannerTaskId, CancellationToken.None),
             skipBlock: plannerTaskId => _apiClient.SkipBlockAsync(plannerTaskId, CancellationToken.None),
-            capture: OpenCapture);
+            capture: OpenCapture, reportBreak: _breakReporter.Report);
         _tracker = new ActivityTrackerService(config, _apiClient, _nudges);
 
         // On this, the UI, thread: WM_HOTKEY comes through its message loop (see GlobalHotkey).
@@ -630,6 +632,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _updates.Dispose();
         _tracker.Dispose(); // flushes the minute in progress to the outbox
         _nudges.Dispose();  // after the poll loop, which feeds it; clears its toasts
+        _breakReporter.Dispose(); // a report not sent yet is let go: it only ever served the phone's nudge
         _apiClient.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();

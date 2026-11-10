@@ -80,7 +80,14 @@ public sealed record Nudge(
     int Id, NudgeKind Kind, TimeSpan Length, string? AppName, DriftDetails? Drift = null, UploadNotice? Upload = null,
     UnmappedInvite? Review = null, StartRampDetails? StartRamp = null);
 
+/// <param name="BreakEndsUtc">When a running break timer runs out; null with none, and once it has (a break held past its end).</param>
 public sealed record NudgeStatus(TimeSpan? StretchLength, DateTime? BreakEndsUtc);
+
+/// <summary>
+/// A break the user started ("Taking a break"), as the server is told it (prompt 10): the whole break each time, so the latest
+/// report is the only one worth sending. <see cref="EndedUtc"/> is null while it runs.
+/// </summary>
+public sealed record BreakReport(DateTime StartedUtc, DateTime PlannedEndUtc, DateTime? EndedUtc);
 
 public sealed record NudgeSettings(
     bool Enabled,
@@ -122,6 +129,15 @@ public sealed record NudgeSettings(
 /// nudge until it ends. The break-over nudge ignores quiet conditions and the off switch: it's an alarm
 /// the user set.
 /// </para>
+/// <para>
+/// <b>The break speaks where the user is</b> (prompt 10). A break the user started ends the moment they are back at the
+/// desk — a poll finds them present after one found them away (or a gap the poll loop didn't see) — silently: no break-over
+/// toast, and a new stretch. At the timer's end the toast is shown only to someone at the desk; someone away is the phone's
+/// to tell (the server hands it the break), so the toast is held, and their return ends the break without it. Each change
+/// — started, "5 more minutes", ended — leaves a <see cref="BreakReport"/> for <see cref="TakeBreakReport"/>. A break the
+/// poll loop only <i>detects</i> (away for <see cref="NudgeSettings.BreakLength"/>) is not reported: the server sees it in
+/// the ledger.
+/// </para>
 /// </remarks>
 public sealed class HyperfocusPolicy(TimeSpan maxObservedGap)
 {
@@ -137,8 +153,13 @@ public sealed class HyperfocusPolicy(TimeSpan maxObservedGap)
     private DateTime? _stretchStartUtc;
     private DateTime? _stretchNudgeAtUtc; // null: StretchAfter from the start
     private AppStretch? _app;
-    private DateTime? _breakStartUtc;
-    private DateTime? _breakEndsUtc;
+    private DateTime? _breakStartUtc;   // set while a break the user started is open
+    private DateTime? _breakEndsUtc;    // when the timer fires; null once it has (the break may still be open)
+    private DateTime _breakPlannedEndUtc;
+    private bool _awayDuringBreak;      // a poll found the user away since the break started (or since "5 more minutes")
+    private bool _reportBreak;          // false for the test toast's make-believe break
+    private BreakReport? _breakReport;
+    private bool _lastPresent;
     private (DateTime AtUtc, NudgeKind Kind)? _lastNudge;
     private int _lastId;
 
@@ -153,8 +174,17 @@ public sealed class HyperfocusPolicy(TimeSpan maxObservedGap)
     {
         var elapsed = _lastPollUtc is { } last && nowUtc > last ? nowUtc - last : TimeSpan.Zero;
         _lastPollUtc = nowUtc;
+        _lastPresent = isPresent;
 
-        if (elapsed > MaxObservedGap)
+        var unseenGap = elapsed > MaxObservedGap;
+        if (_breakStartUtc is not null)
+        {
+            // Back at the desk: the break is over, whether or not its timer has run out — and nobody needs telling.
+            if (unseenGap || !isPresent) _awayDuringBreak = true;
+            if (isPresent && _awayDuringBreak) EndBreak(nowUtc);
+        }
+
+        if (unseenGap)
         {
             if (elapsed >= settings.BreakLength) EndStretch();
             elapsed = TimeSpan.Zero;
@@ -192,6 +222,8 @@ public sealed class HyperfocusPolicy(TimeSpan maxObservedGap)
         if (_breakEndsUtc is { } breakEnds)
         {
             if (nowUtc < breakEnds) return null;
+            // Away from the desk: the phone's to say. Held — the return ends the break without a toast.
+            if (!_lastPresent) return null;
 
             // The start stays: "5 more minutes" extends this break, and the next nudge counts all of it.
             var length = nowUtc - (_breakStartUtc ?? breakEnds);
@@ -240,9 +272,14 @@ public sealed class HyperfocusPolicy(TimeSpan maxObservedGap)
         {
             case (NudgeResponse.TakeBreak, not NudgeKind.BreakOver):
                 _breakStartUtc = nowUtc;
-                _breakEndsUtc = nowUtc + settings.BreakTimer;
+                _reportBreak = true;
+                SetBreakEnd(nowUtc + settings.BreakTimer);
                 Withdraw(NudgeKind.Stretch);
                 Withdraw(NudgeKind.AppStretch);
+                break;
+
+            case (NudgeResponse.Dismiss, NudgeKind.BreakOver):
+                EndBreak(nowUtc); // "I'm back"
                 break;
 
             case (NudgeResponse.Snooze, NudgeKind.Stretch):
@@ -251,8 +288,8 @@ public sealed class HyperfocusPolicy(TimeSpan maxObservedGap)
             case (NudgeResponse.Snooze, NudgeKind.AppStretch) when _app is not null:
                 _app.NudgeAt = _app.Foreground + SnoozeFor;
                 break;
-            case (NudgeResponse.Snooze, NudgeKind.BreakOver):
-                _breakEndsUtc = nowUtc + SnoozeFor;
+            case (NudgeResponse.Snooze, NudgeKind.BreakOver) when _breakStartUtc is not null:
+                SetBreakEnd(nowUtc + SnoozeFor);
                 break;
 
             case (NudgeResponse.NotNow, NudgeKind.Stretch):
@@ -275,7 +312,15 @@ public sealed class HyperfocusPolicy(TimeSpan maxObservedGap)
     }
 
     public NudgeStatus GetStatus(DateTime nowUtc) =>
-        new(_stretchStartUtc is { } start ? nowUtc - start : null, _breakEndsUtc);
+        new(_stretchStartUtc is { } start ? nowUtc - start : null, _breakEndsUtc > nowUtc ? _breakEndsUtc : null);
+
+    /// <summary>The break as it changed since the last call — started, extended or ended — or null when it didn't.</summary>
+    public BreakReport? TakeBreakReport()
+    {
+        var report = _breakReport;
+        _breakReport = null;
+        return report;
+    }
 
     /// <summary>Shows a nudge of <paramref name="kind"/> (not <see cref="NudgeKind.Drift"/>) now, so its toast and buttons can be tried by hand.</summary>
     internal Nudge IssueForTest(NudgeKind kind, DateTime nowUtc)
@@ -287,7 +332,11 @@ public sealed class HyperfocusPolicy(TimeSpan maxObservedGap)
             case NudgeKind.AppStretch:
                 return Issue(kind, nowUtc, _app?.Foreground ?? TimeSpan.FromMinutes(120), _app?.Name ?? "Test app");
             default:
+                // A make-believe break, so its buttons work; the server is never told of it.
                 _breakStartUtc = nowUtc - TimeSpan.FromMinutes(10);
+                _breakPlannedEndUtc = nowUtc;
+                _awayDuringBreak = false;
+                _reportBreak = false;
                 return Issue(kind, nowUtc, TimeSpan.FromMinutes(10), null);
         }
     }
@@ -308,6 +357,32 @@ public sealed class HyperfocusPolicy(TimeSpan maxObservedGap)
         _outstanding[kind] = nudge.Id;
         _lastNudge = (nowUtc, kind);
         return nudge;
+    }
+
+    /// <summary>The timer runs to <paramref name="endUtc"/> from now on; the user is at the desk (they just pressed a button).</summary>
+    private void SetBreakEnd(DateTime endUtc)
+    {
+        _breakEndsUtc = endUtc;
+        _breakPlannedEndUtc = endUtc;
+        _awayDuringBreak = false;
+        if (_reportBreak) _breakReport = new BreakReport(_breakStartUtc!.Value, endUtc, null);
+    }
+
+    /// <summary>
+    /// The break is over: back at the desk, or "I'm back". A break whose toast is still to come ends the stretch, as the toast
+    /// would have; one whose toast was shown already started a new stretch then, and a toast still out leaves.
+    /// </summary>
+    private void EndBreak(DateTime nowUtc)
+    {
+        if (_breakStartUtc is not { } start) return;
+        if (_reportBreak) _breakReport = new BreakReport(start, _breakPlannedEndUtc, nowUtc);
+
+        var toastStillToCome = _breakEndsUtc is not null;
+        _breakStartUtc = null;
+        _breakEndsUtc = null;
+        _awayDuringBreak = false;
+        Withdraw(NudgeKind.BreakOver);
+        if (toastStillToCome) EndStretch();
     }
 
     private void InterruptApp(TimeSpan elapsed, NudgeSettings settings)

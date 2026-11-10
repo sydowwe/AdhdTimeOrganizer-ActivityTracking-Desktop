@@ -31,6 +31,7 @@ public sealed class NudgeServiceTests : IDisposable
     private readonly List<string> _folders = [];
     private readonly ConcurrentQueue<long> _startedBlocks = new(); // filled from the thread pool
     private readonly ConcurrentQueue<long> _skippedBlocks = new(); // filled from the thread pool
+    private readonly List<BreakReport> _breakReports = [];
     private int _signIns;
     private int _captureBoxes;
 
@@ -172,6 +173,35 @@ public sealed class NudgeServiceTests : IDisposable
         var drift = notifier.Shown[^1];
         Assert.Equal(NudgeKind.Drift, drift.Kind);
         Assert.Equal(TimeSpan.FromMinutes(19), drift.Length);
+    }
+
+    // ---- the break handed to the phone (prompt 10) --------------------------
+
+    /// <summary>
+    /// "Taking a break" is reported with the timer's end, and coming back to the desk before it reports the end — no
+    /// break-over toast, so the desk says nothing the phone might say too.
+    /// </summary>
+    [Fact]
+    public void TakingABreak_IsReported_AndTheReturnToTheDeskEndsIt()
+    {
+        var (service, notifier, _) = Create();
+        var now = DateTime.UtcNow; // a press is answered on the real clock
+        var app = new ActivitySample { ProcessName = "rider", WindowTitle = "Thesis", ProductName = "Rider" };
+        for (var poll = now.AddMinutes(-91); poll <= now; poll = poll.AddSeconds(10))
+            service.OnPoll(poll, TimeSpan.FromSeconds(30), isLocked: false, isPresent: true, app);
+        var stretch = Assert.Single(notifier.Shown);
+
+        service.OnActivated(new NudgeActivation(NudgeKind.Stretch, stretch.Id, NudgeResponse.TakeBreak));
+
+        var started = Assert.Single(_breakReports);
+        Assert.Null(started.EndedUtc);
+        Assert.Equal(TimeSpan.FromMinutes(_config.BreakTimerMinutes), started.PlannedEndUtc - started.StartedUtc);
+
+        service.OnPoll(now.AddMinutes(2), TimeSpan.FromSeconds(30), isLocked: false, isPresent: false, null);
+        service.OnPoll(now.AddMinutes(3), TimeSpan.FromMinutes(2), isLocked: false, isPresent: true, app);
+
+        Assert.Equal(started with { EndedUtc = now.AddMinutes(3) }, _breakReports[^1]);
+        Assert.DoesNotContain(notifier.Shown, n => n.Kind == NudgeKind.BreakOver);
     }
 
     // ---- the start ramp ---------------------------------------------------
@@ -454,7 +484,8 @@ public sealed class NudgeServiceTests : IDisposable
                 return Task.FromResult(true);
             },
             zone: _zone,
-            capture: () => _captureBoxes++);
+            capture: () => _captureBoxes++,
+            reportBreak: _breakReports.Add);
         _services.Add(service);
         return (service, notifier, opened);
     }

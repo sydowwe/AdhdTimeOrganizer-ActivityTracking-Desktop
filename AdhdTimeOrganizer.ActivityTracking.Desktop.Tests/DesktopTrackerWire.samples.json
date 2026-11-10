@@ -39,5 +39,6 @@
     "previousDate": "2026-10-18"
   },
   "captureRequest": { "text": "Email the landlord" },
-  "captured": { "outcome": "added", "todoListItemId": 41, "todoListId": 3 }
+  "captured": { "outcome": "added", "todoListItemId": 41, "todoListId": 3 },
+  "breakRequest": { "startedAt": "2026-10-18T10:04:30Z", "plannedEndAt": "2026-10-18T10:14:30Z", "endedAt": null }
 }

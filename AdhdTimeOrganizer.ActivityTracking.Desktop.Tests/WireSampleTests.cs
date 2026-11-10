@@ -123,6 +123,19 @@ public class WireSampleTests
         Assert.True(JsonNode.DeepEquals(Samples.Value["captureRequest"], written), written?.ToJsonString());
     }
 
+    /// <summary>
+    /// The break report (prompt 10), written exactly as the sample, which the server checks binds: a renamed field is a 400 the
+    /// reporter drops, and the phone never hears of the break. Instants go out in UTC with their <c>Z</c>.
+    /// </summary>
+    [Fact]
+    public void TheBreakRequest_IsWrittenAsTheSample()
+    {
+        var start = new DateTime(2026, 10, 18, 10, 4, 30, DateTimeKind.Utc);
+        var written = JsonSerializer.SerializeToNode(BreakRequest.From(new BreakReport(start, start.AddMinutes(10), null)));
+
+        Assert.True(JsonNode.DeepEquals(Samples.Value["breakRequest"], written), written?.ToJsonString());
+    }
+
     [Fact]
     public void TheCapturedSample_ReadsThroughTheTrackerModels()
     {

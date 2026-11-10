@@ -73,6 +73,7 @@ public sealed class NudgeService : IDisposable
     private readonly Func<long, Task<bool>> _startBlock;
     private readonly Func<long, Task<bool>> _skipBlock;
     private readonly Action? _capture;
+    private readonly Action<BreakReport>? _reportBreak;
     private readonly string _driftStatePath;
     private readonly string _rampStatePath;
     private readonly string _chimeStatePath;
@@ -105,10 +106,12 @@ public sealed class NudgeService : IDisposable
     /// <param name="startBlock">The start ramp's "Start now" on the server; null starts nothing there.</param>
     /// <param name="skipBlock">The start ramp's "Not this one" on the server; null skips nothing there.</param>
     /// <param name="capture">A drift toast's "Capture a thought": opens the capture box on the UI thread. Null does nothing.</param>
+    /// <param name="reportBreak">A started break changed (prompt 10): hands it to <see cref="BreakReporter"/>. Null tells no one.</param>
     public NudgeService(AppConfig config, SynchronizationContext? uiContext, Action? signIn = null,
-        Func<long, Task<bool>>? startBlock = null, Func<long, Task<bool>>? skipBlock = null, Action? capture = null)
+        Func<long, Task<bool>>? startBlock = null, Func<long, Task<bool>>? skipBlock = null, Action? capture = null,
+        Action<BreakReport>? reportBreak = null)
         : this(config, uiContext, onActivated => new NudgeNotifier(onActivated), OpenInBrowser, DefaultDriftStatePath, signIn,
-            startBlock: startBlock, skipBlock: skipBlock, capture: capture)
+            startBlock: startBlock, skipBlock: skipBlock, capture: capture, reportBreak: reportBreak)
     {
     }
 
@@ -123,12 +126,15 @@ public sealed class NudgeService : IDisposable
     /// <param name="skipBlock">"Not this one" on the server; tests record the id instead.</param>
     /// <param name="zone">Where the time chime's "today" ends; tests pin it.</param>
     /// <param name="capture">"Capture a thought" on a drift toast; tests count it.</param>
+    /// <param name="reportBreak">A started break changed; tests record the reports.</param>
     internal NudgeService(AppConfig config, SynchronizationContext? uiContext,
         Func<Action<NudgeActivation>, INudgeNotifier> createNotifier, Action<Uri> openInBrowser, string driftStatePath,
         Action? signIn = null, Action<string>? openFolder = null, Func<long, Task<bool>>? startBlock = null,
-        Func<long, Task<bool>>? skipBlock = null, TimeZoneInfo? zone = null, Action? capture = null)
+        Func<long, Task<bool>>? skipBlock = null, TimeZoneInfo? zone = null, Action? capture = null,
+        Action<BreakReport>? reportBreak = null)
     {
         _capture = capture;
+        _reportBreak = reportBreak;
         _chime = new ChimeSchedule(zone ?? TimeZoneInfo.Local);
         _chimeStatePath = Path.Combine(Path.GetDirectoryName(driftStatePath)!, ChimeStateFileName);
         if (LoadState<ChimeState>(_chimeStatePath, "time chime") is { } chime) _chime.Restore(chime);
@@ -301,6 +307,7 @@ public sealed class NudgeService : IDisposable
         bool driftWithdrawn;
         bool rampWithdrawn;
         DateTime? breakEndsUtc;
+        BreakReport? breakReport;
         DriftState? driftState = null;
         StartRampState? rampState = null;
 
@@ -338,6 +345,8 @@ public sealed class NudgeService : IDisposable
             driftWithdrawn = _drift.TakeWithdrawn();
             rampWithdrawn = _ramp.TakeWithdrawn();
             breakEndsUtc = _policy.GetStatus(nowUtc).BreakEndsUtc;
+            // Taken here, where every change lands: a poll (back at the desk) and a press (started, 5 more, I'm back) both evaluate.
+            breakReport = _policy.TakeBreakReport();
 
             if (_driftChanged)
             {
@@ -392,17 +401,27 @@ public sealed class NudgeService : IDisposable
             _notifier.Show(chime);
         }
 
+        if (breakReport is not null)
+        {
+            _log.Information("Break {Change}, timer to {PlannedEnd:HH:mm} UTC",
+                breakReport.EndedUtc is null ? "running" : "ended", breakReport.PlannedEndUtc);
+            _reportBreak?.Invoke(breakReport);
+        }
+
         ScheduleBreakTimer(breakEndsUtc, nowUtc);
     }
 
+    /// <summary>
+    /// Wakes <see cref="Evaluate"/> when the break timer runs out. Only a timer still to run: one past its end is held (the
+    /// user is away), and the next poll — the one that sees them back — decides.
+    /// </summary>
     private void ScheduleBreakTimer(DateTime? breakEndsUtc, DateTime nowUtc)
     {
         try
         {
-            if (breakEndsUtc is { } ends)
+            if (breakEndsUtc is { } ends && ends > nowUtc)
             {
-                var due = ends - nowUtc;
-                _breakTimer.Change(due > TimeSpan.Zero ? due + TimeSpan.FromMilliseconds(100) : TimeSpan.Zero, Timeout.InfiniteTimeSpan);
+                _breakTimer.Change(ends - nowUtc + TimeSpan.FromMilliseconds(100), Timeout.InfiniteTimeSpan);
             }
             else
             {

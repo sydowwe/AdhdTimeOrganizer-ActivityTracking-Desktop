@@ -152,20 +152,151 @@ public class HyperfocusPolicyTests
         Assert.Equal(2, run.Shown.Count);
     }
 
+    /// <summary>A break spent at the desk: "5 more minutes" moves its end, the server is told, and the next toast counts all of it.</summary>
     [Fact]
     public void FiveMoreMinutesOfBreak_ExtendsIt_AndTheNextNudgeCountsAllOfIt()
     {
         var run = new Run();
         run.For(Minutes(90));
         run.Respond(run.Shown[^1], NudgeResponse.TakeBreak);
-        run.For(Minutes(10), present: false);
+        var start = run.Now;
+        run.For(Minutes(10));
         run.Respond(run.Shown[^1], NudgeResponse.Snooze);
+        Assert.Equal(new BreakReport(start, run.Now + Minutes(5), null), run.Reports[^1]);
 
-        run.For(Minutes(5), present: false);
+        run.For(Minutes(5));
 
         var breakOver = run.Shown[^1];
         Assert.Equal(NudgeKind.BreakOver, breakOver.Kind);
         Assert.Equal(Minutes(15), breakOver.Length);
+    }
+
+    // ---- prompt 10: the break speaks where the user is ---------------------------------------------------------------
+
+    /// <summary>
+    /// Phone in use at the end — from the desk's side, away at the end: the toast is held (the server hands the break to the
+    /// phone), and coming back ends the break without it. Only the start and the end are reported.
+    /// </summary>
+    [Fact]
+    public void AwayAtTheEnd_HoldsTheToast_AndTheReturnEndsTheBreakWithoutIt()
+    {
+        var run = new Run();
+        run.For(Minutes(90));
+        run.Respond(run.Shown[^1], NudgeResponse.TakeBreak);
+        var start = run.Now;
+        Assert.Equal([new BreakReport(start, start + Minutes(10), null)], run.Reports);
+
+        run.For(Minutes(30), present: false);
+        Assert.Equal(NudgeKind.Stretch, Assert.Single(run.Shown).Kind);
+        Assert.Null(run.Policy.GetStatus(run.Now).BreakEndsUtc); // held past its end: no countdown left to show
+
+        run.For(Minutes(1));
+        var back = start + Minutes(30) + Run.Step;
+        Assert.Equal(new BreakReport(start, start + Minutes(10), back), run.Reports[^1]);
+        Assert.Equal(NudgeKind.Stretch, Assert.Single(run.Shown).Kind);
+        Assert.Equal(Minutes(1) - Run.Step, run.Policy.GetStatus(run.Now).StretchLength); // a new stretch from the return
+    }
+
+    /// <summary>Back at the desk before the end: the break is over, so nobody is told it is — no toast at the end.</summary>
+    [Fact]
+    public void BackAtTheDeskBeforeTheEnd_EndsTheBreakSilently()
+    {
+        var run = new Run();
+        run.For(Minutes(90));
+        run.Respond(run.Shown[^1], NudgeResponse.TakeBreak);
+        var start = run.Now;
+
+        run.For(Minutes(1));           // still at the desk after the press: not a return
+        run.For(Minutes(3), present: false);
+        run.For(Minutes(20));
+
+        Assert.Equal(NudgeKind.Stretch, Assert.Single(run.Shown).Kind);
+        Assert.Equal(new BreakReport(start, start + Minutes(10), start + Minutes(4) + Run.Step), run.Reports[^1]);
+        Assert.Equal(2, run.Reports.Count);
+    }
+
+    /// <summary>
+    /// At the desk at the end (the phone face down, or nowhere): the desk speaks, as it always did, and "I'm back" ends the
+    /// break on the server too.
+    /// </summary>
+    [Fact]
+    public void AtTheDeskAtTheEnd_TheDeskSpeaks_AndImBackEndsTheBreak()
+    {
+        var run = new Run();
+        run.For(Minutes(90));
+        run.Respond(run.Shown[^1], NudgeResponse.TakeBreak);
+        var start = run.Now;
+
+        run.For(Minutes(10));
+        Assert.Equal(NudgeKind.BreakOver, run.Shown[^1].Kind);
+        Assert.Single(run.Reports); // the toast itself is not an end: "5 more minutes" may still follow
+
+        Assert.True(run.Respond(run.Shown[^1], NudgeResponse.Dismiss));
+        Assert.Equal(new BreakReport(start, start + Minutes(10), run.Now), run.Reports[^1]);
+    }
+
+    /// <summary>A sleep or a pause during the break is not being at the desk: the first poll after it ends the break.</summary>
+    [Fact]
+    public void AnUnobservedGapDuringTheBreak_CountsAsAway()
+    {
+        var run = new Run();
+        run.For(Minutes(90));
+        run.Respond(run.Shown[^1], NudgeResponse.TakeBreak);
+
+        run.Skip(Minutes(40));
+        run.Poll();
+
+        Assert.Equal(run.Now, run.Reports[^1].EndedUtc);
+        Assert.DoesNotContain(run.Shown, n => n.Kind == NudgeKind.BreakOver);
+    }
+
+    /// <summary>
+    /// A toast shown and left unanswered: the stretch began at the toast, so a later trip to the kettle ends the break (and
+    /// takes the stale toast away) without starting the stretch over.
+    /// </summary>
+    [Fact]
+    public void AfterAnUnansweredToast_AShortAbsenceEndsTheBreak_ButNotTheStretch()
+    {
+        var run = new Run();
+        run.For(Minutes(90));
+        run.Respond(run.Shown[^1], NudgeResponse.TakeBreak);
+        run.For(Minutes(10));
+        Assert.Equal(NudgeKind.BreakOver, run.Shown[^1].Kind);
+        run.Policy.TakeWithdrawn();
+
+        run.For(Minutes(30));
+        run.For(Minutes(2), present: false);
+        run.For(Minutes(1));
+
+        Assert.NotNull(run.Reports[^1].EndedUtc);
+        Assert.Contains(NudgeKind.BreakOver, run.Policy.TakeWithdrawn());
+        Assert.Equal(Minutes(33) - Run.Step, run.Policy.GetStatus(run.Now).StretchLength); // from the poll after the toast
+    }
+
+    /// <summary>Only a break the user started is reported: one the poll loop detects is in the server's ledger already.</summary>
+    [Fact]
+    public void ADetectedBreak_IsNotReported()
+    {
+        var run = new Run();
+        run.For(Minutes(60));
+        run.For(Minutes(10), present: false);
+        run.For(Minutes(10));
+
+        Assert.Empty(run.Reports);
+    }
+
+    /// <summary>The tray's test toast makes believe a break ran so its buttons work; the server never hears of it.</summary>
+    [Fact]
+    public void TheTestToastsBreak_IsNeverReported()
+    {
+        var run = new Run();
+        var test = run.Policy.IssueForTest(NudgeKind.BreakOver, run.Now);
+
+        Assert.True(run.Respond(test, NudgeResponse.Snooze));
+        run.For(Minutes(5));
+        Assert.True(run.Respond(run.Shown[^1], NudgeResponse.Dismiss));
+
+        Assert.Empty(run.Reports);
     }
 
     /// <summary>Alt-tab to chat and back doesn't end "2 h straight in Rider"; five minutes elsewhere does.</summary>
@@ -281,6 +412,7 @@ public class HyperfocusPolicyTests
         public bool IsQuiet { get; set; }
         public int QuietChecks { get; private set; }
         public List<Nudge> Shown { get; } = [];
+        public List<BreakReport> Reports { get; } = [];
 
         private string? _app = "rider";
         private bool _present = true;
@@ -318,8 +450,19 @@ public class HyperfocusPolicyTests
                 return IsQuiet;
             });
             if (nudge is not null) Shown.Add(nudge);
+            TakeReport();
         }
 
-        public bool Respond(Nudge nudge, NudgeResponse response) => Policy.Respond(nudge.Id, response, Now, Settings);
+        public bool Respond(Nudge nudge, NudgeResponse response)
+        {
+            var current = Policy.Respond(nudge.Id, response, Now, Settings);
+            TakeReport();
+            return current;
+        }
+
+        private void TakeReport()
+        {
+            if (Policy.TakeBreakReport() is { } report) Reports.Add(report);
+        }
     }
 }
