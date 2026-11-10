@@ -47,13 +47,13 @@ public sealed class NudgeService : IDisposable
     internal static string TrackPath(long plannerTaskId) => $"/?track={plannerTaskId}";
 
     /// <summary>
-    /// "Review" opens the distinct-entries grid on what the evening's day left unmapped, busiest first. <c>date</c> names
-    /// the day — yesterday's date for an evening past midnight — and wins over <c>today</c>, which stays for a web app
-    /// from before <c>date</c>.
+    /// "Review" opens the web app's evening review page: one card per app the day left unmapped, busiest first, each
+    /// answered Map / Ignore / Skip. <c>date</c> names the day — yesterday's date for an evening past midnight; without
+    /// it the page reviews today. The rule grid stays one click away on the page ("Edit rules").
     /// </summary>
     internal static string UnmappedReviewPath(DateOnly? date) =>
-        "/activity-tracking/desktop/settings/distinctEntries?coverage=Uncovered&today=true"
-        + (date is { } d ? $"&date={d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)}" : "");
+        "/activity-tracking/desktop/review"
+        + (date is { } d ? $"?date={d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)}" : "");
 
     /// <summary>The invite on screen, for the day its Review opens; set on the send loop, read on the toast's thread.</summary>
     private volatile UnmappedInvite? _review;

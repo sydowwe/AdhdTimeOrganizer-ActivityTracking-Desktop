@@ -80,14 +80,13 @@ public class UnmappedReviewPolicyTests : IDisposable
         Assert.Equal(new DateOnly(2026, 10, 19), invite.Date);
     }
 
-    /// <summary>The day rides beside <c>today=true</c>, which a web app from before <c>date</c> still understands.</summary>
+    /// <summary>Review opens the web app's review page on the evening's day; without one, the page reviews today.</summary>
     [Fact]
-    public void ReviewPath_NamesTheDay_AndKeepsTodayForOlderWebApps()
+    public void ReviewPath_OpensTheReviewPageOnTheDay()
     {
-        Assert.Equal("/activity-tracking/desktop/settings/distinctEntries?coverage=Uncovered&today=true&date=2026-10-19",
+        Assert.Equal("/activity-tracking/desktop/review?date=2026-10-19",
             NudgeService.UnmappedReviewPath(new DateOnly(2026, 10, 19)));
-        Assert.Equal("/activity-tracking/desktop/settings/distinctEntries?coverage=Uncovered&today=true",
-            NudgeService.UnmappedReviewPath(null));
+        Assert.Equal("/activity-tracking/desktop/review", NudgeService.UnmappedReviewPath(null));
     }
 
     /// <summary>The server's "don't ask" is an empty list; the tracker adds no threshold of its own.</summary>
