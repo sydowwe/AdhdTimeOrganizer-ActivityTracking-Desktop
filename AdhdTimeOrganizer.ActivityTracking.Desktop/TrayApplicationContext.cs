@@ -586,7 +586,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         try
         {
             Clipboard.SetText(DiagnosticsReport.Format(
-                DiagnosticsEnvironment.Current(), _config, _tracker.GetStatus(), _tracker.ServerRuleCount,
+                DiagnosticsEnvironment.Current(), _config, _tracker.GetStatus(), _tracker.ServerRuleCount, _tracker.LastKeepAlive,
                 DiagnosticsLog.Tail(Program.LogDirectory, DiagnosticsLines), DateTime.UtcNow,
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)));
 

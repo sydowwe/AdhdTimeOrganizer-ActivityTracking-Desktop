@@ -267,6 +267,9 @@ public sealed class ActivityTrackerService : IDisposable
     /// <summary>How many server rules are held; null before the first download. A count only — the patterns are the user's.</summary>
     public int? ServerRuleCount => _trackerRules.IsKnown ? _trackerRules.Count : null;
 
+    /// <summary>The newest pause keep-alive's outcome, for diagnostics; deliberately not part of <see cref="GetStatus"/>.</summary>
+    public KeepAliveAnswer? LastKeepAlive => _keepAlive.LastAnswer;
+
     public TrackerStatus GetStatus()
     {
         var pending = _outbox.Summary(); // disk read — kept outside the lock the poll loop takes

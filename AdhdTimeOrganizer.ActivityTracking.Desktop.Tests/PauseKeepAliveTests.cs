@@ -59,6 +59,18 @@ public sealed class PauseKeepAliveTests
     }
 
     [Fact]
+    public void The_last_answer_is_kept_for_diagnostics_and_the_newest_wins()
+    {
+        var keepAlive = new PauseKeepAlive();
+        Assert.Null(keepAlive.LastAnswer);
+
+        keepAlive.Answered(SendResult.RetryLater, Now);
+        keepAlive.Answered(SendResult.Sent, Now + PauseKeepAlive.RetryAfter);
+
+        Assert.Equal(new KeepAliveAnswer(SendResult.Sent, Now + PauseKeepAlive.RetryAfter), keepAlive.LastAnswer);
+    }
+
+    [Fact]
     public void Every_interval_leaves_several_tries_inside_the_servers_48_hours()
     {
         Assert.True(PauseKeepAlive.Every <= TimeSpan.FromHours(12));

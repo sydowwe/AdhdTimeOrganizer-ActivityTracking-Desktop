@@ -2,6 +2,9 @@ using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
+/// <summary>What the server said to a keep-alive, and when it was sent.</summary>
+public sealed record KeepAliveAnswer(SendResult Result, DateTime AtUtc);
+
 /// <summary>
 /// When a paused tracker tells the server it is still here. Pure: the send loop hands in the state and the clock.
 /// </summary>
@@ -25,13 +28,23 @@ public sealed class PauseKeepAlive
     public static readonly TimeSpan RetryAfter = TimeSpan.FromMinutes(5);
 
     private DateTime _nextTryUtc = DateTime.MinValue;
+    private volatile KeepAliveAnswer? _lastAnswer;
+
+    /// <summary>
+    /// The newest keep-alive's outcome, for "Copy diagnostics" only — never the status, where a refusal would read as a
+    /// lost minute. Null until one was sent since start. Read from the UI thread, written on the send loop.
+    /// </summary>
+    public KeepAliveAnswer? LastAnswer => _lastAnswer;
 
     /// <param name="lastStoredUtc">When a window was last stored: a backlog sent during the pause already says the tracker is alive.</param>
     public bool IsDue(bool paused, bool hasSession, DateTime? lastStoredUtc, DateTime utcNow) =>
         paused && hasSession && utcNow >= _nextTryUtc && (lastStoredUtc is not { } stored || utcNow - stored >= Every);
 
-    public void Answered(SendResult result, DateTime utcNow) =>
+    public void Answered(SendResult result, DateTime utcNow)
+    {
         _nextTryUtc = utcNow + (result is SendResult.Sent or SendResult.Rejected ? Every : RetryAfter);
+        _lastAnswer = new KeepAliveAnswer(result, utcNow);
+    }
 
     /// <summary>No entries, on a whole minute: the heartbeat refuses any other start.</summary>
     public static ActivityWindow Window(DateTime utcNow) => new()

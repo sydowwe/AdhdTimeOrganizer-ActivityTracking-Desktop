@@ -31,10 +31,11 @@ public static class DiagnosticsReport
     private static readonly Regex Email = new(@"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", RegexOptions.Compiled);
 
     /// <param name="serverRules">How many server rules are held; null before the first download.</param>
+    /// <param name="keepAlive">The newest pause keep-alive's outcome (<see cref="PauseKeepAlive"/>); null if none was sent since start.</param>
     /// <param name="logLines">Oldest first. Scrubbed here, so the caller passes them as read.</param>
     /// <param name="userProfile">The Windows profile folder, masked wherever it appears in a log line.</param>
     public static string Format(DiagnosticsEnvironment env, AppConfig config, TrackerStatus status, int? serverRules,
-        IReadOnlyList<string> logLines, DateTime nowUtc, string userProfile)
+        KeepAliveAnswer? keepAlive, IReadOnlyList<string> logLines, DateTime nowUtc, string userProfile)
     {
         var text = new StringBuilder();
         text.AppendLine($"Activity Tracker diagnostics — {nowUtc:yyyy-MM-dd HH:mm:ss} UTC");
@@ -54,6 +55,7 @@ public static class DiagnosticsReport
         text.AppendLine($"Last send: {(status.LastSendResult?.ToString() ?? "none yet")}" +
                         (status.LastSentUtc is { } sent ? $", last stored {sent:yyyy-MM-dd HH:mm:ss} UTC" : ", nothing stored since start"));
         text.AppendLine($"Dropped by the server since start: {status.RejectedWindows} min");
+        text.AppendLine($"Pause keep-alive: {DescribeKeepAlive(keepAlive)}");
         text.AppendLine($"Poll error: {(status.LastPollError is null ? "none" : "yes, see the log")}");
         text.AppendLine();
 
@@ -72,6 +74,7 @@ public static class DiagnosticsReport
                         $"{config.TimeChimeChoices.Count(c => !c.Chime)} unticked");
         text.AppendLine($"Quiet while: full screen {OnOff(config.QuietWhenFullscreen)}, microphone {OnOff(config.QuietWhenMicrophoneInUse)}");
         text.AppendLine($"Upload notices: {OnOff(config.UploadNoticesEnabled)}");
+        text.AppendLine($"Capture hotkey: {(string.IsNullOrWhiteSpace(config.CaptureHotkey) ? "off" : config.CaptureHotkey)}");
         text.AppendLine($"Evening review: {OnOff(config.UnmappedReviewEnabled)}");
         text.AppendLine($"Private windows: {OnOff(config.HidePrivateWindows)}, handled as {config.PrivateWindowHandling}");
         text.AppendLine($"Rules: {config.LocalRules.Count} local, {(serverRules?.ToString() ?? "not downloaded yet")} from the server");
@@ -97,6 +100,14 @@ public static class DiagnosticsReport
             ? until == DateTime.MaxValue ? "paused until resumed" : $"paused until {until:yyyy-MM-dd HH:mm} UTC"
             : status.IsRunning ? status.IsLocked ? "running, screen locked" : "running"
             : "stopped";
+
+    /// <summary>Rejected is a server from before empty heartbeats: its 400 costs nothing, but it will still call a long pause silent.</summary>
+    private static string DescribeKeepAlive(KeepAliveAnswer? answer) => answer switch
+    {
+        null => "none sent since start",
+        { Result: SendResult.Rejected } => $"Rejected at {answer.AtUtc:yyyy-MM-dd HH:mm} UTC (the server predates empty heartbeats)",
+        _ => $"{answer.Result} at {answer.AtUtc:yyyy-MM-dd HH:mm} UTC"
+    };
 
     private static string OnOff(bool value) => value ? "on" : "off";
 }

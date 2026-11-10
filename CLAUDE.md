@@ -96,6 +96,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   `entries: []` at most every 6 h (`PauseKeepAlive`), the same as the phone's empty sync; a window stored in that time
   counts instead. It is not a minute: it skips the outbox, and its outcome reaches neither `LastSendResult`,
   `RejectedWindows` nor today's total. A server from before it answers 400, which waits the full 6 h and costs nothing.
+  The newest outcome is shown only in "Copy diagnostics" (`PauseKeepAlive.LastAnswer`), so a "went silent while
+  paused" report says whether the keep-alive went out and whether the server was too old for it.
 - **Never send null or a blank title.** Missing product names and paths go out as `""`, and an untitled
   window takes its product or process name (`ActivityRecorder`). The current server accepts nulls, but
   servers from before 2026-10-18 answer a null with a 500 and a blank title with a 400, and a user's

@@ -32,7 +32,7 @@ public sealed class DiagnosticsReportTests : IDisposable
         LastPollError: "Could not read window 'Salary negotiation notes'", OldestPendingUtc: Now.AddMinutes(-12), RejectedWindows: 2);
 
     private static string Format(AppConfig config, params string[] log) =>
-        DiagnosticsReport.Format(Env, config, Status(), serverRules: 7, log, Now, Profile);
+        DiagnosticsReport.Format(Env, config, Status(), serverRules: 7, keepAlive: null, log, Now, Profile);
 
     /// <summary>The point of the whole thing: it goes into a bug report, so none of the user's own words may be in it.</summary>
     [Fact]
@@ -70,6 +70,33 @@ public sealed class DiagnosticsReportTests : IDisposable
         Assert.Contains("Server: https://server.test", report);
         Assert.Contains("Rules: 2 local, 7 from the server", report);
         Assert.Contains("Upload notices: on", report);
+        Assert.Contains("Capture hotkey: Win+Alt+N", report);
+        Assert.Contains("Pause keep-alive: none sent since start", report);
+    }
+
+    [Fact]
+    public void TheCaptureHotkey_SwitchedOff_SaysOff()
+    {
+        var config = Config();
+        config.CaptureHotkey = "";
+
+        Assert.Contains("Capture hotkey: off", Format(config));
+    }
+
+    /// <summary>
+    /// The one thing a "went silent while paused" report needs: did the keep-alive go out, and did the server take it. A
+    /// refusal says why, because it is the old server and not the tracker.
+    /// </summary>
+    [Theory]
+    [InlineData(SendResult.Sent, "Pause keep-alive: Sent at 2026-10-19 10:00 UTC")]
+    [InlineData(SendResult.RetryLater, "Pause keep-alive: RetryLater at 2026-10-19 10:00 UTC")]
+    [InlineData(SendResult.Rejected, "Pause keep-alive: Rejected at 2026-10-19 10:00 UTC (the server predates empty heartbeats)")]
+    public void TheReport_SaysWhatTheLastKeepAliveGot(SendResult result, string expected)
+    {
+        var report = DiagnosticsReport.Format(Env, Config(), Status(), serverRules: 7,
+            new KeepAliveAnswer(result, Now.AddHours(-2)), [], Now, Profile);
+
+        Assert.Contains(expected, report);
     }
 
     [Fact]
@@ -80,7 +107,7 @@ public sealed class DiagnosticsReportTests : IDisposable
         config.PausedUntilUtc = DateTime.MaxValue;
 
         var report = DiagnosticsReport.Format(Env, config, new TrackerStatus(false, false, 0, null, null, null, DateTime.MaxValue),
-            serverRules: null, [], Now, Profile);
+            serverRules: null, keepAlive: null, [], Now, Profile);
 
         Assert.Contains("Signed in: no", report);
         Assert.Contains("Tracking: paused until resumed", report);
