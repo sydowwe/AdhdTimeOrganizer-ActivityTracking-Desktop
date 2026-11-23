@@ -135,7 +135,8 @@ public sealed class LoginForm : Form
             _browserWait = null;
         }
 
-        // Closed while the browser was still out: nothing left to report to.
+        // Closed while the browser was still out: nothing left to report to. An exchange that succeeded anyway has saved its
+        // session, and the tray starts tracking on ApiClient.SignedIn.
         if (IsDisposed || !Visible)
             return;
 
@@ -169,6 +170,11 @@ public sealed class LoginForm : Form
         var outcome = _pendingAuthToken is null
             ? await _apiClient.LoginAsync(_emailBox.Text.Trim(), _passwordBox.Text)
             : await _apiClient.CompleteTwoFactorAsync(_pendingAuthToken, _codeBox.Text.Trim());
+
+        // Closed while the request was out: nothing left to report to. A sign-in that succeeded anyway has saved its session,
+        // and the tray starts tracking on ApiClient.SignedIn.
+        if (IsDisposed || !Visible)
+            return;
 
         switch (outcome.Status)
         {

@@ -157,6 +157,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   together. A 404 from the exchange means an older server: the password form still works there. A stray request — a
   favicon, a wrong state, a connection reset before its request arrived — is not ours and the wait goes on; only the
   listener's own socket failing ends the sign-in, with its own message (`BrowserSignIn.DescribeFailure`).
+- **Tracking starts on `ApiClient.SignedIn`, not on the sign-in form's answer** (review L13). A password login or a code
+  exchange takes no cancellation, so one still in flight when the form is closed may save a session afterwards; the event
+  (raised by every sign-in that saves one, never by a refresh) is what the tray starts tracking on, posted to the UI thread.
 
 ### Time accounting
 - All of it lives in `ActivityRecorder` and `ScreenState`, which have no clock and no Win32, so they're

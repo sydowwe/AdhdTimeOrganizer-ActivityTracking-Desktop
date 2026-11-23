@@ -182,6 +182,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
 
             StoreTokens(tokens);
             _log.Information("Login successful");
+            SignedIn?.Invoke();
             return new LoginOutcome(LoginStatus.SignedIn);
         }
         catch (Exception ex)
@@ -227,6 +228,12 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
 
     /// <summary>Raised after every sign-out, including the server refusing the refresh token. Any thread.</summary>
     public event Action? SignedOut;
+
+    /// <summary>
+    /// Raised when a sign-in (password, 2FA or the browser's code) has saved a session — not on a refresh. The tray starts
+    /// tracking on it, so a sign-in that finishes after its form was closed still counts (review L13). Any thread.
+    /// </summary>
+    public event Action? SignedIn;
 
     /// <summary>
     /// The user signs out: the session is cleared here at once, and the refresh token is revoked on the server in the

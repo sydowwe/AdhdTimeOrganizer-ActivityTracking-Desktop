@@ -79,6 +79,8 @@ public sealed class TrayApplicationContext : ApplicationContext
             skipBlock: plannerTaskId => _apiClient.SkipBlockAsync(plannerTaskId, CancellationToken.None),
             capture: OpenCapture, reportBreak: _breakReporter.Report, resume: ResumeFromReminder);
         _tracker = new ActivityTrackerService(config, _apiClient, _nudges);
+        var ui = new WindowsFormsSynchronizationContext();
+        _apiClient.SignedIn += () => ui.Post(_ => OnSignedIn(), null);
 
         // On this, the UI, thread: WM_HOTKEY comes through its message loop (see GlobalHotkey).
         _hotkey = new GlobalHotkey();
@@ -236,12 +238,17 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _config.Save();
         using var loginForm = new LoginForm(_apiClient, _config);
-        if (loginForm.ShowDialog() == DialogResult.OK)
-        {
-            StartUnlessPaused();
-            _tracker.RequestSend();
-        }
+        // Tracking starts on ApiClient.SignedIn (OnSignedIn), not on the form's answer: a password login or a code exchange
+        // still in flight when the form is closed may succeed afterwards, and the form has already said "cancelled".
+        loginForm.ShowDialog();
+        RefreshStatus();
+    }
 
+    /// <summary>A sign-in saved a session — from the form, or after it closed. On the UI thread.</summary>
+    private void OnSignedIn()
+    {
+        StartUnlessPaused();
+        _tracker.RequestSend();
         RefreshStatus();
     }
 
