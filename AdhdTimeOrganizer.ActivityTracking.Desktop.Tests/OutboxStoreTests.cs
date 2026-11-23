@@ -98,17 +98,72 @@ public sealed class OutboxStoreTests : IDisposable
         Assert.Equal(1, _store.Count);
     }
 
+    /// <summary>A file that is not a window is kept as .bad, out of every pass and the count; an expired window is deleted.</summary>
     [Fact]
-    public void Pending_DeletesUnreadableAndExpiredFiles()
+    public void Pending_SetsAsideUnreadableFiles_AndDeletesExpiredWindows()
     {
         _store.Save(Window(NineAm.AddDays(-31), Entry("old", 10)));
         _store.Save(Window(NineAm, Entry("a", 10)));
-        File.WriteAllText(Path.Combine(_directory, "20260615T0901.json"), "{ not json");
+        var damaged = Path.Combine(_directory, "20260615T0901.json");
+        File.WriteAllText(damaged, "{ not json");
 
         var pending = _store.Pending(NineAm, max: 10);
 
         Assert.Equal(NineAm, Assert.Single(pending).Window.WindowStart);
         Assert.Equal(1, _store.Count);
+        Assert.False(File.Exists(damaged));
+        Assert.Equal("{ not json", File.ReadAllText(damaged + ".bad"));
+        Assert.Equal(new OutboxSummary(1, NineAm), _store.Summary());
+    }
+
+    /// <summary>Locked for a moment — a scanner, a backup — is not damaged: it stays, and goes on a later pass.</summary>
+    [Fact]
+    public void Pending_LeavesAFileThatCannotBeOpened_ForTheNextPass()
+    {
+        _store.Save(Window(NineAm, Entry("a", 10)));
+        _store.Save(Window(NineAm.AddMinutes(1), Entry("b", 10)));
+        var locked = Directory.GetFiles(_directory, "*.json").Order(StringComparer.Ordinal).First();
+
+        using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var pending = _store.Pending(NineAm.AddMinutes(5), max: 10);
+
+            Assert.Equal(NineAm.AddMinutes(1), Assert.Single(pending).Window.WindowStart);
+        }
+
+        Assert.False(File.Exists(locked + ".bad"));
+        Assert.Equal([NineAm, NineAm.AddMinutes(1)], _store.Pending(NineAm.AddMinutes(5), max: 10).Select(p => p.Window.WindowStart));
+    }
+
+    /// <summary>The minute's earlier copy was damaged: set aside, not merged into or lost silently, and the new copy is written.</summary>
+    [Fact]
+    public void Save_OverADamagedFile_SetsItAsideFirst()
+    {
+        Directory.CreateDirectory(_directory);
+        var path = Path.Combine(_directory, "20260615T0900.json");
+        File.WriteAllText(path, "");
+
+        _store.Save(Window(NineAm, Entry("a", 10)));
+
+        Assert.Equal(0, new FileInfo(path + ".bad").Length);
+        Assert.Equal(10, Assert.Single(_store.Pending(NineAm, max: 10)).Window.Entries.Single().ActiveSeconds);
+    }
+
+    [Fact]
+    public void Pending_DeletesBadFiles_OnlyOnceTheyAreOlderThanTheRetention()
+    {
+        Directory.CreateDirectory(_directory);
+        var old = Path.Combine(_directory, "20260501T0900.json.bad");
+        var recent = Path.Combine(_directory, "20260610T0900.json.bad");
+        File.WriteAllText(old, "x");
+        File.WriteAllText(recent, "x");
+        File.SetLastWriteTimeUtc(old, NineAm.AddDays(-31));
+        File.SetLastWriteTimeUtc(recent, NineAm.AddDays(-5));
+
+        _store.Pending(NineAm, max: 10);
+
+        Assert.False(File.Exists(old));
+        Assert.True(File.Exists(recent));
     }
 
     [Fact]

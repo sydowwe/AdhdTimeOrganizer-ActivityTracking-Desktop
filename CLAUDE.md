@@ -28,7 +28,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/ScreenState.cs` | **Pure** "what is on screen now": which observations a span is credited to, what counts as a switch, when idleness starts a backdate |
 | `Services/WindowLimits.cs` | The server's validation rules, applied before a window is queued |
 | `Services/WindowTitleNormalizer.cs` | Strips counters, unsaved markers and app-name suffixes from titles |
-| `Services/OutboxStore.cs` | Finished windows as JSON files under `%LOCALAPPDATA%\…Desktop\outbox` until sent |
+| `Services/OutboxStore.cs` | Finished windows as JSON files under `%LOCALAPPDATA%\…Desktop\outbox` until sent; a damaged one as `.json.bad` |
 | `Services/ApiClient.cs` | Login, 2FA, token refresh, heartbeat (and its answer), the server-rules and mapping-coverage downloads, the start ramp's Start now and Not this one; `Classify` decides retry vs. drop per status code |
 | `Services/RefreshPolicy.cs` | **Pure** refresh decisions: save / sign out / keep, whether an attempt left the token possibly rotated, how long to hold it back |
 | `Services/TodayTotal.cs` | Today's recorded foreground time on this PC, for the tray glance; saved to `today.json` |
@@ -193,6 +193,11 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   leave a zero-length file. Don't hand-write "temp, then move" again. `TryRead` tells **Missing**, **Unreadable** (empty,
   cut short, not JSON, `null`) and **CouldNotOpen** (locked, denied) apart: only an unreadable file may be set aside; one
   that could not be opened is left for the next try.
+- **The outbox keeps what it can't read.** `OutboxStore.Pending` renames a file that isn't a window to `.json.bad` (logged
+  once, by the rename; out of every pass and the count) and deletes `.bad` files once they are older than the outbox
+  retention, by last write. A file it can't open is skipped and logged once, and goes on a later pass. `Save` sets a
+  damaged copy of the same minute aside before writing, and never writes over one it can't open: it throws, and the poll
+  loop logs the minute as lost.
 - **`config.json` never falls back to defaults silently** (`AppConfig.Load(path)` → `ConfigLoad`): the tray's first act
   without a session is a save, which used to overwrite a damaged file — rules, pause, chime choices and all. A file that
   loads is copied to `config.json.bak`. A damaged one goes to `config.json.bad` (one kept), then `.bak` is used, **without its
@@ -437,8 +442,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 - **Never lost, never logged.** The box hands the text to `ActivityTrackerService.Capture`, which writes a file to
   `CaptureQueue` before anything sends it; paused, offline and signed out it waits there. The send loop delivers captures
   first in each pass (`CaptureDelivery`), oldest first, stopping at the first that must wait. Only a 2xx removes a file; a
-  400/413/422 keeps it as refused and never sends it again; an unreadable file is skipped, **never deleted** (unlike the
-  outbox's — it may be the only copy of a thought). A 404 (a server from before the route) or 409 `noPriority` holds the
+  400/413/422 keeps it as refused and never sends it again; an unreadable file is skipped, **never deleted or renamed** (unlike the
+  outbox's, which goes to `.bad` — it may be the only copy of a thought). A 404 (a server from before the route) or 409 `noPriority` holds the
   whole queue `CaptureQueue.HoldFor` (30 min), and the tray item says why; a new capture asks at once. Text is cut to the
   server's 10 000 characters before queuing. Logs carry capture ids and lengths, **never the text** — and not the server's
   answer body either, which can quote it.

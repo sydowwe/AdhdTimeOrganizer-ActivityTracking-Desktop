@@ -27,10 +27,16 @@ public sealed class OutboxStore(string directory, TimeSpan retention)
     private readonly ILogger _log = Log.ForContext<OutboxStore>();
     private readonly Lock _gate = new();
 
+    private const string BadSuffix = ".bad";
+
+    /// <summary>Files already logged as locked, so a lock that lasts a while is one line, not one per pass. Under <see cref="_gate"/>.</summary>
+    private readonly HashSet<string> _reportedLocked = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Persists <paramref name="window"/>. If an unsent file for the same minute exists — the minute was
     /// flushed early and then kept going — the two are merged, since the server keys a window's rows on
-    /// (process, title) and would skip the second copy's.
+    /// (process, title) and would skip the second copy's. A damaged one is set aside first; one that stays locked
+    /// is not written over — this throws instead, and the poll loop logs it.
     /// </summary>
     public void Save(ActivityWindow window)
     {
@@ -38,17 +44,34 @@ public sealed class OutboxStore(string directory, TimeSpan retention)
         {
             var path = PathFor(window.WindowStart);
 
-            if (File.Exists(path) && TryRead(path) is { } existing)
-                window = Merge(existing, window);
+            var existing = JsonFile.TryRead<ActivityWindow>(path, JsonOptions);
+            for (var attempt = 0; attempt < 3 && existing.Status == JsonFileStatus.CouldNotOpen; attempt++)
+            {
+                Thread.Sleep(100);
+                existing = JsonFile.TryRead<ActivityWindow>(path, JsonOptions);
+            }
+
+            switch (existing.Status)
+            {
+                case JsonFileStatus.Read:
+                    window = Merge(existing.Value!, window);
+                    break;
+                case JsonFileStatus.Unreadable:
+                    SetAside(path, existing.Error);
+                    break;
+                case JsonFileStatus.CouldNotOpen:
+                    throw new IOException($"Outbox file {Path.GetFileName(path)} could not be opened to merge into", existing.Error);
+            }
 
             JsonFile.Write(path, window, JsonOptions);
         }
     }
 
     /// <summary>
-    /// Up to <paramref name="max"/> pending windows, oldest first. Unreadable files and windows past the
-    /// retention are deleted on the way. Bounded so a long offline stretch is not re-read in full on
-    /// every send attempt.
+    /// Up to <paramref name="max"/> pending windows, oldest first. Bounded so a long offline stretch is not re-read in
+    /// full on every send attempt. On the way: windows past the retention are deleted; a file that is not a window is
+    /// renamed to <c>.bad</c> (kept for the retention, then deleted); a file that could not be opened — locked for a
+    /// moment by a scanner or a backup — is left for the next pass.
     /// </summary>
     public List<OutboxItem> Pending(DateTime nowUtc, int max)
     {
@@ -56,18 +79,27 @@ public sealed class OutboxStore(string directory, TimeSpan retention)
         {
             if (!Directory.Exists(directory)) return [];
 
+            DeleteExpiredBadFiles(nowUtc);
+
             var items = new List<OutboxItem>();
             foreach (var path in Directory.GetFiles(directory, "*.json").Order(StringComparer.Ordinal))
             {
                 if (items.Count >= max) break;
 
-                var window = TryRead(path);
-                if (window is null)
+                var read = JsonFile.TryRead<ActivityWindow>(path, JsonOptions);
+                if (read.Status == JsonFileStatus.Unreadable)
                 {
-                    _log.Warning("Deleting unreadable outbox file {File}", Path.GetFileName(path));
-                    File.Delete(path);
+                    SetAside(path, read.Error);
                     continue;
                 }
+                if (read.Status == JsonFileStatus.CouldNotOpen)
+                {
+                    if (_reportedLocked.Add(path))
+                        _log.Information(read.Error, "Outbox file {File} could not be opened — leaving it for the next pass", Path.GetFileName(path));
+                    continue;
+                }
+                if (read.Value is not { } window) continue; // gone since the listing
+                _reportedLocked.Remove(path);
 
                 if (window.WindowStart < nowUtc - retention)
                 {
@@ -130,10 +162,34 @@ public sealed class OutboxStore(string directory, TimeSpan retention)
     private string PathFor(DateTime windowStart) =>
         Path.Combine(directory, $"{windowStart.ToString(FileNameFormat, CultureInfo.InvariantCulture)}.json");
 
-    private static ActivityWindow? TryRead(string path)
+    /// <summary>Not a window, and reading it again won't make it one: kept beside the outbox, out of every pass.</summary>
+    private void SetAside(string path, Exception? why)
     {
-        try { return JsonSerializer.Deserialize<ActivityWindow>(File.ReadAllText(path), JsonOptions); }
-        catch { return null; }
+        try
+        {
+            File.Move(path, path + BadSuffix, overwrite: true);
+            _log.Warning(why, "Outbox file {File} is not a window — renamed to {Suffix}", Path.GetFileName(path), BadSuffix);
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Outbox file {File} is not a window and could not be renamed", Path.GetFileName(path));
+        }
+    }
+
+    /// <summary>A <c>.bad</c> file is kept as long as a window would have been, by when it was last written.</summary>
+    private void DeleteExpiredBadFiles(DateTime nowUtc)
+    {
+        foreach (var path in Directory.EnumerateFiles(directory, "*" + BadSuffix))
+        {
+            try
+            {
+                if (File.GetLastWriteTimeUtc(path) < nowUtc - retention) File.Delete(path);
+            }
+            catch (Exception ex)
+            {
+                _log.Warning(ex, "Could not delete the old outbox file {File}", Path.GetFileName(path));
+            }
+        }
     }
 
     private static ActivityWindow Merge(ActivityWindow first, ActivityWindow second) => new()
