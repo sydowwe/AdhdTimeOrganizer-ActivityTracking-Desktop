@@ -50,6 +50,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _signInOutItem;
     private readonly ToolStripMenuItem _updateItem;
     private readonly ToolStripMenuItem _captureItem;
+    private readonly ToolStripMenuItem _refusedCapturesItem;
     private readonly GlobalHotkey _hotkey;
 
     private HotkeyRegistration _hotkeyState;
@@ -83,6 +84,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _hotkey = new GlobalHotkey();
         _hotkey.Pressed += OpenCapture;
         _captureItem = new ToolStripMenuItem("Capture a thought…", null, (_, _) => OpenCapture());
+        // Thoughts the server refused stay on disk and are never sent again; this is how the user learns of them.
+        _refusedCapturesItem = new ToolStripMenuItem("", null, (_, _) => OpenFolder(CaptureQueue.DefaultDirectory)) { Visible = false };
 
         // Opens today's breakdown. A submenu rather than a left-click flyout: a single click is half of every double-click,
         // which opens this menu. Filled when opened, so a refresh never rebuilds it under the mouse.
@@ -114,6 +117,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         contextMenu.Items.Add(_mapAppsItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(_captureItem);
+        contextMenu.Items.Add(_refusedCapturesItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(_toggleItem);
         contextMenu.Items.Add(pauseForItem);
@@ -277,8 +281,25 @@ public sealed class TrayApplicationContext : ApplicationContext
         if (restart is not null) _updateItem.Text = restart;
 
         RefreshMappingPrompt(status.Coverage);
-        _captureItem.Text = DescribeCaptureItem(_hotkeyState, _config.CaptureHotkey, _tracker.GetCaptureStatus());
+        RefreshCaptureItems();
     }
+
+    private void RefreshCaptureItems()
+    {
+        var captures = _tracker.GetCaptureStatus();
+        _captureItem.Text = DescribeCaptureItem(_hotkeyState, _config.CaptureHotkey, captures);
+        var refused = DescribeRefusedCaptures(captures);
+        _refusedCapturesItem.Visible = refused is not null;
+        if (refused is not null) _refusedCapturesItem.Text = refused;
+    }
+
+    /// <summary>"2 thoughts the server refused — open folder", or null when there are none. A count only.</summary>
+    internal static string? DescribeRefusedCaptures(CaptureStatus? captures) => captures?.Refused switch
+    {
+        null or <= 0 => null,
+        1 => "1 thought the server refused — open folder",
+        var n => $"{n} thoughts the server refused — open folder"
+    };
 
     // ── Quick capture ────────────────────────────────────────────────────────
 
@@ -295,7 +316,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         Serilog.Log.Information("Capture hotkey: {State}", _hotkeyState);
 
         _captureItem.ShortcutKeyDisplayString = _hotkeyState == HotkeyRegistration.Registered ? chord!.ToString() : null;
-        _captureItem.Text = DescribeCaptureItem(_hotkeyState, _config.CaptureHotkey, _tracker.GetCaptureStatus());
+        RefreshCaptureItems();
 
         if (!announceProblem || _hotkeyState is HotkeyRegistration.Off or HotkeyRegistration.Registered) return;
         _balloonOpensMapping = false;
@@ -655,10 +676,19 @@ public sealed class TrayApplicationContext : ApplicationContext
         RefreshStatus();
     }
 
-    private void OnOpenLogFolder(object? sender, EventArgs e)
+    private void OnOpenLogFolder(object? sender, EventArgs e) => OpenFolder(Program.LogDirectory);
+
+    private static void OpenFolder(string directory)
     {
-        Directory.CreateDirectory(Program.LogDirectory);
-        Process.Start(new ProcessStartInfo { FileName = Program.LogDirectory, UseShellExecute = true });
+        try
+        {
+            Directory.CreateDirectory(directory);
+            Process.Start(new ProcessStartInfo { FileName = directory, UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "Could not open a folder");
+        }
     }
 
     /// <summary>For a bug report: the state, the settings as counts and the log's tail, on the clipboard.</summary>

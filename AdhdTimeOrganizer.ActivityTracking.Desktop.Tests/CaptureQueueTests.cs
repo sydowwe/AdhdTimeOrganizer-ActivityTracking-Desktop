@@ -1,5 +1,8 @@
 using System.Net;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
+using Serilog;
+using Serilog.Core;
+using Serilog.Events;
 using Xunit;
 
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Tests;
@@ -92,6 +95,49 @@ public sealed class CaptureQueueTests : IDisposable
         Assert.True(File.Exists(broken));
     }
 
+    /// <summary>
+    /// The tray reads the summary every 2 s: a file that has not changed is not parsed again, so an unreadable one is logged
+    /// once (review M8), not 43 000 times a day. Once it changes it is read — and, still broken, logged — again.
+    /// </summary>
+    [Fact]
+    public void AnUnreadableFile_IsLoggedOnce_UntilItChanges()
+    {
+        var logged = new Collector();
+        var queue = new CaptureQueue(_directory, new LoggerConfiguration().WriteTo.Sink(logged).CreateLogger());
+        queue.Add("Email the landlord", NineAm);
+        var broken = Path.Combine(_directory, "20261108T085959000-broken.json");
+        File.WriteAllText(broken, "{ not json");
+
+        for (var i = 0; i < 5; i++) Assert.Equal(new CaptureSummary(1, 0), queue.Summary());
+        queue.Pending(10);
+        Assert.Single(logged.Events);
+
+        File.WriteAllText(broken, "{ still not json, and longer");
+        queue.Summary();
+        Assert.Equal(2, logged.Events.Count);
+        Assert.True(File.Exists(broken));
+    }
+
+    /// <summary>The tray item opens the folder, so the user may delete or mend a file there; the summary follows the disk.</summary>
+    [Fact]
+    public void TheSummary_FollowsChangesMadeOutsideTheQueue()
+    {
+        var refused = _queue.Add("Email the landlord", NineAm)!;
+        _queue.MarkRefused(refused);
+        _queue.Add("Buy stamps", NineAm.AddSeconds(1));
+        Assert.Equal(new CaptureSummary(1, 1), _queue.Summary());
+
+        File.Delete(refused.Path);
+        Assert.Equal(new CaptureSummary(1, 0), _queue.Summary());
+
+        var mended = Path.Combine(_directory, "20261108T085959000-mended.json");
+        File.WriteAllText(mended, "{ not json");
+        Assert.Equal(new CaptureSummary(1, 0), _queue.Summary());
+        File.WriteAllText(mended, """{ "id": "abc", "text": "Call mum", "createdUtc": "2026-11-08T08:59:59Z", "refused": false }""");
+        Assert.Equal(new CaptureSummary(2, 0), _queue.Summary());
+        Assert.Equal(["Call mum", "Buy stamps"], _queue.Pending(10).Select(p => p.Text));
+    }
+
     [Fact]
     public void Pending_IsBounded()
     {
@@ -119,5 +165,11 @@ public sealed class CaptureQueueTests : IDisposable
     public void Dispose()
     {
         if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);
+    }
+
+    private sealed class Collector : ILogEventSink
+    {
+        public List<LogEvent> Events { get; } = [];
+        public void Emit(LogEvent logEvent) => Events.Add(logEvent);
     }
 }

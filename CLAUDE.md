@@ -451,8 +451,11 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 - **Never lost, never logged.** The box hands the text to `ActivityTrackerService.Capture`, which writes a file to
   `CaptureQueue` before anything sends it; paused, offline and signed out it waits there. The send loop delivers captures
   first in each pass (`CaptureDelivery`), oldest first, stopping at the first that must wait. Only a 2xx removes a file; a
-  400/413/422 keeps it as refused and never sends it again; an unreadable file is skipped, **never deleted or renamed** (unlike the
-  outbox's, which goes to `.bad` — it may be the only copy of a thought). A 404 (a server from before the route) or 409 `noPriority` holds the
+  400/413/422 keeps it as refused and never sends it again, and the tray shows a count of them in an item of its own ("1 thought
+  the server refused — open folder", which opens `captures\`); an unreadable file is skipped, **never deleted or renamed** (unlike the
+  outbox's, which goes to `.bad` — it may be the only copy of a thought), and logged once until it changes. The tray reads the
+  queue's `Summary` every 2 s on the UI thread, so `CaptureQueue` keeps each file as last read and parses it again only when its
+  write time or length changed — the user may delete or mend files in the folder. A 404 (a server from before the route) or 409 `noPriority` holds the
   whole queue `CaptureQueue.HoldFor` (30 min), and the tray item says why; a new capture asks at once. Text is cut to the
   server's 10 000 characters before queuing. Logs carry capture ids and lengths, **never the text** — and not the server's
   answer body either, which can quote it.

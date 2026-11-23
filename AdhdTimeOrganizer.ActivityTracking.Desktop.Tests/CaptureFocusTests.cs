@@ -120,6 +120,18 @@ public class CaptureFocusTests
             TrayApplicationContext.DescribeCaptureItem(HotkeyRegistration.Registered, "Win+Alt+N", new CaptureStatus(1, 3, CaptureSendResult.NoPriority)));
     }
 
+    /// <summary>Review M8: a refused thought was kept on disk but never shown, so the user believed it delivered.</summary>
+    [Fact]
+    public void RefusedThoughts_GetTheirOwnTrayItem_InCountsOnly()
+    {
+        Assert.Null(TrayApplicationContext.DescribeRefusedCaptures(null));
+        Assert.Null(TrayApplicationContext.DescribeRefusedCaptures(new CaptureStatus(2, 0, null)));
+        Assert.Equal("1 thought the server refused — open folder",
+            TrayApplicationContext.DescribeRefusedCaptures(new CaptureStatus(0, 1, null)));
+        Assert.Equal("3 thoughts the server refused — open folder",
+            TrayApplicationContext.DescribeRefusedCaptures(new CaptureStatus(1, 3, CaptureSendResult.NoPriority)));
+    }
+
     private static PlannedBlock Block(string name, int endHour, int endMinute) => new()
     {
         PlannerTaskId = name.Length,
