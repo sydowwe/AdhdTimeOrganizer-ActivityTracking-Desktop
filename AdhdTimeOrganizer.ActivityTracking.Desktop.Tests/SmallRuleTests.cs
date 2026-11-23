@@ -130,6 +130,15 @@ public class TrayStatusTests
             TrayApplicationContext.DescribeStatus(
                 new TrackerStatus(true, false, 14, DateTime.UtcNow, SendResult.RetryLater, null, LastStatusCode: code), hasSession: true));
 
+    /// <summary>The Run entry and "Restart to update" pass --minimized and stay silent; any other start was the user's.</summary>
+    [Theory]
+    [InlineData(new string[0], true)]
+    [InlineData(new[] { "--minimized" }, false)]
+    [InlineData(new[] { "--MINIMIZED" }, false)]
+    [InlineData(new[] { "--something-else" }, true)]
+    public void StartedByUser_IsAnyStartWithoutMinimized(string[] args, bool expected) =>
+        Assert.Equal(expected, TrayApplicationContext.StartedByUser(args));
+
     [Fact]
     public void DescribeStatus_SaysSignedOut() =>
         Assert.Equal("Tracking · signed out · 3 min unsent",

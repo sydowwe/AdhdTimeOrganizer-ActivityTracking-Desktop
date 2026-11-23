@@ -66,10 +66,15 @@ public sealed class TrayApplicationContext : ApplicationContext
     /// <summary>What <see cref="AppConfig.Load(string)"/> had to do to the config, said once after start; null when nothing.</summary>
     private readonly (string Title, string Text)? _configNotice;
 
-    public TrayApplicationContext(AppConfig config, (string Title, string Text)? configNotice = null)
+    /// <summary>Whether to say "running" once tracking has started: a start the user made, from the Start menu or the exe.</summary>
+    private readonly bool _announceStart;
+
+    /// <param name="announceStart">See <see cref="StartedByUser"/>.</param>
+    public TrayApplicationContext(AppConfig config, (string Title, string Text)? configNotice = null, bool announceStart = false)
     {
         _config = config;
         _configNotice = configNotice;
+        _announceStart = announceStart;
         _apiClient = new ApiClient(config);
         _breakReporter = new BreakReporter(_apiClient.SendBreakAsync);
 
@@ -204,9 +209,26 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             _isInitializing = false;
             RefreshStatus();
+            AnnounceStart();
         });
 
         RefreshStatus();
+    }
+
+    /// <summary>
+    /// The Run entry and the updater start the tracker with <c>--minimized</c>: those starts stay silent. Any other start is
+    /// the user's — the Start menu, the exe, the installer's first run — and a tray app gives no sign of it otherwise.
+    /// </summary>
+    internal static bool StartedByUser(IEnumerable<string> args) =>
+        !args.Any(a => string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>"It's running", once, for a start the user made — only while recording; a pause and a sign-in say their own.</summary>
+    private void AnnounceStart()
+    {
+        if (!_announceStart || !_tracker.IsRunning) return;
+        _balloonOpensMapping = false;
+        _trayIcon.ShowBalloonTip(5_000, "Activity Tracker is running",
+            "It records from the notification area. Right-click its icon for the menu.", ToolTipIcon.Info);
     }
 
     /// <summary>

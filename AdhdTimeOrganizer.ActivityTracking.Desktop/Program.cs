@@ -69,7 +69,8 @@ var configLoad = AppConfig.Load();
 
 try
 {
-    Application.Run(new TrayApplicationContext(configLoad.Config, configLoad.Notice()));
+    Application.Run(new TrayApplicationContext(configLoad.Config, configLoad.Notice(),
+        announceStart: TrayApplicationContext.StartedByUser(args)));
 }
 finally
 {

@@ -591,7 +591,9 @@ don't warn.
   `%LocalAppData%\AdhdTimeOrganizer\logs`, so an uninstall keeps unsent minutes and a reinstall resumes. Never give the
   package either of those names.
 - **The `Run` entry follows the exe.** `current\AdhdTimeOrganizer.exe` keeps its path across updates, so updates never touch
-  the entry. The installed build takes the entry over from a build run from source at start (`AutoStartHelper.Reconcile`).
+  the entry. Its command carries `--minimized`, as does "Restart to update": those starts are silent, and any start without
+  it (Start menu, the exe, the installer's first run) shows a "running" balloon once recording
+  (`TrayApplicationContext.StartedByUser`). `AutoStartHelper` compares the whole command, so changing it rewrites every entry. The installed build takes the entry over from a build run from source at start (`AutoStartHelper.Reconcile`).
   A build from source never moves an entry whose exe exists. The uninstall hook removes the entry if it starts the
   installed exe (`RemoveIfOwn`).
 - **An update goes through the normal exit.** "Restart to update" in the tray calls `WaitExitThenApplyUpdates` — the

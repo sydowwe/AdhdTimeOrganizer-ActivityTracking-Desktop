@@ -171,8 +171,6 @@ internal static partial class Win32
         return length > 0 ? new string(buffer, 0, length) : null;
     }
 
-    public static int GetIdleSeconds() => (int)GetIdleTime().TotalSeconds;
-
     /// <summary>Time since the last keyboard or mouse input, to the millisecond — what idle backdating takes back.</summary>
     public static TimeSpan GetIdleTime()
     {
