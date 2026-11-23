@@ -59,8 +59,11 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 ```powershell
 ./scripts/test.ps1                                   # build + run all tests
 ./scripts/test.ps1 -Class '*OutboxStoreTests'        # comma-separated, xunit wildcard syntax
+./scripts/test.ps1 -NotTrait 'Needs=Desktop'         # what CI runs: everything a build runner can
 ./scripts/test.ps1 -BuildOnly                        # compile check, Debug and Release
 ```
+
+`-Class`, `-Method` and `-Trait` include; `-NotClass` and `-NotTrait` exclude.
 
 - It builds into `artifacts-cli/` (gitignored). The user usually has the tracker **running from
   `bin/`** or open in Rider, so a plain `dotnet build` fails with `MSB3021 … being used by another
@@ -214,7 +217,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   pid + creation time). `Process.MainModule` fails on elevated processes and is slow, so don't
   reintroduce it.
 - A wrong P/Invoke signature compiles and fails silently at runtime. Add a case to `NativeSmokeTests`
-  for any new native call.
+  for any new native call. Give it `[Trait("Needs", "Desktop")]` if it needs a signed-in desktop (a monitor, an audio
+  device, a hotkey, a WinEvent hook): CI runs every case without that trait, on a runner that has none of those.
 - **`ForegroundEvents` is installed and removed on the UI thread** (`Start`, `Stop`, `Dispose`): an out-of-context
   WinEvent hook is delivered through the setting thread's message loop, and only that thread may remove it. The
   callback is `[UnmanagedCallersOnly]` and static (WinEvent callbacks carry no context), stamps a `Stopwatch`
@@ -473,8 +477,8 @@ updates from this repo's **GitHub Releases** (public, so no token ships in the a
    `main` it runs the full test suite, raises `<Version>` in the app's csproj, commits `release: <version>` and makes the
    annotated tag `v<version>`. It refuses anything but plain `x.y.z` higher than the current version (Velopack only offers a
    higher one; the server parses the header) and a tag that already exists here or on origin. It pushes nothing.
-3. `git push origin main`, then `git push origin v<version>`. The tag push runs `.github/workflows/release.yml`: the pure
-   tests, then `scripts/release.ps1 -Upload` with the workflow's own `GITHUB_TOKEN`, which refuses a tag that disagrees with
+3. `git push origin main`, then `git push origin v<version>`. The tag push runs `.github/workflows/release.yml`: every
+   test but the `NativeSmokeTests` cases that need a signed-in desktop (`-NotTrait 'Needs=Desktop'`), then `scripts/release.ps1 -Upload` with the workflow's own `GITHUB_TOKEN`, which refuses a tag that disagrees with
    the csproj. The GitHub release's text is the commit subjects since the previous `v*` tag (the `release:` commit left out).
 4. Installed trackers find it within 6 h (`UpdatePolicy.CheckEvery`), or 2 min after their next start, download it quietly,
    and show "Restart to update" in the tray; otherwise it applies at the next start.

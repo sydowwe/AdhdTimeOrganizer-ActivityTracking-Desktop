@@ -11,11 +11,19 @@
     ./scripts/test.ps1                                  # build + run everything
     ./scripts/test.ps1 -Class '*ActivityRecorderTests'  # one class (xunit wildcard syntax)
     ./scripts/test.ps1 -Method '*.Normalize*'
+    ./scripts/test.ps1 -NotTrait 'Needs=Desktop'        # everything a build runner can run (what CI runs)
+    ./scripts/test.ps1 -NotClass '*NativeSmokeTests'    # everything but one class
     ./scripts/test.ps1 -BuildOnly                       # compile check, Debug and Release
+
+    Each filter takes a comma-separated list. Includes of one kind OR together, excludes AND together, and different
+    kinds AND together (xunit's simple filtering).
 #>
 param(
     [string[]]$Class = @(),
     [string[]]$Method = @(),
+    [string[]]$Trait = @(),
+    [string[]]$NotClass = @(),
+    [string[]]$NotTrait = @(),
     [switch]$BuildOnly
 )
 
@@ -42,6 +50,9 @@ if (-not $exe) { throw "Test executable not found under $artifacts" }
 $filters = @()
 foreach ($c in $Class) { $filters += @('-class', $c) }
 foreach ($m in $Method) { $filters += @('-method', $m) }
+foreach ($t in $Trait) { $filters += @('-trait', $t) }
+foreach ($c in $NotClass) { $filters += @('-class-', $c) }
+foreach ($t in $NotTrait) { $filters += @('-trait-', $t) }
 
 & $exe.FullName @filters
 exit $LASTEXITCODE

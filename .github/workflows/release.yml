@@ -35,11 +35,12 @@ jobs:
       - name: Restore vpk
         run: dotnet tool restore
 
-      # The pure suites only: NativeSmokeTests want a signed-in desktop and the wire/vector tests the server repo beside
-      # this one, neither of which a runner has. release.ps1 checks the published files the smoke test would.
+      # Every test, so a new class is covered by default, minus the NativeSmokeTests cases that need a signed-in desktop
+      # (a monitor, an audio device, hotkeys and hooks), which carry the Needs=Desktop trait. The wire and vector tests
+      # skip their server-copy check here: the server repo is not checked out beside this one.
       - name: Test
         shell: pwsh
-        run: ./scripts/test.ps1 -Class '*AutoStartHelperTests','*ClientVersionHeaderTests','*UpdatePolicyTests','*ActivityRecorderTests','*SendLoopTests','*RefreshPolicyTests'
+        run: ./scripts/test.ps1 -NotTrait 'Needs=Desktop'
 
       - name: Pack and upload
         if: github.ref_type == 'tag'

@@ -8,6 +8,11 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Tests;
 /// Calls the P/Invoke paths against the real machine. A wrong signature compiles fine and fails only
 /// here — or, without this, silently in the tray as entries with no path.
 /// </summary>
+/// <remarks>
+/// The cases that need a signed-in desktop — a monitor, an audio device, a window station that takes hotkeys and
+/// hooks — carry <c>[Trait("Needs", "Desktop")]</c>, and CI leaves them out (<c>test.ps1 -NotTrait 'Needs=Desktop'</c>).
+/// The rest run on a build runner too. A new case that touches the desktop gets the trait.
+/// </remarks>
 public class NativeSmokeTests
 {
     [Fact]
@@ -21,7 +26,7 @@ public class NativeSmokeTests
         Assert.Same(info, ProcessInfoCache.Get(Environment.ProcessId));
     }
 
-    [Fact]
+    [Fact, Trait("Needs", "Desktop")]
     public void Monitors_AreEnumerated_PrimaryFirst()
     {
         var monitors = MonitorHelper.GetMonitors();
@@ -30,7 +35,7 @@ public class NativeSmokeTests
         Assert.Equal((0, 0), (monitors[0].Bounds.Left, monitors[0].Bounds.Top));
     }
 
-    [Fact]
+    [Fact, Trait("Needs", "Desktop")]
     public void BackgroundWindowsAndAudio_DoNotThrow()
     {
         var windows = MonitorHelper.GetBackgroundWindows(Win32.GetForegroundWindow(), MonitorHelper.GetMonitors(), 0, 5);
@@ -60,7 +65,7 @@ public class NativeSmokeTests
     /// The hook is set and removed on this thread, which has no message loop, so nothing is delivered — what this
     /// pins is the signature: a wrong one returns a null hook, and the tracker silently falls back to polling.
     /// </summary>
-    [Fact]
+    [Fact, Trait("Needs", "Desktop")]
     public void ForegroundEvents_InstallAndUninstall()
     {
         Assert.True(ForegroundEvents.Install());
@@ -75,7 +80,7 @@ public class NativeSmokeTests
     /// as "taken" — the one failure the tray must tell apart. A wrong signature would read every chord as taken, or none.
     /// The window is message-only and this thread has no message loop: nothing is pressed, only the registration is pinned.
     /// </summary>
-    [Fact]
+    [Fact, Trait("Needs", "Desktop")]
     public void GlobalHotkey_Registers_AndASecondHoldIsTaken()
     {
         var chord = HotkeyChord.TryParse("Ctrl+Alt+Shift+F23")!;
@@ -92,7 +97,7 @@ public class NativeSmokeTests
     /// The recommended default is free on this machine. Skipped, not failed, when something holds it — a running tracker of
     /// this build does — since that is a fact about the machine, which the tray reports itself.
     /// </summary>
-    [Fact]
+    [Fact, Trait("Needs", "Desktop")]
     public void TheDefaultCaptureHotkey_IsFreeHere()
     {
         using var hotkey = new GlobalHotkey();
