@@ -13,9 +13,6 @@ public sealed class TrayApplicationContext : ApplicationContext
     // NotifyIcon.Text throws past 127 characters.
     private const int MaxTrayTextLength = 127;
 
-    // "Until tomorrow morning" ends here, local time.
-    private static readonly TimeSpan MorningResumeTime = TimeSpan.FromHours(6);
-
     /// <summary>The distinct-entries grid filtered to what no rule covers, where each row can be mapped.</summary>
     internal const string UncoveredEntriesPath = "/activity-tracking/desktop/settings/distinctEntries?coverage=Uncovered";
 
@@ -51,6 +48,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _updateItem;
     private readonly ToolStripMenuItem _captureItem;
     private readonly ToolStripMenuItem _refusedCapturesItem;
+    private readonly ToolStripMenuItem _quietItem;
+    private readonly ToolStripMenuItem _nudgesBackOnItem;
     private readonly GlobalHotkey _hotkey;
 
     private HotkeyRegistration _hotkeyState;
@@ -108,6 +107,16 @@ public sealed class TrayApplicationContext : ApplicationContext
         pauseForItem.DropDownItems.Add("1 hour", null, (_, _) => PauseFor(PauseChoice.OneHour));
         pauseForItem.DropDownItems.Add("Until tomorrow morning", null, (_, _) => PauseFor(PauseChoice.UntilTomorrowMorning));
         pauseForItem.DropDownItems.Add("Until I resume", null, (_, _) => PauseFor(PauseChoice.UntilResumed));
+
+        // Toasts off for a while, recording on (prompt 25): a pause would lose the hour's record.
+        _quietItem = new ToolStripMenuItem(QuietMenuText);
+        _quietItem.DropDownItems.Add("30 minutes", null, (_, _) => QuietFor(QuietChoice.ThirtyMinutes));
+        _quietItem.DropDownItems.Add("1 hour", null, (_, _) => QuietFor(QuietChoice.OneHour));
+        _quietItem.DropDownItems.Add("Until tomorrow morning", null, (_, _) => QuietFor(QuietChoice.UntilTomorrowMorning));
+        _quietItem.DropDownItems.Add("Until I turn them back on", null, (_, _) => QuietFor(QuietChoice.UntilTurnedBackOn));
+        _quietItem.DropDownItems.Add(new ToolStripSeparator());
+        _nudgesBackOnItem = new ToolStripMenuItem("Turn nudges back on", null, (_, _) => EndQuiet()) { Enabled = false };
+        _quietItem.DropDownItems.Add(_nudgesBackOnItem);
         // Before the item reads the state: moves an entry an older build left, and repoints one whose exe has gone.
         AutoStartHelper.Current.Reconcile();
         _autoStartItem = new ToolStripMenuItem("Start with Windows", null, OnToggleAutoStart) { CheckOnClick = true };
@@ -128,6 +137,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(_toggleItem);
         contextMenu.Items.Add(pauseForItem);
+        contextMenu.Items.Add(_quietItem);
         contextMenu.Items.Add(_autoStartItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Settings…", null, OnSettings);
@@ -284,6 +294,12 @@ public sealed class TrayApplicationContext : ApplicationContext
         var hasSession = _apiClient.HasSession;
         var nowUtc = DateTime.UtcNow;
 
+        // A quiet period that has run out is cleared, so the config — and a restart — says nudges are on again.
+        if (QuietNudges.HasEnded(_config.NudgesQuietUntilUtc, nowUtc)) ClearQuiet();
+        var quiet = QuietNudges.Describe(_config.NudgesQuietUntilUtc, nowUtc, TimeZoneInfo.Local);
+        _quietItem.Text = quiet ?? QuietMenuText;
+        _nudgesBackOnItem.Enabled = quiet is not null;
+
         // A session ended by the server, uploads stuck for a day, windows refused: a toast, once, and a repeat at most
         // daily. It replaces the "signed out" balloon, which could not be withdrawn or switched off.
         _nudges.OnUploadStatus(nowUtc, new UploadSnapshot(
@@ -301,7 +317,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
 
         var breakLeft = _nudges.GetStatus().BreakEndsUtc - nowUtc;
-        var text = DescribeStatus(status, hasSession, breakLeft);
+        var text = DescribeStatus(status, hasSession, breakLeft, quiet);
         var glance = DescribeGlance(status, nowUtc);
         _glanceItem.Text = glance;
         _statusItem.Text = $"Status: {text}";
@@ -513,7 +529,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    internal static string DescribeStatus(TrackerStatus status, bool hasSession, TimeSpan? breakLeft = null)
+    /// <param name="quiet">"Nudges quiet until 14:30" (<see cref="QuietNudges.Describe"/>), or null.</param>
+    internal static string DescribeStatus(TrackerStatus status, bool hasSession, TimeSpan? breakLeft = null, string? quiet = null)
     {
         var state = !status.IsRunning ? DescribePause(status.PausedUntilUtc)
             : status.IsLocked ? "Locked — not recording"
@@ -523,6 +540,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         // Put first after the state: with a long error the tooltip is truncated from the end.
         if (breakLeft is { } left && left > TimeSpan.Zero)
             state += $" · on a break, {Math.Ceiling(left.TotalMinutes):0} min left";
+
+        // Recording goes on; only the toasts wait. Said while it lasts, so a quiet afternoon is not a broken tracker.
+        if (quiet is { Length: > 0 })
+            state += $" · {char.ToLowerInvariant(quiet[0])}{quiet[1..]}";
 
         // One file per finished minute; the one just written is normally sent within seconds.
         var queued = status.PendingWindows > 1 ? $" · {status.PendingWindows} min unsent" : "";
@@ -557,11 +578,9 @@ public sealed class TrayApplicationContext : ApplicationContext
             case PauseChoice.OneHour:
                 return utcNow.AddHours(1);
             case PauseChoice.UntilTomorrowMorning:
-                // The next 06:00 on the user's clock: tonight's pause ends tomorrow, one at 02:00 later today.
-                var local = TimeZoneInfo.ConvertTimeFromUtc(utcNow, zone);
-                var morning = local.Date + MorningResumeTime;
-                if (morning <= local) morning = morning.AddDays(1);
-                return TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(morning, DateTimeKind.Unspecified), zone);
+                // The next 06:00 on the user's clock: tonight's pause ends tomorrow, one at 02:00 later today. The same
+                // morning "Quiet nudges for" ends at.
+                return QuietNudges.NextMorningUtc(utcNow, zone);
             default:
                 return DateTime.MaxValue;
         }
@@ -571,6 +590,35 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _tracker.Pause(PauseEnd(choice, DateTime.UtcNow, TimeZoneInfo.Local));
         RefreshStatus();
+    }
+
+    private const string QuietMenuText = "Quiet nudges for";
+
+    /// <summary>Saved at once, like a pause, so a restart keeps it. Recording is not touched.</summary>
+    private void QuietFor(QuietChoice choice)
+    {
+        var until = QuietNudges.Until(choice, DateTime.UtcNow, TimeZoneInfo.Local);
+        _config.NudgesQuietUntilUtc = until;
+        _config.Save();
+        Serilog.Log.Information("Nudges quiet until {Until:u}", until);
+        RefreshStatus();
+    }
+
+    /// <summary>"Turn nudges back on". A nudge held through the quiet shows at the next poll if it is still true.</summary>
+    private void EndQuiet()
+    {
+        ClearQuiet();
+        RefreshStatus();
+    }
+
+    /// <summary>Also for a quiet period that ran out, from <see cref="RefreshStatus"/>.</summary>
+    private void ClearQuiet()
+    {
+        if (_config.NudgesQuietUntilUtc is null) return;
+
+        _config.NudgesQuietUntilUtc = null;
+        _config.Save();
+        Serilog.Log.Information("Nudges back on");
     }
 
     private void OnPrivacy(object? sender, EventArgs e)

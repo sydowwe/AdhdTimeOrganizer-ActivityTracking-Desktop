@@ -154,6 +154,14 @@ public sealed class AppConfig
     /// <summary>Hold nudges while any app has the microphone open — a call, even a muted one.</summary>
     public bool QuietWhenMicrophoneInUse { get; set; } = true;
 
+    /// <summary>
+    /// The tray's "Quiet nudges for…" (<see cref="Services.QuietNudges"/>): nudges are held until then while recording goes on;
+    /// <see cref="DateTime.MaxValue"/> for "until I turn them back on", null when not quiet. Saved like
+    /// <see cref="PausedUntilUtc"/>, so a restart keeps it; written only while set, so an ordinary config.json is unchanged.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? NudgesQuietUntilUtc { get; set; }
+
     // ── Drift nudges (see DriftPolicy) ────────────────────────────────────────
 
     /// <summary>

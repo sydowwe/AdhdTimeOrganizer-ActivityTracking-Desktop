@@ -13,7 +13,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | Path | What lives there |
 |---|---|
 | `Program.cs` | Velopack's hooks (first line — see "Releasing"), logging (Serilog → `%LOCALAPPDATA%\AdhdTimeOrganizer\logs`), single-instance mutex, tray startup |
-| `TrayApplicationContext.cs` | Tray icon and menu (incl. "Pause for…", the today/now glance and the "map these apps" prompt); pulls status from the tracker on a UI timer, which also swaps the icon and feeds the upload notices and the pause reminder. Double-click never pauses: it opens the menu, resumes a pause, or signs in |
+| `TrayApplicationContext.cs` | Tray icon and menu (incl. "Pause for…", "Quiet nudges for…", the today/now glance and the "map these apps" prompt); pulls status from the tracker on a UI timer, which also swaps the icon and feeds the upload notices and the pause reminder. Double-click never pauses: it opens the menu, resumes a pause, or signs in |
 | `Services/SessionStartup.cs` | The tray's start-up order: start tracking, the config notice, restore the session, the sign-in form if none |
 | `TrayIcons.cs`, `Services/TrayIconState.cs` | The three tray icons — normal, paused (greyed, pause bars), attention (amber dot: signed out or a poll error) — drawn once from the embedded icon and disposed on exit; and the **pure** choice between them |
 | `LoginForm.cs`, `SettingsForm.cs`, `PrivacyForm.cs` | Sign-in (the browser by default; password + 2FA behind "Use a password instead"); settings editor; the user's ignore / hide-title rules and private-window handling |
@@ -46,6 +46,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/UnmappedReviewService.cs` | The send loop's evening tick: holds the server's evening moment, asks the server for today's unmapped time when it comes, hands the invite on |
 | `Services/PauseKeepAlive.cs` | **Pure** when a paused tracker sends its empty heartbeat, and what that heartbeat is |
 | `Services/PauseReminderPolicy.cs` | **Pure** "still paused" decisions: when a pause "until I resume" gets its "Tracking has been paused for 4 h" toast |
+| `Services/QuietNudges.cs` | **Pure** "Quiet nudges for…": whether nudges are quiet by choice, when each choice ends, the tray's "Nudges quiet until 14:30" |
 | `Services/CaptureQueue.cs`, `Services/CaptureDelivery.cs` | Quick capture: parked thoughts as JSON files under `%LOCALAPPDATA%\…Desktop\captures` (**pure** rules: trim, cut, what each answer means) and the send loop's tick that delivers them |
 | `Services/CaptureFocus.cs`, `Services/HotkeyChord.cs` | **Pure** capture-box rules (where focus goes back, what the tracker credits while it is open, the plan line) and the hotkey as written in Settings ("Win+Alt+N") |
 | `CaptureForm.cs`, `Native/GlobalHotkey.cs`, `Native/CaptureBoxHandles.cs` | The one-line capture box, the `RegisterHotKey` window that opens it, and the handles the poll loop reads to stand the box in for the work |
@@ -407,6 +408,16 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     sees it. The reminder's own clock is in memory; the start-up "paused" balloon counts as a reminder
     (`OnPauseAnnounced`), so a restart doesn't add a toast. "Copy diagnostics" says `Pause reminders: on/off` and how long
     the pause has lasted.
+- **"Quiet nudges for…"** (prompt 25; `QuietNudges`, `AppConfig.NudgesQuietUntilUtc`): 30 min, 1 h, until tomorrow morning
+  (the next 06:00, the same as a pause's) or until turned back on — toasts off, **recording on**, where a pause would lose the
+  hour's record. Saved like `PausedUntilUtc` (written only while set), so a restart keeps it; the tray's timer clears one that
+  has run out. It is one more quiet condition, the first `NudgeService.IsQuiet` asks: a due ramp, hyperfocus or drift nudge is
+  held and shows when the quiet ends **only if still true** — each family re-checks itself (stretch still running, still off
+  plan in a block not over, ≥ 10 min of the block left), so there is no staleness cut-off (decided 2026-11-23). A chime mark is
+  skipped. The **evening review is held** too, inside its own 3 h window, and missed past it (decided 2026-11-23). The
+  break-over toast, the upload notices and the "still paused" reminder ignore it. The tray says it in the status
+  line and tooltip ("Tracking · nudges quiet until 14:30") and the submenu's title; **no icon of its own** — prompt 16 kept the
+  icon to three looks, a fourth not being told apart at 16 px. "Copy diagnostics" says it on the "Quiet while" line.
 - Nudges are fed by the poll loop, so pausing tracking pauses them. A paused, asleep or hung gap as long as a
   break counts as a break.
 - A call (any app holding the microphone) counts as presence **for nudges only**. It must not change what
@@ -451,7 +462,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   22:00 — or only refreshed after it — lost tonight's invite. `UnmappedReviewPolicy.Pick` takes the previous one while it
   is due, else the next. **Each evening carries its own day** (`date`): bed at 01:30 sends at 00:30 the next date, so
   `unmapped?date=` and Review's `?date=` name the day that is ending. A server from before these fields sends neither,
-  and the tracker behaves as it did. Stays quiet while tracking is paused and while signed out; a server
+  and the tracker behaves as it did. Stays quiet while tracking is paused, while nudges are quiet by choice (held, see
+  "Quiet nudges for…") and while signed out; a server
   from before the routes ends it for the session; a failed read is retried in 5 min, not every pass.
 - The toast names **apps** (product or process name), never a window title, and the log carries counts only.
 - Both answers are pinned by `DesktopTrackerWire.samples.json` (`unmapped`, `eveningMoment`) like the others. The tray's

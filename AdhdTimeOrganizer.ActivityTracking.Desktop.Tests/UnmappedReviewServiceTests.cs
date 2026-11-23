@@ -206,6 +206,42 @@ public sealed class UnmappedReviewServiceTests : IDisposable
         Assert.Equal(0, _server.MomentRequests + _server.UnmappedRequests);
     }
 
+    /// <summary>
+    /// "Quiet nudges for…" holds the invite (prompt 25, decided 2026-11-23): a quiet hour ending inside the evening's 3 h window
+    /// brings it then.
+    /// </summary>
+    [Fact]
+    public async Task QuietNudges_HoldTheInvite_UntilTheyEnd_InsideTheWindow()
+    {
+        var service = Service(new UnmappedReviewStore());
+        _config.NudgesQuietUntilUtc = Moment.AddHours(1);
+
+        await service.TickAsync(Moment.AddMinutes(1), CancellationToken.None);
+        await service.TickAsync(Moment.AddMinutes(59), CancellationToken.None);
+        Assert.Empty(_shown);
+        Assert.Equal(0, _server.MomentRequests + _server.UnmappedRequests);
+
+        MoveServerPast(Moment);
+        await service.TickAsync(Moment.AddMinutes(61), CancellationToken.None);
+
+        Assert.Single(_shown);
+    }
+
+    /// <summary>Quiet all evening ("until tomorrow morning"): the evening is missed like one slept through, not rung at 06:00.</summary>
+    [Fact]
+    public async Task QuietNudges_PastTheWindow_MissTheEvening()
+    {
+        var service = Service(new UnmappedReviewStore());
+        _config.NudgesQuietUntilUtc = Moment.AddHours(10);
+
+        await service.TickAsync(Moment.AddMinutes(1), CancellationToken.None);
+        MoveServerPast(Moment);
+        await service.TickAsync(Moment.AddHours(10).AddMinutes(1), CancellationToken.None);
+
+        Assert.Empty(_shown);
+        Assert.Equal(0, _server.UnmappedRequests);
+    }
+
     /// <summary>A server from before the routes: asked once, then left alone for the session.</summary>
     [Fact]
     public async Task AnOlderServer_EndsItForTheSession()

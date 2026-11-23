@@ -72,7 +72,8 @@ public static class DiagnosticsReport
         text.AppendLine($"Time chime: {OnOff(config.TimeChimeEnabled)}, every {config.TimeChimeMinutes} min, " +
                         $"distractions {OnOff(config.TimeChimeDistractions)}, {config.TimeChimeChoices.Count(c => c.Chime)} ticked, " +
                         $"{config.TimeChimeChoices.Count(c => !c.Chime)} unticked");
-        text.AppendLine($"Quiet while: full screen {OnOff(config.QuietWhenFullscreen)}, microphone {OnOff(config.QuietWhenMicrophoneInUse)}");
+        text.AppendLine($"Quiet while: full screen {OnOff(config.QuietWhenFullscreen)}, microphone {OnOff(config.QuietWhenMicrophoneInUse)}; " +
+                        $"by choice {DescribeQuiet(config.NudgesQuietUntilUtc, nowUtc)}");
         text.AppendLine($"Upload notices: {OnOff(config.UploadNoticesEnabled)}");
         text.AppendLine($"Capture hotkey: {(string.IsNullOrWhiteSpace(config.CaptureHotkey) ? "off" : config.CaptureHotkey)}");
         text.AppendLine($"Evening review: {OnOff(config.UnmappedReviewEnabled)}");
@@ -115,6 +116,12 @@ public static class DiagnosticsReport
         { Result: SendResult.Rejected } => $"Rejected at {answer.AtUtc:yyyy-MM-dd HH:mm} UTC (the server predates empty heartbeats)",
         _ => $"{answer.Result} at {answer.AtUtc:yyyy-MM-dd HH:mm} UTC"
     };
+
+    /// <summary>"Quiet nudges for…": a nudge report ("I never get any") should say so first.</summary>
+    private static string DescribeQuiet(DateTime? untilUtc, DateTime nowUtc) =>
+        !QuietNudges.IsOn(untilUtc, nowUtc) ? "off"
+        : untilUtc == DateTime.MaxValue ? "until turned back on"
+        : $"until {untilUtc:yyyy-MM-dd HH:mm} UTC";
 
     private static string OnOff(bool value) => value ? "on" : "off";
 }

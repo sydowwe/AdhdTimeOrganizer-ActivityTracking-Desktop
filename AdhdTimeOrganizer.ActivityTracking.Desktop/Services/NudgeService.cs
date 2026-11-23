@@ -492,7 +492,9 @@ public sealed class NudgeService : IDisposable
     /// <summary>Called under <see cref="_lock"/>, and only when a stretch nudge is due.</summary>
     private bool IsQuiet(DateTime nowUtc)
     {
-        var reason = _config.QuietWhenFullscreen && Win32.IsShellHoldingNotifications() ? "full screen or presenting"
+        // The user's own "Quiet nudges for…" first: it costs no Win32 call.
+        var reason = QuietNudges.IsOn(_config.NudgesQuietUntilUtc, nowUtc) ? "nudges quiet by choice"
+            : _config.QuietWhenFullscreen && Win32.IsShellHoldingNotifications() ? "full screen or presenting"
             : _config.QuietWhenMicrophoneInUse && IsMicrophoneInUse(nowUtc) ? "microphone in use"
             : null;
 

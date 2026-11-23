@@ -15,8 +15,8 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 /// any matcher, which the tracker's long-lived token must not — so the invite only says what is waiting and opens the page.
 /// </para>
 /// <para>
-/// It does not depend on drift nudges. It stays quiet while tracking is paused (a pause is the user asking for quiet) and
-/// until the user is signed in. A server from before the routes ends it for the session, like the coverage prompt; a
+/// It does not depend on drift nudges. It stays quiet while tracking is paused (a pause is the user asking for quiet), while
+/// nudges are quiet by the tray's "Quiet nudges for…" (<see cref="QuietNudges"/>) and until the user is signed in. A server from before the routes ends it for the session, like the coverage prompt; a
 /// failed read is tried again in <see cref="RetryAfter"/>, not on every pass.
 /// </para>
 /// <para>
@@ -58,6 +58,9 @@ internal sealed class UnmappedReviewService(
     public async Task TickAsync(DateTime nowUtc, CancellationToken ct)
     {
         if (!config.UnmappedReviewEnabled || _notSupported || !apiClient.HasSession || isPaused(nowUtc)) return;
+        // "Quiet nudges for…" holds the invite: when the quiet ends inside the evening's window it comes then, after it the
+        // evening is missed like one slept through (prompt 25, decided 2026-11-23).
+        if (QuietNudges.IsOn(config.NudgesQuietUntilUtc, nowUtc)) return;
         if (nowUtc < _retryAtUtc) return;
 
         if (_next is null || nowUtc - _momentCheckedUtc >= MomentRefreshInterval || IsSpent(nowUtc))

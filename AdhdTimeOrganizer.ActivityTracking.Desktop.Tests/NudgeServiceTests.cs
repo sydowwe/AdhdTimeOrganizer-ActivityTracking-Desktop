@@ -492,6 +492,77 @@ public sealed class NudgeServiceTests : IDisposable
         Assert.Empty(restartedNotifier.Shown);
     }
 
+    // ---- "Quiet nudges for…" (prompt 25) ------------------------------------
+
+    /// <summary>A drift nudge due while quiet is held, not dropped: it shows once the quiet ends, while it is still true.</summary>
+    [Fact]
+    public void QuietNudges_HoldADueDriftNudge_UntilTheyAreTurnedBackOn()
+    {
+        var (service, notifier, _) = Create();
+        _config.NudgesQuietUntilUtc = DateTime.MaxValue;
+
+        OffPlan(service, 15);
+        Assert.Empty(notifier.Shown);
+
+        _config.NudgesQuietUntilUtc = null; // "Turn nudges back on"
+        OffPlan(service, 1);
+
+        Assert.Equal(NudgeKind.Drift, Assert.Single(notifier.Shown).Kind);
+    }
+
+    /// <summary>A timed quiet ends by itself: the first minute after its end shows the held nudge.</summary>
+    [Fact]
+    public void QuietNudges_ForAWhile_EndByThemselves()
+    {
+        var (service, notifier, _) = Create();
+        // Each minute is answered 65 s after it began: the 12th's answer is still quiet, the 13th's is not.
+        _config.NudgesQuietUntilUtc = _start.AddMinutes(13);
+
+        OffPlan(service, 12);
+        Assert.Empty(notifier.Shown);
+
+        OffPlan(service, 2);
+        Assert.Equal(NudgeKind.Drift, Assert.Single(notifier.Shown).Kind);
+    }
+
+    /// <summary>A chime mark is a moment, not a state: one passed in quiet is skipped, and the next mark still comes.</summary>
+    [Fact]
+    public void QuietNudges_SkipAChimeMark_AndTheNextOneComes()
+    {
+        var (service, notifier, _) = Create();
+        _config.TimeChimeEnabled = true;
+        _config.TimeChimeChoices = [new ChimeChoice("activity:7", "YouTube", true)];
+        _config.NudgesQuietUntilUtc = DateTime.MaxValue;
+
+        YouTubeMinutes(service, 15);
+        Assert.Empty(notifier.Shown);
+
+        _config.NudgesQuietUntilUtc = null;
+        YouTubeMinutes(service, 1);
+        Assert.Empty(notifier.Shown); // the 15-minute mark is not said late
+
+        YouTubeMinutes(service, 14);
+        var chime = Assert.Single(notifier.Shown);
+        Assert.Equal(TimeSpan.FromMinutes(30), chime.Length);
+    }
+
+    /// <summary>The record at risk is never quiet: the upload notice and the "still paused" reminder ignore it.</summary>
+    [Fact]
+    public void QuietNudges_LeaveTheUploadNotice_AndThePauseReminder()
+    {
+        var (service, notifier, _) = Create();
+        _config.NudgesQuietUntilUtc = DateTime.MaxValue;
+        var now = DateTime.UtcNow;
+
+        service.OnUploadStatus(now, Stalled(now));
+        service.OnUploadStatus(now + UploadHealthPolicy.StallGrace, Stalled(now + UploadHealthPolicy.StallGrace));
+        var paused = new PauseSnapshot(DateTime.MaxValue, now.AddHours(-3), TimeSpan.FromSeconds(3));
+        service.OnPauseStatus(now, paused);
+        service.OnPauseStatus(now.AddSeconds(2), paused);
+
+        Assert.Equal([NudgeKind.UploadHealth, NudgeKind.PauseReminder], notifier.Shown.Select(n => n.Kind));
+    }
+
     [Fact]
     public void TimeChime_IsQuietInsideAPlannedBlock_WhileDriftNudgesAreOn()
     {
