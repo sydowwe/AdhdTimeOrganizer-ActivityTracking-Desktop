@@ -491,6 +491,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   (`PrivateWindowHandling`); process and product stay, so process-level server rules still map the time.
   The raw title goes no further than `ToSample`, so it never reaches the outbox. **At sending**
   (`TrackerRules`, send loop): the server's rules, as above.
+- A local **process** pattern loses a trailing `.exe` (`PrivacyFilter.WithoutExeSuffix`), on save in the Privacy form and on
+  load: process names are `Process.ProcessName`, so `chrome.exe` matched nothing (review L4). Exact, Contains and Wildcard
+  only, and never down to bare wildcards (`*.exe` stays); a Regex is left as written.
 - A local title rule matches the raw title **and** the normalized one: normalization strips the browser
   suffix, and with it a localized private-browsing marker.
 - Private windows are recognised by title only: Firefox ends it with "Private Browsing", Edge writes

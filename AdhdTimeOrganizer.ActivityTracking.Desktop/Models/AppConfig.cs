@@ -540,6 +540,10 @@ public sealed class AppConfig
             reset++;
         }
 
+        // A rule saved as "chrome.exe" before the Privacy form stripped it matched nothing; mend it on load. Not a reset:
+        // the rule only starts doing what it said.
+        rule.ProcessName = PrivacyFilter.WithoutExeSuffix(rule.ProcessName, rule.ProcessNameMatchType);
+
         // A rule left naming nothing matches nothing (PrivacyFilter.IsUsable); it can't be widened, so hide everything.
         if (lostCondition && !PrivacyFilter.IsUsable(rule)) HideAllTitlesUntilReviewed = true;
         return reset;

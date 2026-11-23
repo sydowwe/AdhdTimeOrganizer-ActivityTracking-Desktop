@@ -56,6 +56,25 @@ public sealed class PrivacyFilter
     /// <summary>Whether <paramref name="rule"/> names anything at all; one that does not would match every window.</summary>
     public static bool IsUsable(LocalRule rule) => !string.IsNullOrEmpty(rule.ProcessName) || rule.WindowTitle is not null;
 
+    /// <summary>
+    /// A process pattern as the tracker sees process names: without a trailing <c>.exe</c> (review L4). Process names are
+    /// <c>Process.ProcessName</c>, the file name minus <c>.exe</c>, so a rule written as <c>chrome.exe</c> matched nothing.
+    /// Exact, Contains and Wildcard only — a regular expression says what it means — and never when nothing but wildcards
+    /// would be left (<c>*.exe</c> must not become <c>*</c>, every process).
+    /// </summary>
+    public static string? WithoutExeSuffix(string? pattern, PatternMatchType matchType)
+    {
+        const string exe = ".exe";
+        if (matchType == PatternMatchType.Regex || pattern is null) return pattern;
+
+        var trimmed = pattern.Trim();
+        if (!trimmed.EndsWith(exe, StringComparison.OrdinalIgnoreCase)) return pattern;
+
+        var stem = trimmed[..^exe.Length];
+        var namesSomething = matchType == PatternMatchType.Wildcard ? stem.Any(c => c is not ('*' or '?')) : stem.Length > 0;
+        return namesSomething ? stem : pattern;
+    }
+
     private bool Matches(LocalRule rule, string processName, string? rawTitle, string normalizedTitle)
     {
         if (!IsUsable(rule)) return false;

@@ -164,11 +164,13 @@ public sealed class PrivacyForm : Form
 
             if (process.Length == 0 && title.Length == 0 && !isEmptyTitle) continue; // a row left blank
 
+            var processMatch = ParseMatch(CellText(row, _processMatchColumn));
             var rule = new LocalRule
             {
                 Action = CellText(row, _actionColumn) == ActionHideTitle ? LocalRuleAction.HideTitle : LocalRuleAction.Ignore,
-                ProcessName = process.Length == 0 ? null : process,
-                ProcessNameMatchType = ParseMatch(CellText(row, _processMatchColumn)),
+                // "chrome.exe" is saved as "chrome", the name the tracker sees.
+                ProcessName = process.Length == 0 ? null : PrivacyFilter.WithoutExeSuffix(process, processMatch),
+                ProcessNameMatchType = processMatch,
                 WindowTitle = isEmptyTitle ? "" : title.Length == 0 ? null : title,
                 WindowTitleMatchType = isEmptyTitle ? PatternMatchType.Exact : ParseMatch(titleMatch)
             };

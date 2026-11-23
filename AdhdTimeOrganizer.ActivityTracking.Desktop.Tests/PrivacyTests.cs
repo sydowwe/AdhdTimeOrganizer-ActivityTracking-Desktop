@@ -42,6 +42,33 @@ public class PrivacyFilterTests
         Assert.Null(Apply(config, "SearchHost", null, "Search"));
     }
 
+    /// <summary>Review L4: process names carry no ".exe", so a rule typed as the file name used to match nothing.</summary>
+    [Theory]
+    [InlineData("chrome.exe", PatternMatchType.Exact, "chrome")]
+    [InlineData("Chrome.EXE ", PatternMatchType.Exact, "Chrome")]
+    [InlineData("chrome", PatternMatchType.Exact, "chrome")]
+    [InlineData("keepass.exe", PatternMatchType.Contains, "keepass")]
+    [InlineData("chr*.exe", PatternMatchType.Wildcard, "chr*")]
+    [InlineData("*.exe", PatternMatchType.Wildcard, "*.exe")]   // never "*", every process
+    [InlineData(".exe", PatternMatchType.Exact, ".exe")]        // nothing left to name
+    [InlineData(@"chrome\.exe", PatternMatchType.Regex, @"chrome\.exe")]
+    [InlineData("chrome.exe", PatternMatchType.Regex, "chrome.exe")]
+    public void WithoutExeSuffix(string pattern, PatternMatchType matchType, string expected) =>
+        Assert.Equal(expected, PrivacyFilter.WithoutExeSuffix(pattern, matchType));
+
+    /// <summary>A rule saved as "chrome.exe" before the form stripped it is mended on load, and then matches.</summary>
+    [Fact]
+    public void ARuleSavedWithExe_IsMendedOnLoad_AndMatches()
+    {
+        var config = With(new LocalRule { Action = LocalRuleAction.Ignore, ProcessName = "chrome.exe" });
+        Assert.Equal("Inbox", Apply(config, "chrome", "Google Chrome", "Inbox"));
+
+        config.Normalize();
+
+        Assert.Equal("chrome", config.LocalRules[0].ProcessName);
+        Assert.Null(Apply(config, "chrome", "Google Chrome", "Inbox"));
+    }
+
     /// <summary>A config.json from before hide-title rules: same key, no action or match fields.</summary>
     [Fact]
     public void OldConfig_ReadsAsExactIgnoreRules()
