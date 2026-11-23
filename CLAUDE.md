@@ -187,7 +187,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   early and can close two windows. A locked screen is not idleness and takes nothing back.
   - The hold-back is **capped at 50 s** (`MaxHoldBack`): the tray's "now" and the drift nudge only use a minute
     younger than `DriftPolicy.FreshFor`, and a later window would arrive too old for them. A longer idle threshold is
-    backdated only that far. Lengthen one and you must re-check the other.
+    backdated only that far. Lengthen one and you must re-check the other. Settings still offers up to 600 s (reading without
+    input is a reason for a long one) and its hint says the real figure — the cap less one credited gap, 35 s at the default
+    poll (`ActivityTrackerService.FullyTakenBackSeconds`, `SettingsForm.IdleHint`; review L3, decided 2026-11-23).
 - Idle = no input for `IdleThresholdSeconds`, unless the **foreground** window is audibly playing
   (`IsPassivelyPresent`), up to `MaxPassiveIdleMinutes`. Fullscreen alone deliberately doesn't count:
   a paused fullscreen video looks like a watched one. A locked session records nothing.

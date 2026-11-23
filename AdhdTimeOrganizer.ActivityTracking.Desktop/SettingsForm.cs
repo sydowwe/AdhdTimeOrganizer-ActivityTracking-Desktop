@@ -75,8 +75,12 @@ public sealed class SettingsForm : Form
         AddRow(layout, "Web app URL:", _webAppUrlBox, "Where the planner and your mappings open.");
         AddRow(layout, "Poll interval (ms):", _pollIntervalBox,
             "Idleness, background windows, sound. The window in front is followed as it changes.");
-        AddRow(layout, "Idle after (s):", _idleThresholdBox,
-            "No keyboard or mouse input for this long. The time since the last input is then not counted.");
+        var idleHint = AddRow(layout, "Idle after (s):", _idleThresholdBox,
+            IdleHint(config.IdleThresholdSeconds, config.PollIntervalMs))!;
+        void RefreshIdleHint(object? sender, EventArgs e) =>
+            idleHint.Text = IdleHint((int)_idleThresholdBox.Value, (int)_pollIntervalBox.Value);
+        _idleThresholdBox.ValueChanged += RefreshIdleHint;
+        _pollIntervalBox.ValueChanged += RefreshIdleHint;
         AddRow(layout, "Watching / listening (min):", _passiveIdleBox,
             "How long a foreground window playing sound keeps you present without input. 0 turns it off.");
         AddRow(layout, "Background window min area (%):", _minBackgroundBox, null);
@@ -223,16 +227,33 @@ public sealed class SettingsForm : Form
         Width = 100
     };
 
-    private static void AddRow(TableLayoutPanel layout, string label, Control input, string? hint)
+    /// <returns>The hint's label, for a hint that follows other fields; null without a hint.</returns>
+    private static Label? AddRow(TableLayoutPanel layout, string label, Control input, string? hint)
     {
         layout.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 3, 3) });
         layout.Controls.Add(input);
 
-        if (hint is null) return;
+        if (hint is null) return null;
 
         var hintLabel = new Label { Text = hint, AutoSize = true, ForeColor = SystemColors.GrayText, MaximumSize = new Size(380, 0) };
         layout.Controls.Add(new Label { AutoSize = true });
         layout.Controls.Add(hintLabel);
+        return hintLabel;
+    }
+
+    /// <summary>
+    /// The idle setting's hint, with what it really does (review L3, decided 2026-11-23: say it, don't cap it). Idle
+    /// backdating can take back only what is still held back, at most <see cref="ActivityTrackerService.MaxHoldBack"/> less
+    /// one credited gap — 35 s at the default 5 s poll. A longer threshold is kept for reading without input; past the figure,
+    /// up to the rest of the wait is counted as time at the computer (less when idleness is noticed sooner than a full gap).
+    /// </summary>
+    internal static string IdleHint(int idleThresholdSeconds, int pollIntervalMs)
+    {
+        var takenBack = ActivityTrackerService.FullyTakenBackSeconds(pollIntervalMs);
+        return idleThresholdSeconds <= takenBack
+            ? "No keyboard or mouse input for this long. The time since the last input is then not counted."
+            : $"No keyboard or mouse input for this long. Only about {takenBack} s of that wait are then taken back; "
+              + $"up to {idleThresholdSeconds - takenBack} s of it count as time at the computer.";
     }
 
     private void OnSave(object? sender, EventArgs e)

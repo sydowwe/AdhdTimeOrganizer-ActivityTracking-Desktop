@@ -58,7 +58,7 @@ public sealed class ActivityTrackerService : IDisposable
     /// the next one arrives: one minute, this, another minute and a poll fit in three. A longer hold-back would leave
     /// both blank for part of every minute — or, past a minute, for good.
     /// </summary>
-    private static readonly TimeSpan MaxHoldBack = TimeSpan.FromSeconds(50);
+    internal static readonly TimeSpan MaxHoldBack = TimeSpan.FromSeconds(50);
 
     private readonly AppConfig _config;
     private readonly ApiClient _apiClient;
@@ -660,6 +660,17 @@ public sealed class ActivityTrackerService : IDisposable
 
     private static TimeSpan MaxCreditedGapFor(TimeSpan pollInterval) =>
         TimeSpan.FromTicks(Math.Max(pollInterval.Ticks * 3, TimeSpan.FromSeconds(10).Ticks));
+
+    /// <summary>
+    /// The longest idle threshold idle backdating takes back in full at <paramref name="pollIntervalMs"/>: the hold-back
+    /// is the threshold plus one credited gap, capped at <see cref="MaxHoldBack"/>. 35 s at the default 5 s poll. Settings
+    /// says it in the idle hint.
+    /// </summary>
+    internal static int FullyTakenBackSeconds(int pollIntervalMs)
+    {
+        var poll = TimeSpan.FromMilliseconds(ConfigLimits.PollIntervalMs.Clamp(pollIntervalMs));
+        return Math.Max(0, (int)(MaxHoldBack - MaxCreditedGapFor(poll)).TotalSeconds);
+    }
 
     /// <summary>
     /// How long credited time stays retractable: the idle threshold — the seconds idle backdating takes back — plus one

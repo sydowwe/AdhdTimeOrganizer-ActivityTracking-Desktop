@@ -130,6 +130,27 @@ public class TrayStatusTests
             TrayApplicationContext.DescribeStatus(
                 new TrackerStatus(true, false, 14, DateTime.UtcNow, SendResult.RetryLater, null, LastStatusCode: code), hasSession: true));
 
+    /// <summary>
+    /// Review L3: the hint promised the whole wait was taken back, but the hold-back is capped at 50 s, so only thresholds up
+    /// to 50 s less one credited gap are. The hint now says the real figure, from the poll interval.
+    /// </summary>
+    [Theory]
+    [InlineData(5000, 35)]   // the default: a 15 s credited gap
+    [InlineData(10_000, 20)] // the longest poll: a 30 s gap
+    [InlineData(500, 40)]    // the gap's 10 s floor
+    public void FullyTakenBackSeconds_IsTheCappedHoldBackLessOneGap(int pollMs, int expected) =>
+        Assert.Equal(expected, ActivityTrackerService.FullyTakenBackSeconds(pollMs));
+
+    [Fact]
+    public void TheIdleHint_SaysHowMuchIsTakenBack()
+    {
+        Assert.EndsWith("The time since the last input is then not counted.", SettingsForm.IdleHint(30, 5000));
+        Assert.EndsWith("The time since the last input is then not counted.", SettingsForm.IdleHint(35, 5000));
+        Assert.EndsWith("Only about 35 s of that wait are then taken back; up to 265 s of it count as time at the computer.",
+            SettingsForm.IdleHint(300, 5000));
+        Assert.Contains("Only about 20 s", SettingsForm.IdleHint(30, 10_000));
+    }
+
     /// <summary>The Run entry and "Restart to update" pass --minimized and stay silent; any other start was the user's.</summary>
     [Theory]
     [InlineData(new string[0], true)]
