@@ -97,6 +97,16 @@ public class UploadHealthPolicyTests
         Assert.Equal(new UploadNotice(UploadProblem.Stalled, 300, age, 0), notice);
     }
 
+    /// <summary>The notice carries the server's last answer, so its text can name a 403 instead of the connection.</summary>
+    [Fact]
+    public void Stalled_CarriesTheServersLastAnswer()
+    {
+        var refused = StalledFor(TimeSpan.FromHours(26)) with { LastStatusCode = 403 };
+        At(TimeSpan.Zero, refused);
+
+        Assert.Equal(403, At(UploadHealthPolicy.StallGrace, refused).Show?.StatusCode);
+    }
+
     /// <summary>
     /// A PC back from a weekend asleep holds a minute from before it: days old, but nothing has tried to send it yet. It
     /// goes out within the grace, so there was no stall to report, and the next one starts its own grace.

@@ -74,6 +74,21 @@ public sealed class SendLoopTests : IDisposable
         Assert.DoesNotContain("\"ignored\"", sent);
     }
 
+    /// <summary>Review L2: the status carries the answer a retry waits on, so the tray can name a 403.</summary>
+    [Fact]
+    public async Task AWaitingWindow_LeavesTheServersAnswerInTheStatus()
+    {
+        _server.HeartbeatStatus = HttpStatusCode.Forbidden;
+        Queue(("code", 40));
+
+        using var tracker = Start();
+        var status = await WaitFor(tracker, s => s.LastStatusCode is not null);
+
+        Assert.Equal(403, status.LastStatusCode);
+        Assert.Equal(SendResult.RetryLater, status.LastSendResult);
+        Assert.Equal(1, status.PendingWindows);
+    }
+
     /// <summary>A minute the server refuses is a lost minute; today's total must not keep counting it.</summary>
     [Fact]
     public async Task ARefusedWindow_LeavesTodaysTotal()

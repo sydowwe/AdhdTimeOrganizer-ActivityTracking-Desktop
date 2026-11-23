@@ -107,6 +107,21 @@ public class NudgeToastTests
         Assert.Contains("update it", NudgeToast.Text(Upload(UploadProblem.Dropped)).Body);
     }
 
+    /// <summary>Review L2: "Check the connection" only when there was no answer; a 403 is the account, not the Wi-Fi.</summary>
+    [Theory]
+    [InlineData(null, "Check the connection")]
+    [InlineData(403, "The server refuses this account (403): check its access in the web app.")]
+    [InlineData(503, "The server answered 503")]
+    public void Text_Stalled_SaysWhyFromTheServersAnswer(int? code, string expected)
+    {
+        var body = NudgeToast.Text(new Nudge(1, NudgeKind.UploadHealth, TimeSpan.Zero, null,
+            Upload: new UploadNotice(UploadProblem.Stalled, 90, TimeSpan.FromHours(26), 0, code))).Body;
+
+        Assert.StartsWith("1 h 30 m of tracked time is waiting on this PC. ", body);
+        Assert.Contains(expected, body);
+        if (code == 403) Assert.DoesNotContain("connection", body);
+    }
+
     private static Nudge Upload(UploadProblem problem) =>
         new(1, NudgeKind.UploadHealth, TimeSpan.Zero, null,
             Upload: new UploadNotice(problem, 90, TimeSpan.FromHours(26), 4));

@@ -368,7 +368,10 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   sleep: its backlog is days old before anything has tried to send it. They are fed by the tray's 2 s timer (`NudgeService.OnUploadStatus`), not
   the poll loop, so they keep running through a pause — the policy itself shows nothing while paused. No quiet
   conditions (Windows holds toasts itself). Once per episode, again at most daily, withdrawn when the condition clears;
-  a dropped-windows toast is not withdrawn (those minutes are gone) and leaves on exit. State is in memory: a restart
+  a dropped-windows toast is not withdrawn (those minutes are gone) and leaves on exit. **Why minutes wait** comes from the
+  last heartbeat's status code (`TrackerStatus.LastStatusCode`, `UploadHealthPolicy.WhyWaiting`): "offline" only when there was
+  no answer; a 403 reads "the server refuses this account (403)" in the tray and in the stalled toast, which says "Check the
+  connection" only when offline (review L2). State is in memory: a restart
   while still stalled shows the notice again. Counts and durations only in the text and the log. "Turn off" on one
   switches off only these, and a nudge's "Turn off" leaves them on.
 - **A paused tracker must look paused** (prompt 16, review M1). The installed tracker's log had nine "until I resume"

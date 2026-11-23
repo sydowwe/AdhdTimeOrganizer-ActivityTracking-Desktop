@@ -38,7 +38,8 @@ public enum TrackerRulesFetch
 public sealed record TrackerRulesResult(TrackerRulesFetch Status, IReadOnlyList<TrackerRule>? Rules = null, string? ETag = null);
 
 /// <param name="Response">What the server resolved the minute to; null unless sent, and from a server that predates the answer.</param>
-public sealed record HeartbeatOutcome(SendResult Result, HeartbeatResponse? Response = null);
+/// <param name="StatusCode">The server's answer; null when there was none (offline, a token that wouldn't refresh).</param>
+public sealed record HeartbeatOutcome(SendResult Result, HeartbeatResponse? Response = null, int? StatusCode = null);
 
 public enum CoverageFetch
 {
@@ -357,9 +358,9 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
                 else
                     _log.Warning("Window {WindowStart} answered {StatusCode} ({Result})",
                         window.WindowStart, (int)response.StatusCode, result);
-                return new HeartbeatOutcome(result);
+                return new HeartbeatOutcome(result, StatusCode: (int)response.StatusCode);
             }
-            return new HeartbeatOutcome(result, ReadHeartbeatResponse(body));
+            return new HeartbeatOutcome(result, ReadHeartbeatResponse(body), (int)response.StatusCode);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

@@ -255,7 +255,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         // daily. It replaces the "signed out" balloon, which could not be withdrawn or switched off.
         _nudges.OnUploadStatus(nowUtc, new UploadSnapshot(
             hasSession, status.PausedUntilUtc is { } pausedUntil && pausedUntil > nowUtc,
-            status.PendingWindows, status.OldestPendingUtc, status.RejectedWindows));
+            status.PendingWindows, status.OldestPendingUtc, status.RejectedWindows,
+            status.LastSendResult == SendResult.RetryLater ? status.LastStatusCode : null));
         // "Tracking has been paused for 4 h": from here, because the poll loop is stopped while paused.
         _nudges.OnPauseStatus(nowUtc, PauseSnapshotNow());
 
@@ -497,7 +498,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         var dropped = status.RejectedWindows > 0 ? $" · {status.RejectedWindows} min dropped" : "";
 
         var connection = !hasSession ? " · signed out"
-            : status.LastSendResult == SendResult.RetryLater && status.PendingWindows > 0 ? " · offline"
+            : status.LastSendResult == SendResult.RetryLater && status.PendingWindows > 0 ? $" · {UploadHealthPolicy.WhyWaiting(status.LastStatusCode)}"
             : status.LastSentUtc is { } sent ? $" · sent {sent.ToLocalTime():HH:mm}"
             : "";
 

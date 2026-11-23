@@ -17,13 +17,15 @@ public enum UploadProblem
 /// <param name="PendingWindows">Minutes waiting in the outbox.</param>
 /// <param name="OldestPendingUtc">When the oldest of them began; null with an empty outbox.</param>
 /// <param name="RejectedWindows">Windows the server has refused since the tracker started.</param>
+/// <param name="LastStatusCode">The last heartbeat's answer; null when there was none (offline).</param>
 public sealed record UploadSnapshot(
-    bool HasSession, bool IsPaused, int PendingWindows, DateTime? OldestPendingUtc, int RejectedWindows);
+    bool HasSession, bool IsPaused, int PendingWindows, DateTime? OldestPendingUtc, int RejectedWindows, int? LastStatusCode = null);
 
 /// <summary>What a notice says. Numbers only — nothing the user wrote.</summary>
 /// <param name="StalledFor">For <see cref="UploadProblem.Stalled"/>: how old the oldest unsent minute is.</param>
 /// <param name="Dropped">For <see cref="UploadProblem.Dropped"/>: windows refused since the last notice.</param>
-public sealed record UploadNotice(UploadProblem Problem, int PendingWindows, TimeSpan StalledFor, int Dropped);
+/// <param name="StatusCode">For <see cref="UploadProblem.Stalled"/>: the server's last answer, which says why; null when offline.</param>
+public sealed record UploadNotice(UploadProblem Problem, int PendingWindows, TimeSpan StalledFor, int Dropped, int? StatusCode = null);
 
 /// <param name="Show">A notice to show now; it replaces one still in the notification centre.</param>
 /// <param name="Withdraw">The notice still out is out of date. Never set together with <paramref name="Show"/>.</param>
@@ -110,9 +112,23 @@ public sealed class UploadHealthPolicy
 
             show = new UploadNotice(problem, snapshot.PendingWindows,
                 problem == UploadProblem.Stalled ? stalledFor : TimeSpan.Zero,
-                problem == UploadProblem.Dropped ? dropped : 0);
+                problem == UploadProblem.Dropped ? dropped : 0,
+                problem == UploadProblem.Stalled ? snapshot.LastStatusCode : null);
         }
 
         return new UploadHealthChange(show, withdraw && show is null);
     }
+
+    /// <summary>
+    /// Why minutes are waiting, from the last heartbeat's answer (review L2): "offline" only when there was none. A 403 is the
+    /// account lacking the tracking permission — a setting in the web app, not the Wi-Fi.
+    /// </summary>
+    internal static string WhyWaiting(int? statusCode) => statusCode switch
+    {
+        null => "offline",
+        403 => "the server refuses this account (403)",
+        429 => "the server is busy (429)",
+        >= 500 => $"server error ({statusCode})",
+        _ => $"the server answered {statusCode}"
+    };
 }

@@ -119,6 +119,17 @@ public class TrayStatusTests
             TrayApplicationContext.DescribeStatus(
                 new TrackerStatus(true, false, 14, DateTime.UtcNow, SendResult.RetryLater, null), hasSession: true));
 
+    /// <summary>Review L2: a 403 used to read "offline", sending a user with a permission problem to check their Wi-Fi.</summary>
+    [Theory]
+    [InlineData(403, "Tracking · the server refuses this account (403) · 14 min unsent")]
+    [InlineData(429, "Tracking · the server is busy (429) · 14 min unsent")]
+    [InlineData(502, "Tracking · server error (502) · 14 min unsent")]
+    [InlineData(409, "Tracking · the server answered 409 · 14 min unsent")]
+    public void DescribeStatus_NamesWhatTheServerAnswered(int code, string expected) =>
+        Assert.Equal(expected,
+            TrayApplicationContext.DescribeStatus(
+                new TrackerStatus(true, false, 14, DateTime.UtcNow, SendResult.RetryLater, null, LastStatusCode: code), hasSession: true));
+
     [Fact]
     public void DescribeStatus_SaysSignedOut() =>
         Assert.Equal("Tracking · signed out · 3 min unsent",

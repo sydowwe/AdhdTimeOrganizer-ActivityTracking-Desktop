@@ -155,7 +155,12 @@ internal static class NudgeToast
             UploadProblem.SignedOut => ("Activity Tracker is signed out",
                 $"{waiting} of tracked time is waiting to be sent. Tracking carries on; sign in to upload it."),
             UploadProblem.Stalled => ($"Nothing has been uploaded for {FormatLength(upload.StalledFor)}",
-                $"{waiting} of tracked time is waiting on this PC. Check the connection; the log folder says what the server answered."),
+                $"{waiting} of tracked time is waiting on this PC. " + upload.StatusCode switch
+                {
+                    403 => "The server refuses this account (403): check its access in the web app.",
+                    null => "Check the connection; the log folder says what the server answered.",
+                    var code => $"The server answered {code}; the log folder says more."
+                }),
             _ => ($"{FormatLength(TimeSpan.FromMinutes(upload.Dropped))} of tracked time was refused",
                 "The server turned those minutes down and they are gone. A tracker older than the server is the usual cause: update it.")
         };

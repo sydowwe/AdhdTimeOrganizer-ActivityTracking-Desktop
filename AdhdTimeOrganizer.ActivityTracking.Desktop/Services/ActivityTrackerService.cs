@@ -11,6 +11,7 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 /// <param name="Coverage">The mapping coverage behind the "map these apps" prompt; null unless drift nudges are on and it has been fetched.</param>
 /// <param name="OldestPendingUtc">When the oldest unsent window began; null with an empty outbox. Unlike <paramref name="LastSentUtc"/> it survives a restart.</param>
 /// <param name="RejectedWindows">Windows the server refused and the tracker dropped since it started — each one a lost minute.</param>
+/// <param name="LastStatusCode">The last heartbeat's answer; null when it got none (offline). Says <i>why</i> a retry waits.</param>
 public sealed record TrackerStatus(
     bool IsRunning,
     bool IsLocked,
@@ -23,7 +24,8 @@ public sealed record TrackerStatus(
     ResolvedMinute? LastResolved = null,
     TrackerCoverage? Coverage = null,
     DateTime? OldestPendingUtc = null,
-    int RejectedWindows = 0);
+    int RejectedWindows = 0,
+    int? LastStatusCode = null);
 
 /// <summary>A minute the server stored and what it said about it.</summary>
 public sealed record ResolvedMinute(DateTime WindowStartUtc, HeartbeatResponse Response);
@@ -86,6 +88,7 @@ public sealed class ActivityTrackerService : IDisposable
     private volatile string? _lastPollError;
     private DateTime? _lastSentUtc;
     private SendResult? _lastSendResult;
+    private int? _lastStatusCode;
     private ResolvedMinute? _lastResolved;
     private int _rejectedWindows;
 
@@ -307,7 +310,7 @@ public sealed class ActivityTrackerService : IDisposable
         var coverage = _config.DriftNudgesEnabled ? _coverage : null;
         lock (_lock)
             return new TrackerStatus(IsRunning, _isLocked, pending.Count, _lastSentUtc, _lastSendResult, _lastPollError, _config.PausedUntilUtc,
-                today, _lastResolved, coverage, pending.OldestStartUtc, Volatile.Read(ref _rejectedWindows));
+                today, _lastResolved, coverage, pending.OldestStartUtc, Volatile.Read(ref _rejectedWindows), _lastStatusCode);
     }
 
     // ── Polling ──────────────────────────────────────────────────────────────
@@ -765,7 +768,11 @@ public sealed class ActivityTrackerService : IDisposable
             }
 
             var outcome = await _apiClient.SendActivityWindowAsync(window, ct);
-            lock (_lock) _lastSendResult = outcome.Result;
+            lock (_lock)
+            {
+                _lastSendResult = outcome.Result;
+                _lastStatusCode = outcome.StatusCode;
+            }
 
             switch (outcome.Result)
             {
