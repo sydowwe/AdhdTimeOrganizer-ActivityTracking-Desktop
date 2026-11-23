@@ -405,7 +405,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   mark it: the mic-holding app's entry carries `IsInCall`, and the app is observed as a background window (like an
   audio-playing one) so a muted, hidden call app still has an entry to carry it. It is credited active time only while
   it was really in front.
-- Quiet conditions hold a due nudge until they end; they never drop it. "Full screen" means
+- Quiet conditions hold a due nudge until they end; they never drop it. So does absence for the stretch and app-stretch
+  nudges: one due while the last poll found nobody waits for the first poll that finds the user back (review L7). "Full screen" means
   `SHQueryUserNotificationState`, Windows' own definition. A rectangle check also catches a maximised
   window behind an auto-hiding taskbar, and the desktop. The break-over nudge ignores quiet conditions
   and the off switch, because the user set it. It does not ignore absence: it shows only to someone at the desk (prompt 10).

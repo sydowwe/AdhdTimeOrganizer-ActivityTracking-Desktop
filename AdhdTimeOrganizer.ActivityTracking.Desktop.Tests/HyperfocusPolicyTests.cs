@@ -47,6 +47,40 @@ public class HyperfocusPolicyTests
         Assert.Equal(Minutes(60) - Run.Step, realBreak.Policy.GetStatus(realBreak.Now).StretchLength);
     }
 
+    /// <summary>
+    /// Review L7: the 90-minute mark falling in a three-minute absence showed the toast to nobody. It is held — not dropped —
+    /// and shown at the first poll that finds the user back.
+    /// </summary>
+    [Fact]
+    public void AStretchNudgeDueWhileAway_IsHeld_UntilTheUserIsBack()
+    {
+        var run = new Run();
+        run.For(Minutes(88));
+        run.For(Minutes(3), present: false);
+        Assert.Empty(run.Shown);
+
+        run.For(Run.Step);
+
+        Assert.Equal(NudgeKind.Stretch, Assert.Single(run.Shown).Kind);
+    }
+
+    /// <summary>The app stretch, held by a quiet condition, does not go out the moment that ends if nobody is there.</summary>
+    [Fact]
+    public void AnAppStretchNudge_IsHeldWhileAway_Too()
+    {
+        var run = new Run(AppOnly) { IsQuiet = true };
+        run.For(Minutes(121));
+        Assert.Empty(run.Shown);
+
+        run.IsQuiet = false;
+        run.For(Minutes(1), present: false);
+        Assert.Empty(run.Shown);
+
+        run.For(Run.Step);
+
+        Assert.Equal(NudgeKind.AppStretch, Assert.Single(run.Shown).Kind);
+    }
+
     /// <summary>Sleep or a paused tracker: nobody knows what happened, so a gap as long as a break is one.</summary>
     [Fact]
     public void AnUnobservedGap_AsLongAsABreak_CountsAsOne()

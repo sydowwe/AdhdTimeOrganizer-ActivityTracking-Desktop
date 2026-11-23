@@ -250,6 +250,10 @@ public sealed class HyperfocusPolicy(TimeSpan maxObservedGap)
             : (NudgeKind?)null;
         if (kind is null) return null;
 
+        // Nobody at the desk: held, not dropped, like the break-over toast — the first poll that finds them back shows it
+        // (review L7). A toast to an empty chair is buried, and its repeat would come 30 min later.
+        if (!_lastPresent) return null;
+
         if (_lastNudge is { } lastNudge && lastNudge.Kind != kind && nowUtc - lastNudge.AtUtc < MinGapBetweenKinds)
             return null;
         if (isQuiet()) return null;
