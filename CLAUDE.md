@@ -187,7 +187,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 
 ### Durability and threads
 - Every finished window goes to the **outbox on disk** before anything tries to send it. Exit, suspend,
-  logoff and session end call `ActivityTrackerService.Flush()`. Don't add an in-memory-only queue.
+  logoff, session end and **pause** call `ActivityTrackerService.Flush()` (pause after giving the poll loop up to 1 s to
+  finish its poll). Restarting the poll loop for a new poll interval (`Stop`, then `Start`) does not flush: recording
+  carries on. Don't add an in-memory-only queue.
 - **Every state file goes through `JsonFile`** — config, outbox, captures, `today.json`, the nudges' and the evening
   review's state. `Write` writes `.tmp`, **flushes it to the disk**, then moves it over: without the flush a power cut can
   leave a zero-length file. Don't hand-write "temp, then move" again. `TryRead` tells **Missing**, **Unreadable** (empty,

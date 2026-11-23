@@ -170,6 +170,12 @@ public sealed class ActivityTrackerService : IDisposable
     /// Saved, so a restart in the middle does not start recording early. Sending carries on, as with any pause. Its start
     /// is saved too, and kept when a pause in force gets a new end: recording stopped at the first one.
     /// </summary>
+    /// <remarks>
+    /// The minute in progress and the held-back seconds go to the outbox now (review L1), like at suspend and exit: kept in
+    /// memory they reached the server only at the resume, hours or days late, and a crash in between lost them. The poll loop
+    /// is given <see cref="PauseFlushWait"/> to finish a poll first, so nothing it records lands after the flush. A poll-interval
+    /// change (<see cref="Stop"/>, then <see cref="Start"/>) does not flush: recording carries on.
+    /// </remarks>
     public void Pause(DateTime untilUtc)
     {
         _log.Information("Pausing until {Until}", untilUtc == DateTime.MaxValue ? "resumed" : untilUtc.ToString("O"));
@@ -178,7 +184,15 @@ public sealed class ActivityTrackerService : IDisposable
         _config.PausedUntilUtc = untilUtc;
         _config.Save();
         Stop();
+
+        // On the UI thread: briefly. A cancelled poll loop leaves its wait at once; a poll in progress takes milliseconds.
+        try { _pollTask?.Wait(PauseFlushWait); } catch (AggregateException) { }
+        Flush();
+        RequestSend();
     }
+
+    /// <summary>How long <see cref="Pause"/> waits for the poll loop before it flushes.</summary>
+    private static readonly TimeSpan PauseFlushWait = TimeSpan.FromSeconds(1);
 
     public void Resume()
     {
@@ -460,8 +474,14 @@ public sealed class ActivityTrackerService : IDisposable
         var atUtc = DateTime.UtcNow - Stopwatch.GetElapsedTime(timestamp);
         session.CreditedUntil = timestamp;
 
+        Credit(atUtc, elapsed, session.Screen.TakeForSpan());
+    }
+
+    /// <summary>Folds one credited span into the recorder and queues the windows it closed. Tests feed it directly.</summary>
+    internal void Credit(DateTime atUtc, TimeSpan elapsed, IReadOnlyList<Observation> observations)
+    {
         List<ActivityWindow> closed;
-        lock (_lock) closed = _recorder.Record(atUtc, elapsed, session.Screen.TakeForSpan());
+        lock (_lock) closed = _recorder.Record(atUtc, elapsed, observations);
 
         foreach (var window in closed)
         {
