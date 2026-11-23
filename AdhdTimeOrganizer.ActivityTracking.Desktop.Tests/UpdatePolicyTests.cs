@@ -33,17 +33,33 @@ public class UpdatePolicyTests
 
     [Fact]
     public void AtStart_TheFirstInstanceOfTheInstalledBuild_AppliesAWaitingRelease() =>
-        Assert.True(UpdatePolicy.ApplyAtStart(installed: true, firstInstance: true, pendingVersion: "1.2.1"));
+        Assert.True(UpdatePolicy.ApplyAtStart(installed: true, firstInstance: true, pendingVersion: "1.2.1", startedByUpdater: false));
 
     [Fact]
     public void AtStart_ASecondLaunch_NeverApplies_TheUpdaterWouldEndTheRunningTracker() =>
-        Assert.False(UpdatePolicy.ApplyAtStart(installed: true, firstInstance: false, pendingVersion: "1.2.1"));
+        Assert.False(UpdatePolicy.ApplyAtStart(installed: true, firstInstance: false, pendingVersion: "1.2.1", startedByUpdater: false));
 
     [Theory]
     [InlineData(true, null)]     // nothing downloaded
     [InlineData(false, "1.2.1")] // a build from source is not Velopack's to replace
     public void AtStart_NothingToApply(bool installed, string? pendingVersion) =>
-        Assert.False(UpdatePolicy.ApplyAtStart(installed, firstInstance: true, pendingVersion));
+        Assert.False(UpdatePolicy.ApplyAtStart(installed, firstInstance: true, pendingVersion, startedByUpdater: false));
+
+    /// <summary>
+    /// A failed apply ends with the updater starting the old build again, and the same release still waits. Applying it at
+    /// that start would loop — apply, fail, restart — with nothing tracked in between. The release waits for the next start.
+    /// </summary>
+    [Fact]
+    public void AtStart_AStartMadeByTheUpdater_NeverApplies_OrAFailedApplyWouldLoop() =>
+        Assert.False(UpdatePolicy.ApplyAtStart(installed: true, firstInstance: true, pendingVersion: "1.2.1", startedByUpdater: true));
+
+    /// <summary>The guard holds one start only: the next ordinary start (a sign-in, the Start menu) applies again.</summary>
+    [Fact]
+    public void TheNextOrdinaryStart_AppliesTheReleaseThatWaited()
+    {
+        Assert.False(UpdatePolicy.ApplyAtStart(installed: true, firstInstance: true, pendingVersion: "1.2.1", startedByUpdater: true));
+        Assert.True(UpdatePolicy.ApplyAtStart(installed: true, firstInstance: true, pendingVersion: "1.2.1", startedByUpdater: false));
+    }
 
     [Fact]
     public void ABuildFromSource_SaysItDoesNotUpdate()

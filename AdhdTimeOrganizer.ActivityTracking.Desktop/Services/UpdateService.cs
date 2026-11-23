@@ -33,6 +33,17 @@ public sealed class UpdateService : IDisposable
     /// <summary>This process is the Velopack-installed build.</summary>
     public static bool IsInstalled => Installed.Value;
 
+    /// <summary>
+    /// This process was started by Velopack's updater at the end of an apply, successful or not. Set by
+    /// <c>Program</c>'s <c>OnRestarted</c> hook, which <c>VelopackApp.Run()</c> calls exactly when the updater started it
+    /// with <c>VELOPACK_RESTART</c>. The hook is the only way to learn it: <c>Run()</c> reads that variable and clears it
+    /// from the environment before anything after it runs (Velopack 1.2.161, <c>src/lib-csharp/VelopackApp.cs</c>).
+    /// </summary>
+    public static bool StartedByUpdater { get; private set; }
+
+    /// <summary>For <c>Program</c>'s <c>OnRestarted</c> hook only.</summary>
+    public static void MarkStartedByUpdater() => StartedByUpdater = true;
+
     private readonly ILogger _log = Log.ForContext<UpdateService>();
     private readonly CancellationTokenSource _stop = new();
     private readonly Lock _gate = new();
@@ -95,7 +106,14 @@ public sealed class UpdateService : IDisposable
         {
             var manager = CreateManager();
             var pending = manager.UpdatePendingRestart;
-            if (!UpdatePolicy.ApplyAtStart(IsInstalled, firstInstance, pending?.Version.ToString())) return false;
+            if (!UpdatePolicy.ApplyAtStart(IsInstalled, firstInstance, pending?.Version.ToString(), StartedByUpdater))
+            {
+                if (pending is not null && StartedByUpdater)
+                    Log.ForContext<UpdateService>().Warning(
+                        "Started by the updater and {Version} still waits (the apply likely failed); not applying it again until the next start",
+                        pending.Version);
+                return false;
+            }
 
             manager.WaitExitThenApplyUpdates(pending!, silent: true, restart: true, restartArgs: args);
             Log.ForContext<UpdateService>().Information("Applying update {Version} at start", pending!.Version);

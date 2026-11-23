@@ -10,10 +10,13 @@ using Velopack;
 // not in the install folder and is left alone, so a reinstall picks up where it stopped.
 // Run() does NOT apply a downloaded update: it would do so ahead of the single-instance check, and the updater stops every
 // process in the install folder — a second launch would end the running tracker without its exit. The update is applied
-// below, by the first instance only (UpdateService.ApplyPendingAtStart).
+// below, by the first instance only (UpdateService.ApplyPendingAtStart), and never by a start the updater itself made:
+// after a failed apply it starts this old build again, which would find the same release and try once more, forever.
+// OnRestarted is how we learn of that start — Run() clears VELOPACK_RESTART before returning.
 VelopackApp.Build()
     .SetAutoApplyOnStartup(false)
     .OnBeforeUninstallFastCallback(_ => AutoStartHelper.Current.RemoveIfOwn())
+    .OnRestarted(_ => UpdateService.MarkStartedByUpdater())
     .Run();
 
 Directory.CreateDirectory(Program.LogDirectory);

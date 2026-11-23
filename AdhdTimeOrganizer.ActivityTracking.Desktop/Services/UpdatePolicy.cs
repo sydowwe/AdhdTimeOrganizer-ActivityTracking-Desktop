@@ -60,7 +60,15 @@ public static class UpdatePolicy
     /// tray already runs) applying it would end the running tracker without its exit — the minute in progress unsaved, its
     /// toasts left behind. The second launch just says "already running", and the release waits for the next start or
     /// "Restart to update".
+    /// <para>
+    /// <b>Never right after the updater.</b> When <paramref name="startedByUpdater"/> — this process was started by
+    /// Velopack's updater at the end of an apply — nothing is applied. After a successful apply that start is the new
+    /// build, with nothing left to apply. After a <i>failed</i> one the updater starts the old build again (it does so
+    /// whenever <c>restart</c> was asked for), and that build still finds the same release waiting: applying it again
+    /// would be a restart loop with no tracking in between. Velopack's own apply-on-start has the same guard; ours
+    /// replaces it, so it needs its own. The release then waits for the next start or "Restart to update".
+    /// </para>
     /// </summary>
-    public static bool ApplyAtStart(bool installed, bool firstInstance, string? pendingVersion) =>
-        installed && firstInstance && pendingVersion is not null;
+    public static bool ApplyAtStart(bool installed, bool firstInstance, string? pendingVersion, bool startedByUpdater) =>
+        installed && firstInstance && pendingVersion is not null && !startedByUpdater;
 }

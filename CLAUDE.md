@@ -534,6 +534,12 @@ don't warn.
   process in the install folder — so a second launch (Start menu clicked while the tray runs) would end the running tracker
   without its exit. `UpdateService.ApplyPendingAtStart` applies a downloaded release after the mutex, in the first
   instance only and before anything starts (`UpdatePolicy.ApplyAtStart`); a second launch just says "already running".
+- **Never apply at a start the updater made.** After a *failed* apply with `restart: true` the updater starts the old build
+  again (Velopack 1.2.161's `apply.rs`; its docs: "restarts the application after updates are applied (or if they
+  failed)"), and that build finds the same release waiting — applying it would loop. Velopack's own apply-on-start skips
+  when `VELOPACK_RESTART` is set; ours skips when `UpdateService.StartedByUpdater`, set by the `OnRestarted` hook in
+  `Program.cs`. Don't read `VELOPACK_RESTART` yourself: `VelopackApp.Run()` clears it before anything after it runs. The
+  release waits for the next ordinary start or "Restart to update". Recheck this when upgrading Velopack.
 - **The published folder must hold the Windows App SDK runtime, the extracted Insights dll and the icon file.**
   `release.ps1` checks them after `dotnet publish` (self-contained: .NET and the Windows App SDK both travel with the app,
   about 165 MB before compression). `NativeSmokeTests` checks the same dll in a build.
