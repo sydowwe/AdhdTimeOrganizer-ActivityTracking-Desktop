@@ -36,15 +36,12 @@ public sealed class OutboxStore(string directory, TimeSpan retention)
     {
         lock (_gate)
         {
-            Directory.CreateDirectory(directory);
             var path = PathFor(window.WindowStart);
 
             if (File.Exists(path) && TryRead(path) is { } existing)
                 window = Merge(existing, window);
 
-            var tempPath = path + ".tmp";
-            File.WriteAllText(tempPath, JsonSerializer.Serialize(window, JsonOptions));
-            File.Move(tempPath, path, overwrite: true);
+            JsonFile.Write(path, window, JsonOptions);
         }
     }
 

@@ -130,26 +130,18 @@ public sealed class TodayTotal(string path, TimeZoneInfo zone)
     private State Load()
     {
         if (_state is not null) return _state;
-        try
-        {
-            if (File.Exists(path))
-                return _state = JsonSerializer.Deserialize<State>(File.ReadAllText(path)) ?? State.Empty;
-        }
-        catch (Exception ex)
-        {
-            _log.Warning(ex, "Could not read today's total — starting it again");
-        }
-        return _state = State.Empty;
+
+        var read = JsonFile.TryRead<State>(path);
+        if (read.Status is JsonFileStatus.Unreadable or JsonFileStatus.CouldNotOpen)
+            _log.Warning(read.Error, "Could not read today's total ({Status}) — starting it again", read.Status);
+        return _state = read.Value ?? State.Empty;
     }
 
     private void Save(State state)
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            var tempPath = path + ".tmp";
-            File.WriteAllText(tempPath, JsonSerializer.Serialize(state));
-            File.Move(tempPath, path, overwrite: true);
+            JsonFile.Write(path, state);
         }
         catch (Exception ex)
         {

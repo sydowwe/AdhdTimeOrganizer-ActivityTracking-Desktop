@@ -168,25 +168,11 @@ public sealed class CaptureQueue(string directory)
     private static CaptureItem ToItem(string path, StoredCapture stored) =>
         new(path, stored.Id, stored.Text, stored.CreatedUtc, stored.Refused);
 
-    private static void Write(string path, StoredCapture stored)
-    {
-        var tempPath = path + ".tmp";
-        File.WriteAllText(tempPath, JsonSerializer.Serialize(stored, JsonOptions));
-        File.Move(tempPath, path, overwrite: true);
-    }
+    private static void Write(string path, StoredCapture stored) => JsonFile.Write(path, stored, JsonOptions);
 
-    private static StoredCapture? TryRead(string path)
-    {
-        try
-        {
-            var stored = JsonSerializer.Deserialize<StoredCapture>(File.ReadAllText(path), JsonOptions);
-            return stored is { Id.Length: > 0, Text.Length: > 0 } ? stored : null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
+    /// <summary>Null for anything but a whole capture — unreadable, locked or gone — and the file is left as it is.</summary>
+    private static StoredCapture? TryRead(string path) =>
+        JsonFile.TryRead<StoredCapture>(path, JsonOptions).Value is { Id.Length: > 0, Text.Length: > 0 } stored ? stored : null;
 
     private sealed record StoredCapture(
         [property: JsonPropertyName("id")] string Id,

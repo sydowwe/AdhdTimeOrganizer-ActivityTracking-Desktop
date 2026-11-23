@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Services.Matching;
 using Serilog;
 
@@ -361,16 +362,10 @@ public sealed class AppConfig
 
     public void Save()
     {
-        lock (SaveGate)
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-
-            var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
-            var tempPath = FilePath + ".tmp";
-            File.WriteAllText(tempPath, json);
-            File.Move(tempPath, FilePath, overwrite: true);
-        }
+        lock (SaveGate) JsonFile.Write(FilePath, this, WriteOptions);
     }
+
+    private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
     private static string? Protect(string? plaintext) =>
         string.IsNullOrEmpty(plaintext)

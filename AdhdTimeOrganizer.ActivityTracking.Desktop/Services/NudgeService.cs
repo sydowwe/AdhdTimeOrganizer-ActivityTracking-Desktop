@@ -747,15 +747,10 @@ public sealed class NudgeService : IDisposable
     /// <param name="what">The policy, for the log.</param>
     private T? LoadState<T>(string path, string what) where T : class
     {
-        try
-        {
-            return File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllText(path)) : null;
-        }
-        catch (Exception ex)
-        {
-            _log.Warning(ex, "Could not read the {What}'s saved state — starting afresh", what);
-            return null;
-        }
+        var read = JsonFile.TryRead<T>(path);
+        if (read.Status is JsonFileStatus.Unreadable or JsonFileStatus.CouldNotOpen)
+            _log.Warning(read.Error, "Could not read the {What}'s saved state ({Status}) — starting afresh", what, read.Status);
+        return read.Value;
     }
 
     /// <summary>Never throws: a failed save costs at most a repeated nudge after a restart.</summary>
@@ -763,13 +758,7 @@ public sealed class NudgeService : IDisposable
     {
         try
         {
-            lock (_stateSaveGate)
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                var tempPath = path + ".tmp";
-                File.WriteAllText(tempPath, JsonSerializer.Serialize(state));
-                File.Move(tempPath, path, overwrite: true);
-            }
+            lock (_stateSaveGate) JsonFile.Write(path, state);
         }
         catch (Exception ex)
         {

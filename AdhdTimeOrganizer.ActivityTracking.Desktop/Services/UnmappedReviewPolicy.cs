@@ -147,15 +147,11 @@ public sealed class UnmappedReviewStore(string? path = null)
     private DateTime? Load()
     {
         if (path is null) return null;
-        try
-        {
-            return File.Exists(path) ? JsonSerializer.Deserialize<Saved>(File.ReadAllText(path))?.HandledMomentUtc : null;
-        }
-        catch (Exception ex)
-        {
-            _log.Warning(ex, "Could not read the evening review's saved state — starting afresh");
-            return null;
-        }
+
+        var read = JsonFile.TryRead<Saved>(path);
+        if (read.Status is JsonFileStatus.Unreadable or JsonFileStatus.CouldNotOpen)
+            _log.Warning(read.Error, "Could not read the evening review's saved state ({Status}) — starting afresh", read.Status);
+        return read.Value?.HandledMomentUtc;
     }
 
     /// <summary>Never throws: a failed save costs at most a repeated invite after a restart.</summary>
@@ -164,10 +160,7 @@ public sealed class UnmappedReviewStore(string? path = null)
         if (path is null) return;
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            var tempPath = path + ".tmp";
-            File.WriteAllText(tempPath, JsonSerializer.Serialize(new Saved(momentUtc)));
-            File.Move(tempPath, path, overwrite: true);
+            JsonFile.Write(path, new Saved(momentUtc));
         }
         catch (Exception ex)
         {
