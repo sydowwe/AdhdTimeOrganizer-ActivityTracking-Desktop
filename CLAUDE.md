@@ -40,6 +40,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/BreakReporter.cs` | Hands the server the break the user started (`POST …/desktop/break`): the latest report only, retried, in memory; **pure** `Classify` and `IsWorthSending` |
 | `Services/DriftPolicy.cs` | **Pure** drift-nudge decisions over the server's per-minute plan verdicts (`MinuteVerdict`) |
 | `Services/StartRampPolicy.cs` | **Pure** start-ramp decisions: offer a planned block at its start, from the heartbeat's plan (`PlanView`) |
+| `Services/BlockEndPolicy.cs` | **Pure** block-end heads-up decisions: "Thesis ends in 5 min — next: Email at 11:30", from the same `PlanView` |
 | `Services/ChimeSchedule.cs` | **Pure** time-chime decisions over the server's per-minute resolution, and which lines are chosen (`ChimeSettings`, `ChimeChoices`) |
 | `Services/UploadHealthPolicy.cs` | **Pure** "is tracked time arriving?" decisions: signed out, stalled a day, windows the server refused → show / withdraw a notice |
 | `Services/RecordingHealthPolicy.cs` | **Pure** "is recording itself working?" decisions: the poll failing, the poll loop silent, recordable time with nothing stored → show / withdraw a notice |
@@ -283,7 +284,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 
 ### Nudges and notifications
 - Nudges are **client-side**: their decisions never involve the server. A nudge sends three things: the start ramp's
-  Start now and Not this one (below), and the break the user started (the next point). The policies live in `HyperfocusPolicy`, `DriftPolicy`, `StartRampPolicy` and `ChimeSchedule`, pure like
+  Start now and Not this one (below), and the break the user started (the next point). The policies live in `HyperfocusPolicy`, `DriftPolicy`, `StartRampPolicy`, `BlockEndPolicy` and `ChimeSchedule`, pure like
   `ActivityRecorder` — keep clocks, Win32 and toasts out of them.
 - **A break the user started is said where they are** (prompt 10, servers from 2026-11-10). "Taking a break" starts the
   timer (`BreakTimerMinutes`). The phone may be where the break is spent, so:
@@ -342,7 +343,33 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
       minute inside the block no longer lists it (cancelled or moved, in the planner or by the phone's Not this one). Another
       block's toast replaces it.
   - **State.** Saved to `start-ramp.json` beside `drift.json`: settled blocks by id, kept a day past their end (an
-    extended block keeps its id), and a pending "In 2 minutes". A restart neither asks twice nor forgets the repeat.
+    extended block keeps its id), a pending "In 2 minutes", and the blocks a block-end heads-up announced (below). A
+    restart neither asks twice nor forgets the repeat.
+- **The block-end heads-up** (`BlockEndPolicy`, `NudgeKind.BlockEnd`, on by default, `BlockEndEnabled`; prompt 24) is
+  the ramp's mirror image: it helps with *stopping*, so a thought can be finished rather than cut.
+  - **When.** 5 min before the end of a block from the heartbeat's `planned`, while someone is at the computer: "Thesis
+    ends in 5 min" over "Next: Email at 11:30." / "Nothing planned after." The same `PlanView` as the ramp, trusted for 3
+    minutes. `next` is named only when it starts at or after this block's end; one overlapping the block isn't what follows,
+    so the toast says "Time to wrap up the thought." instead of guessing. Blocks under 20 min get none.
+  - **Only a block the user is in**: `inProgress`, or a minute on plan while it covered within the last 10 min. A warning
+    about a block they weren't doing would read as "you wasted it". Not held by a running timer — the block's own countdown
+    rings only at the end.
+  - **Which blocks.** `BlockEndBlocks`, its own Settings choice (same three as the ramp, All but Optional by default), so
+    "Critical only" for the ramp doesn't silence these.
+  - **Held** under the quiet conditions, with the minutes said as they are when it shows; let go under 1 min left.
+  - **Once per block end**: settled by planner task id *with the end it was for*, so a block extended in the planner gets a
+    new warning before its new end. The toast leaves at the end, and when an answer before the end lists the block with
+    another end (extended, shortened) or no longer lists it (completed, cancelled, moved).
+  - **The toast**: ordinary, `MuteAudio`, one **OK**, `Expiration` at the block's end. No "10 more minutes": the server
+    can't extend a block for a tracker token (its only extend is the planner push's +N min, after the end has passed), and
+    the button isn't faked. A route for it would be a follow-up.
+  - **The next block's ramp.** When the named next block starts within 10 min of the end, `NudgeService` tells the ramp
+    (`StartRampPolicy.Announce`, saved in `start-ramp.json`): the ramp doesn't ask at that block's start, waits 3 min, and
+    then follows its usual rules — settled without a word if the user moved on to it, the late toast if they haven't.
+  - **Not in the gap between families**, like the chime: holding the ramp behind it would make the ramp late. It waits for
+    an evaluation with no other toast and goes before the chime. State in `block-end.json` beside `drift.json`. Logs carry
+    the block id and minutes only. The server's own "time's up" push (`PlannedBlockOverrun`, after the end, phone and web)
+    is separate and stays.
 - **The time chime** (`ChimeSchedule`, `NudgeKind.TimeChime`, off by default, `TimeChimeEnabled`) makes time felt
   *outside* a plan: "15 min on YouTube", silently, at each interval of continuous time in a chosen activity.
   - **What is chosen is the server's answer, never a process list** — YouTube in Chrome chimes, docs in Chrome don't. It
@@ -370,7 +397,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     `review/androidTrackerPrompts/decisions.md` (11-2, 11-3, 11-5, 11-6, 11-7).
 - The three families keep `HyperfocusPolicy.MinGapBetweenKinds` (10 min) apart: a nudge due within it of another
   family's is held like under a quiet condition, never dropped by it. The start ramp is evaluated first (a block's start
-  doesn't come again). The break-over nudge and the time chime are exempt.
+  doesn't come again). The break-over nudge, the block-end heads-up and the time chime are exempt.
 - Today's total and its top-5 breakdown (`TodayTotal`, `today.json`) count a window **once, when settled**: the total
   at queue time less what was never stored, the breakdown from the heartbeat's answer. The breakdown is the tray
   glance's submenu, not a left-click flyout — a single click is half of every double-click, which opens the menu.

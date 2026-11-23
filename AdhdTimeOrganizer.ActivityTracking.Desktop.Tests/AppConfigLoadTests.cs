@@ -274,7 +274,8 @@ public sealed class AppConfigLoadTests : IDisposable
 
     /// <summary>
     /// The shape 1.2.1 writes (keys and kinds from a real one; the values here are made up). It must read unchanged, and
-    /// what this build writes back must hold no key 1.2.1 has not met except the two the build before this one added.
+    /// what this build writes back must hold no key 1.2.1 has not met except those added since: the pause reminder's two and
+    /// the block-end warning's two. 1.2.1 ignores keys it doesn't know.
     /// </summary>
     [Fact]
     public void AConfigWrittenBy121_LoadsUnchanged_AndIsWrittenBackWithoutNewKeys()
@@ -345,7 +346,8 @@ public sealed class AppConfigLoadTests : IDisposable
 
         config.Save();
         var written = JsonDocument.Parse(File.ReadAllText(_path)).RootElement.EnumerateObject().Select(p => p.Name).ToHashSet();
-        Assert.Equal(["PauseRemindersEnabled", "PausedSinceUtc"], written.Except(keys121).Order(StringComparer.Ordinal));
+        Assert.Equal(["BlockEndBlocks", "BlockEndEnabled", "PauseRemindersEnabled", "PausedSinceUtc"],
+            written.Except(keys121).Order(StringComparer.Ordinal));
         Assert.Empty(keys121.Except(written));
     }
 

@@ -152,6 +152,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         testNudge.DropDownItems.Add("Break over", null, (_, _) => _nudges.ShowTest(NudgeKind.BreakOver));
         testNudge.DropDownItems.Add("Drift", null, (_, _) => _nudges.ShowTest(NudgeKind.Drift));
         testNudge.DropDownItems.Add("Start ramp", null, (_, _) => _nudges.ShowTest(NudgeKind.StartRamp));
+        testNudge.DropDownItems.Add("Block ending", null, (_, _) => _nudges.ShowTest(NudgeKind.BlockEnd));
         testNudge.DropDownItems.Add("Time chime", null, (_, _) => _nudges.ShowTest(NudgeKind.TimeChime));
         testNudge.DropDownItems.Add("Upload problem", null, (_, _) => _nudges.ShowTest(NudgeKind.UploadHealth));
         testNudge.DropDownItems.Add("Still paused", null, (_, _) => _nudges.ShowTest(NudgeKind.PauseReminder));

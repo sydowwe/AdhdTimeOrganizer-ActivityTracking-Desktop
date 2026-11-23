@@ -29,7 +29,10 @@ public sealed record StartRampSettings(bool Enabled, RampBlocks Blocks = RampBlo
     /// Whether the user wants to be asked about this block. A server from before the flags reads every block as neither, so
     /// under <see cref="RampBlocks.Critical"/> it says nothing rather than guess.
     /// </summary>
-    public bool Admits(PlannedBlock block) => Blocks switch
+    public bool Admits(PlannedBlock block) => Admits(Blocks, block);
+
+    /// <summary>The rule itself, shared with <see cref="BlockEndSettings"/>, which has a choice of its own.</summary>
+    internal static bool Admits(RampBlocks blocks, PlannedBlock block) => blocks switch
     {
         RampBlocks.All => true,
         RampBlocks.Critical => block.IsCritical,
@@ -42,7 +45,11 @@ public sealed record StartRampSettings(bool Enabled, RampBlocks Blocks = RampBlo
 /// again about a block it already offered nor forgets an "In 2 minutes".
 /// </summary>
 /// <param name="Settled">Blocks the ramp is done with, by planner task id, each with its end for pruning.</param>
-public sealed record StartRampState(Dictionary<long, DateTime> Settled, long? AgainBlockId, DateTime? AgainAtUtc);
+/// <param name="Announced">
+/// Blocks a block-end heads-up already named, by planner task id, each with when; null from a file written before the heads-up.
+/// </param>
+public sealed record StartRampState(
+    Dictionary<long, DateTime> Settled, long? AgainBlockId, DateTime? AgainAtUtc, Dictionary<long, DateTime>? Announced = null);
 
 /// <summary>
 /// Decides when to offer a planned block at its start: "Thesis starts now (until 11:30). Start the timer?" Pure, like
@@ -73,6 +80,12 @@ public sealed record StartRampState(Dictionary<long, DateTime> Settled, long? Ag
 /// toast still out leaves when the block is started, the user gets on with it, the block ends, or the block is no longer
 /// on the plan (cancelled or moved, here or on the phone).
 /// </para>
+/// <para>
+/// <b>After a block-end heads-up.</b> A block the previous block's heads-up already named ("— next: Email at 11:30",
+/// <see cref="Announce"/>) is not offered at its start: the user was told a few minutes ago. The ramp waits
+/// <see cref="AnnouncedWait"/> into it and then follows its usual rules — settled without a word if the user moved on to it,
+/// the late toast if they haven't.
+/// </para>
 /// </remarks>
 public sealed class StartRampPolicy
 {
@@ -81,10 +94,14 @@ public sealed class StartRampPolicy
     internal static readonly TimeSpan MinLeftWhenLate = TimeSpan.FromMinutes(10);
     internal static readonly TimeSpan AskAgainAfter = TimeSpan.FromMinutes(2);
 
+    /// <summary>How far into a block a heads-up named the ramp waits before asking: as long as "starts now" lasts.</summary>
+    internal static readonly TimeSpan AnnouncedWait = OnTimeFor;
+
     /// <summary>A settled block is remembered this long past its end: a block extended later keeps its id.</summary>
     private static readonly TimeSpan RememberFor = TimeSpan.FromDays(1);
 
     private readonly Dictionary<long, DateTime> _settled = new();
+    private readonly Dictionary<long, DateTime> _announced = new();
 
     private PlanView? _plan;
     private (long Id, DateTime AtUtc)? _again;
@@ -92,13 +109,27 @@ public sealed class StartRampPolicy
     private bool _withdrawn;
     private int _lastId;
 
-    public StartRampState Snapshot() => new(new Dictionary<long, DateTime>(_settled), _again?.Id, _again?.AtUtc);
+    public StartRampState Snapshot() =>
+        new(new Dictionary<long, DateTime>(_settled), _again?.Id, _again?.AtUtc, new Dictionary<long, DateTime>(_announced));
 
     public void Restore(StartRampState state)
     {
         _settled.Clear();
         foreach (var (id, endsUtc) in state.Settled) _settled[id] = endsUtc;
         _again = state is { AgainBlockId: { } id2, AgainAtUtc: { } at } ? (id2, at) : null;
+        _announced.Clear();
+        foreach (var (id, atUtc) in state.Announced ?? []) _announced[id] = atUtc;
+    }
+
+    /// <summary>
+    /// The previous block's heads-up named this block as next (<see cref="BlockEndPolicy.HandsOverTo"/>): don't offer it at
+    /// its start. True when that is news, so the caller saves the state.
+    /// </summary>
+    public bool Announce(long plannerTaskId, DateTime nowUtc)
+    {
+        if (_settled.ContainsKey(plannerTaskId) || _announced.ContainsKey(plannerTaskId)) return false;
+        _announced[plannerTaskId] = nowUtc;
+        return true;
     }
 
     /// <summary>Folds in one heartbeat answer. A backlog minute's is skipped: it says nothing about now.</summary>
@@ -158,6 +189,7 @@ public sealed class StartRampPolicy
             var startsUtc = MinuteVerdict.AsUtc(block.StartsAtUtc);
             var endsUtc = MinuteVerdict.AsUtc(block.EndsAtUtc);
             var lateBy = nowUtc - startsUtc;
+            if (_announced.ContainsKey(id) && lateBy < AnnouncedWait && !block.InProgress) continue;
             if (block.InProgress || IsUnderWay(id, plan) || (lateBy > OnTimeFor && endsUtc - nowUtc < MinLeftWhenLate))
             {
                 Settle(block);
@@ -234,6 +266,7 @@ public sealed class StartRampPolicy
     private void Settle(PlannedBlock block)
     {
         _settled[block.PlannerTaskId] = MinuteVerdict.AsUtc(block.EndsAtUtc);
+        _announced.Remove(block.PlannerTaskId);
         if (_again?.Id == block.PlannerTaskId) _again = null;
     }
 
@@ -241,7 +274,9 @@ public sealed class StartRampPolicy
     {
         var stale = _settled.Where(s => s.Value + RememberFor < nowUtc).Select(s => s.Key).ToList();
         foreach (var id in stale) _settled.Remove(id);
-        return stale.Count > 0;
+        var unheard = _announced.Where(a => a.Value + RememberFor < nowUtc).Select(a => a.Key).ToList();
+        foreach (var id in unheard) _announced.Remove(id);
+        return stale.Count + unheard.Count > 0;
     }
 
     private void Withdraw()

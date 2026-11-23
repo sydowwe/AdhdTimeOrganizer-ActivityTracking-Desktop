@@ -62,6 +62,13 @@ internal static class NudgeToast
             builder.MuteAudio()
                 .AddButton(Button("Stop for today", nudge, NudgeResponse.StopForToday));
         }
+        else if (nudge.Kind == NudgeKind.BlockEnd)
+        {
+            // Information, not a question: no sound, the ordinary duration, one OK. It leaves the notification centre when
+            // the block ends (Expiration, below) — after that "ends in 5 min" is false.
+            builder.MuteAudio()
+                .AddButton(Button("OK", nudge, NudgeResponse.Dismiss));
+        }
         else if (nudge.Kind == NudgeKind.UploadHealth)
         {
             builder.SetDuration(AppNotificationDuration.Long);
@@ -102,6 +109,8 @@ internal static class NudgeToast
         notification.Group = Group;
         if (nudge.Kind == NudgeKind.TimeChime)
             notification.Expiration = DateTimeOffset.Now + ChimeSchedule.ToastLifetime;
+        if (nudge is { Kind: NudgeKind.BlockEnd, BlockEnd: { } blockEnd } && blockEnd.EndsUtc > DateTime.UtcNow)
+            notification.Expiration = new DateTimeOffset(DateTime.SpecifyKind(blockEnd.EndsUtc, DateTimeKind.Utc));
         return notification;
     }
 
@@ -127,6 +136,7 @@ internal static class NudgeToast
                 $"Last {FormatLength(nudge.Length)}: {nudge.AppName}."),
         NudgeKind.StartRamp when nudge.StartRamp is { } ramp => StartRampText(ramp),
         NudgeKind.TimeChime => ($"{FormatLength(nudge.Length)} on {nudge.AppName}", "A time check, nothing more."),
+        NudgeKind.BlockEnd when nudge.BlockEnd is { } blockEnd => BlockEndText(blockEnd),
         NudgeKind.UploadHealth when nudge.Upload is { } upload => UploadText(upload),
         NudgeKind.RecordingHealth when nudge.Recording is { } recording => RecordingText(recording),
         NudgeKind.UnmappedReview when nudge.Review is { } review => UnmappedReviewPolicy.Text(review),
@@ -150,6 +160,23 @@ internal static class NudgeToast
         var body = !ramp.CanDefer ? "Ready now? One click starts the timer."
             : isLate ? $"{FormatLength(ramp.EndsUtc - ramp.StartsUtc - ramp.LateBy)} left. Start now?"
             : $"{FormatLength(ramp.EndsUtc - ramp.StartsUtc)} planned. Start the timer?";
+        return (title, body);
+    }
+
+    /// <summary>
+    /// "Thesis ends in 5 min" over "Next: Email at 11:30.", "Nothing planned after." or — the next block overlaps this one, so
+    /// it isn't what follows — a line that doesn't guess.
+    /// </summary>
+    private static (string Title, string Body) BlockEndText(BlockEndDetails blockEnd)
+    {
+        var title = $"{blockEnd.PlannedName} ends in {FormatLength(blockEnd.Left)}";
+        var body = blockEnd switch
+        {
+            { After: BlockEndAfter.Next, NextName: { } name, NextStartsUtc: { } startsUtc } =>
+                $"Next: {name} at {TimeZoneInfo.ConvertTimeFromUtc(startsUtc, TimeZoneInfo.Local).ToString("HH:mm", CultureInfo.InvariantCulture)}.",
+            { After: BlockEndAfter.Nothing } => "Nothing planned after.",
+            _ => "Time to wrap up the thought."
+        };
         return (title, body);
     }
 

@@ -62,6 +62,8 @@ public sealed class NudgeService : IDisposable
 
     private const string StartRampStateFileName = "start-ramp.json";
 
+    private const string BlockEndStateFileName = "block-end.json";
+
     private const string ChimeStateFileName = "time-chime.json";
 
     private readonly AppConfig _config;
@@ -76,6 +78,7 @@ public sealed class NudgeService : IDisposable
     private readonly Action<BreakReport>? _reportBreak;
     private readonly string _driftStatePath;
     private readonly string _rampStatePath;
+    private readonly string _blockEndStatePath;
     private readonly string _chimeStatePath;
     private readonly ILogger _log = Log.ForContext<NudgeService>();
 
@@ -87,6 +90,7 @@ public sealed class NudgeService : IDisposable
     private readonly HyperfocusPolicy _policy = new(TimeSpan.FromSeconds(10));
     private readonly DriftPolicy _drift = new();
     private readonly StartRampPolicy _ramp = new();
+    private readonly BlockEndPolicy _blockEnd = new();
     private readonly ChimeSchedule _chime;
     private readonly UploadHealthPolicy _upload = new();
     private readonly RecordingHealthPolicy _recording = new();
@@ -105,6 +109,7 @@ public sealed class NudgeService : IDisposable
     private DateTime? _rampShownUtc;
     private bool _driftChanged;
     private bool _rampChanged;
+    private bool _blockEndChanged;
     private bool _chimeChanged;
 
     /// <param name="uiContext">Where button presses are handled; the tray's.</param>
@@ -158,6 +163,8 @@ public sealed class NudgeService : IDisposable
         _rampStatePath = Path.Combine(Path.GetDirectoryName(driftStatePath)!, StartRampStateFileName);
         if (LoadState<DriftState>(_driftStatePath, "drift nudge") is { } drift) _drift.Restore(drift);
         if (LoadState<StartRampState>(_rampStatePath, "start ramp") is { } ramp) _ramp.Restore(ramp);
+        _blockEndStatePath = Path.Combine(Path.GetDirectoryName(driftStatePath)!, BlockEndStateFileName);
+        if (LoadState<BlockEndState>(_blockEndStatePath, "block-end warning") is { } blockEnd) _blockEnd.Restore(blockEnd);
         _breakTimer = new System.Threading.Timer(_ => OnBreakTimer(DateTime.UtcNow));
         _notifier = createNotifier(OnActivated);
     }
@@ -222,7 +229,11 @@ public sealed class NudgeService : IDisposable
             {
                 _drift.Record(nowUtc, minute);
                 _driftChanged = true;
-                if (plan is not null) _ramp.Record(nowUtc, plan);
+                if (plan is not null)
+                {
+                    _ramp.Record(nowUtc, plan);
+                    _blockEnd.Record(nowUtc, plan);
+                }
                 _chime.Record(nowUtc, minute, chimeSettings);
                 _chimeChanged = true;
             }
@@ -353,6 +364,7 @@ public sealed class NudgeService : IDisposable
             {
                 NudgeKind.Drift => _drift.IssueForTest(DateTime.UtcNow),
                 NudgeKind.StartRamp => _ramp.IssueForTest(DateTime.UtcNow),
+                NudgeKind.BlockEnd => _blockEnd.IssueForTest(DateTime.UtcNow),
                 NudgeKind.TimeChime => _chime.IssueForTest(),
                 NudgeKind.UploadHealth => new Nudge(1, kind, TimeSpan.FromHours(26), null,
                     Upload: new UploadNotice(UploadProblem.Stalled, 90, TimeSpan.FromHours(26), 0)),
@@ -375,26 +387,36 @@ public sealed class NudgeService : IDisposable
     /// The time chime is outside that gap: it holds no family and none holds it — a chime held 10 min would say the wrong
     /// number. It only waits for a pass in which no other toast was shown, which is the next poll.
     /// </para>
+    /// <para>
+    /// So is the block-end heads-up, for the same reason and one more: the next block's start ramp comes five minutes after
+    /// it, and a gap would make the ramp late. It waits for a pass with no other toast, and goes before the chime. When it
+    /// names a next block starting right after, the ramp is told (<see cref="StartRampPolicy.Announce"/>) and waits a few
+    /// minutes into that block instead of asking at its start.
+    /// </para>
     /// </remarks>
     private void Evaluate(DateTime nowUtc)
     {
         Nudge? ramp;
         Nudge? nudge;
         Nudge? drift;
+        Nudge? blockEnd = null;
         Nudge? chime = null;
         ChimeState? chimeState = null;
         IReadOnlyList<NudgeKind> withdrawn;
         bool driftWithdrawn;
         bool rampWithdrawn;
+        bool blockEndWithdrawn;
         DateTime? breakEndsUtc;
         BreakReport? breakReport;
         DriftState? driftState = null;
         StartRampState? rampState = null;
+        BlockEndState? blockEndState = null;
         long snapshotNumber;
 
         var settings = NudgeSettings.From(_config);
         var driftSettings = DriftSettings.From(_config);
         var rampSettings = StartRampSettings.From(_config);
+        var blockEndSettings = BlockEndSettings.From(_config);
         var chimeSettings = ChimeSettings.From(_config);
         lock (_lock)
         {
@@ -418,6 +440,15 @@ public sealed class NudgeService : IDisposable
 
             if (ramp is null && nudge is null && drift is null)
             {
+                blockEnd = _blockEnd.TakeDue(nowUtc, blockEndSettings, nowUtc - _presentUtc <= RampPresentFor,
+                    () => IsQuiet(nowUtc), out var blockEndChanged);
+                _blockEndChanged |= blockEndChanged;
+                if (blockEnd?.BlockEnd is { } named && BlockEndPolicy.HandsOverTo(named) is { } nextId)
+                    _rampChanged |= _ramp.Announce(nextId, nowUtc);
+            }
+
+            if (ramp is null && nudge is null && drift is null && blockEnd is null)
+            {
                 chime = _chime.TakeDue(nowUtc, chimeSettings, () => IsQuiet(nowUtc), out var chimeChanged);
                 _chimeChanged |= chimeChanged;
             }
@@ -425,6 +456,7 @@ public sealed class NudgeService : IDisposable
             withdrawn = _policy.TakeWithdrawn();
             driftWithdrawn = _drift.TakeWithdrawn();
             rampWithdrawn = _ramp.TakeWithdrawn();
+            blockEndWithdrawn = _blockEnd.TakeWithdrawn();
             breakEndsUtc = _policy.GetStatus(nowUtc).BreakEndsUtc;
             // Taken here, where every change lands: a poll (back at the desk) and a press (started, 5 more, I'm back) both evaluate.
             breakReport = _policy.TakeBreakReport();
@@ -439,6 +471,11 @@ public sealed class NudgeService : IDisposable
                 rampState = _ramp.Snapshot();
                 _rampChanged = false;
             }
+            if (_blockEndChanged)
+            {
+                blockEndState = _blockEnd.Snapshot();
+                _blockEndChanged = false;
+            }
             if (_chimeChanged)
             {
                 chimeState = _chime.Snapshot();
@@ -451,11 +488,13 @@ public sealed class NudgeService : IDisposable
 
         if (driftState is not null) SaveState(_driftStatePath, driftState, snapshotNumber, "drift nudge");
         if (rampState is not null) SaveState(_rampStatePath, rampState, snapshotNumber, "start ramp");
+        if (blockEndState is not null) SaveState(_blockEndStatePath, blockEndState, snapshotNumber, "block-end warning");
         if (chimeState is not null) SaveState(_chimeStatePath, chimeState, snapshotNumber, "time chime");
 
         foreach (var kind in withdrawn) _notifier.Remove(kind);
         if (driftWithdrawn) _notifier.Remove(NudgeKind.Drift);
         if (rampWithdrawn) _notifier.Remove(NudgeKind.StartRamp);
+        if (blockEndWithdrawn) _notifier.Remove(NudgeKind.BlockEnd);
 
         if (ramp is not null)
         {
@@ -476,6 +515,14 @@ public sealed class NudgeService : IDisposable
             // No names: the planned activity and what the time went to are both the user's own words.
             _log.Information("Nudge {Kind} after {Minutes} min off plan", drift.Kind, (int)drift.Length.TotalMinutes);
             _notifier.Show(drift);
+        }
+
+        if (blockEnd is not null)
+        {
+            // No names: the block and the next one are the user's own words.
+            _log.Information("Block-end warning for block {PlannerTaskId}, {LeftMinutes} min before its end",
+                blockEnd.BlockEnd!.PlannerTaskId, (int)Math.Round(blockEnd.BlockEnd.Left.TotalMinutes));
+            _notifier.Show(blockEnd);
         }
 
         if (chime is not null)
@@ -574,6 +621,15 @@ public sealed class NudgeService : IDisposable
             if (activation.Kind == NudgeKind.StartRamp)
             {
                 HandleRampResponse(activation);
+                return;
+            }
+
+            if (activation.Kind == NudgeKind.BlockEnd)
+            {
+                // OK only: nothing to decide, and the press already closed the toast. Turning it off is a Settings switch.
+                bool wasCurrent;
+                lock (_lock) wasCurrent = _blockEnd.Respond(activation.NudgeId);
+                _log.Debug("Block-end warning {NudgeId} answered{Stale}", activation.NudgeId, wasCurrent ? "" : " (no longer current)");
                 return;
             }
 

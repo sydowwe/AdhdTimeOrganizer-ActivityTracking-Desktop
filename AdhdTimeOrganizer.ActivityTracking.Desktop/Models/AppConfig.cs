@@ -186,6 +186,18 @@ public sealed class AppConfig
     [JsonConverter(typeof(LenientEnumConverter<RampBlocks>))]
     public RampBlocks StartRampBlocks { get; set; } = RampBlocks.NotOptional;
 
+    // ── Block-end heads-up (see BlockEndPolicy) ───────────────────────────────
+
+    /// <summary>
+    /// "Thesis ends in 5 min — next: Email at 11:30", silently, before the end of a block the user is in. On by default, like
+    /// the start ramp: it needs only a plan, and it is information rather than a question.
+    /// </summary>
+    public bool BlockEndEnabled { get; set; } = true;
+
+    /// <summary>Which planned blocks it warns about: its own choice, so "Critical only" for the ramp leaves these alone.</summary>
+    [JsonConverter(typeof(LenientEnumConverter<RampBlocks>))]
+    public RampBlocks BlockEndBlocks { get; set; } = RampBlocks.NotOptional;
+
     // ── Time chime (see ChimeSchedule) ────────────────────────────────────────
 
     /// <summary>
@@ -487,6 +499,7 @@ public sealed class AppConfig
         if (CaptureHotkey is null) { CaptureHotkey = defaults.CaptureHotkey; reset++; }
 
         if (!Enum.IsDefined(StartRampBlocks)) { StartRampBlocks = defaults.StartRampBlocks; reset++; }
+        if (!Enum.IsDefined(BlockEndBlocks)) { BlockEndBlocks = defaults.BlockEndBlocks; reset++; }
         if (!Enum.IsDefined(PrivateWindowHandling)) { PrivateWindowHandling = defaults.PrivateWindowHandling; reset++; }
 
         if (TimeChimeChoices is null) { TimeChimeChoices = defaults.TimeChimeChoices; reset++; }

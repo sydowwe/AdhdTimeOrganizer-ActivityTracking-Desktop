@@ -26,6 +26,13 @@ public enum NudgeKind
     TimeChime,
 
     /// <summary>
+    /// "Thesis ends in 5 min — next: Email at 11:30": a silent heads-up before the end of a block the user is in
+    /// (<see cref="BlockEndPolicy"/>). Outside the gap between the families, like the chime: it is information, and holding
+    /// the next block's start ramp behind it would make the ramp late.
+    /// </summary>
+    BlockEnd,
+
+    /// <summary>
     /// Not a nudge: uploads are stuck, the session ended or the server refused windows (<see cref="UploadHealthPolicy"/>).
     /// It shares the toast plumbing and has a switch of its own.
     /// </summary>
@@ -91,11 +98,13 @@ public sealed record DriftDetails(string PlannedName, DateTime PlannedEndsUtc);
 /// routed by <see cref="Kind"/> first. For a drift nudge <see cref="Length"/> is the off-plan time and
 /// <see cref="AppName"/> what it went to. An upload-health notice carries <see cref="Upload"/> instead, a recording-health
 /// one <see cref="Recording"/>, the evening invite <see cref="Review"/>, and a start ramp <see cref="StartRamp"/> (its
-/// <see cref="Length"/> is the block's).
+/// <see cref="Length"/> is the block's). A block-end heads-up carries <see cref="BlockEnd"/>, its <see cref="Length"/> the
+/// time left.
 /// </summary>
 public sealed record Nudge(
     int Id, NudgeKind Kind, TimeSpan Length, string? AppName, DriftDetails? Drift = null, UploadNotice? Upload = null,
-    UnmappedInvite? Review = null, StartRampDetails? StartRamp = null, RecordingNotice? Recording = null);
+    UnmappedInvite? Review = null, StartRampDetails? StartRamp = null, RecordingNotice? Recording = null,
+    BlockEndDetails? BlockEnd = null);
 
 /// <param name="BreakEndsUtc">When a running break timer runs out; null with none, and once it has (a break held past its end).</param>
 public sealed record NudgeStatus(TimeSpan? StretchLength, DateTime? BreakEndsUtc);

@@ -210,6 +210,46 @@ public class NudgeToastTests
         new(5, NudgeKind.StartRamp, details.EndsUtc - details.StartsUtc, null, StartRamp: details);
 
     /// <summary>
+    /// The block-end heads-up is information: silent, not a reminder, one OK that reads back as Dismiss, and gone from the
+    /// notification centre at the block's end. A user-authored name with XML in it still builds.
+    /// </summary>
+    [Fact]
+    public void Build_BlockEnd_IsSilent_WithOneOK_AndExpiresAtTheBlocksEnd()
+    {
+        var endsUtc = DateTime.UtcNow.AddMinutes(5);
+        var nudge = new Nudge(4, NudgeKind.BlockEnd, TimeSpan.FromMinutes(5), null, BlockEnd: new BlockEndDetails(
+            7, "O'Reilly & <\"notes\">", endsUtc, TimeSpan.FromMinutes(5), BlockEndAfter.Next, 8, "Email & <co>", endsUtc));
+        var notification = NudgeToast.Build(nudge);
+        var toast = XDocument.Parse(notification.Payload).Root!;
+
+        Assert.Equal("BlockEnd", notification.Tag);
+        Assert.Equal(NudgeToast.Group, notification.Group);
+        Assert.Equal(NudgeToast.Text(nudge).Title, toast.Descendants("text").First().Value);
+        Assert.Equal("true", (string?)toast.Element("audio")?.Attribute("silent"));
+        Assert.Null(toast.Attribute("scenario"));
+        Assert.Null(toast.Attribute("duration"));
+        Assert.Equal(new DateTimeOffset(endsUtc), notification.Expiration);
+        Assert.Equal([new NudgeActivation(NudgeKind.BlockEnd, 4, NudgeResponse.Dismiss)],
+            toast.Descendants("action").Select(a => NudgeToast.Parse(Arguments((string)a.Attribute("arguments")!))));
+        Assert.Equal("OK", (string?)toast.Descendants("action").Single().Attribute("content"));
+    }
+
+    [Fact]
+    public void Text_BlockEnd_NamesWhatComesNext_OrNothing_OrDoesNotGuess()
+    {
+        var endsUtc = new DateTime(2026, 11, 23, 11, 30, 0, DateTimeKind.Utc);
+        var at = TimeZoneInfo.ConvertTimeFromUtc(endsUtc, TimeZoneInfo.Local).ToString("HH:mm");
+        Nudge HeadsUp(BlockEndAfter after, double minutesLeft = 5) => new(1, NudgeKind.BlockEnd, TimeSpan.FromMinutes(minutesLeft), null,
+            BlockEnd: after == BlockEndAfter.Next
+                ? new BlockEndDetails(1, "Thesis", endsUtc, TimeSpan.FromMinutes(minutesLeft), after, 2, "Email", endsUtc)
+                : new BlockEndDetails(1, "Thesis", endsUtc, TimeSpan.FromMinutes(minutesLeft), after));
+
+        Assert.Equal(("Thesis ends in 5 min", $"Next: Email at {at}."), NudgeToast.Text(HeadsUp(BlockEndAfter.Next)));
+        Assert.Equal(("Thesis ends in 3 min", "Nothing planned after."), NudgeToast.Text(HeadsUp(BlockEndAfter.Nothing, 2.9)));
+        Assert.Equal(("Thesis ends in 5 min", "Time to wrap up the thought."), NudgeToast.Text(HeadsUp(BlockEndAfter.Unknown)));
+    }
+
+    /// <summary>
     /// A time check, not a nudge: it makes no sound, slides away on the short duration, and leaves the notification centre
     /// soon after rather than piling up "15 min", "30 min", "45 min" there.
     /// </summary>

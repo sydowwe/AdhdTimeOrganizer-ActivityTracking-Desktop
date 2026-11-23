@@ -28,6 +28,8 @@ public sealed class SettingsForm : Form
     private readonly NumericUpDown _driftAfterBox;
     private readonly CheckBox _startRampBox;
     private readonly ComboBox _startRampBlocksBox;
+    private readonly CheckBox _blockEndBox;
+    private readonly ComboBox _blockEndBlocksBox;
     private readonly CheckBox _uploadNoticesBox;
     private readonly CheckBox _unmappedReviewBox;
     private readonly CheckBox _pauseRemindersBox;
@@ -73,6 +75,15 @@ public sealed class SettingsForm : Form
         _startRampBlocksBox.Items.AddRange(["Every block", "All but Optional", "Critical only"]);
         _startRampBlocksBox.SelectedIndex = (int)config.StartRampBlocks;
         AddRow(general, "Start ramp asks about:", _startRampBlocksBox, "By the importance a block has in your planner.");
+
+        _blockEndBox = new CheckBox { Text = "On", Checked = config.BlockEndEnabled, AutoSize = true };
+        AddRow(general, "Block-end &warning:", _blockEndBox,
+            "Five minutes before a block you are working on ends: a silent notice with what comes next. Blocks under 20 minutes get none.");
+
+        _blockEndBlocksBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
+        _blockEndBlocksBox.Items.AddRange(["Every block", "All but Optional", "Critical only"]);
+        _blockEndBlocksBox.SelectedIndex = (int)config.BlockEndBlocks;
+        AddRow(general, "Block-end warning &covers:", _blockEndBlocksBox, "Its own choice: the start ramp's doesn't change it.");
 
         _uploadNoticesBox = new CheckBox { Text = "On", Checked = config.UploadNoticesEnabled, AutoSize = true };
         AddRow(general, "Upload problem notices:", _uploadNoticesBox,
@@ -345,6 +356,8 @@ public sealed class SettingsForm : Form
         _config.DriftNudgeMinutes = (int)_driftAfterBox.Value;
         _config.StartRampEnabled = _startRampBox.Checked;
         _config.StartRampBlocks = (RampBlocks)_startRampBlocksBox.SelectedIndex;
+        _config.BlockEndEnabled = _blockEndBox.Checked;
+        _config.BlockEndBlocks = (RampBlocks)_blockEndBlocksBox.SelectedIndex;
         _config.UploadNoticesEnabled = _uploadNoticesBox.Checked;
         _config.UnmappedReviewEnabled = _unmappedReviewBox.Checked;
         _config.PauseRemindersEnabled = _pauseRemindersBox.Checked;

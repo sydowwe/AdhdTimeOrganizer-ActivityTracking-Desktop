@@ -337,6 +337,58 @@ public sealed class NudgeServiceTests : IDisposable
         Assert.Empty(notifier.Shown);
     }
 
+    // ---- block-end heads-up -----------------------------------------------
+
+    /// <summary>
+    /// Five minutes before the end of a block in progress, the heads-up names the next block, and its state is kept beside
+    /// drift.json. The next block's ramp then doesn't ask at its start; three minutes in, not moved on, it does.
+    /// </summary>
+    [Fact]
+    public void TheBlockEndHeadsUp_ShowsFiveMinutesBefore_AndTheNextRampWaits()
+    {
+        var (service, notifier, _) = Create();
+        var endsUtc = NextMinute().AddMinutes(10);
+        var thesis = Block(5, "Thesis", endsUtc.AddMinutes(-45), 45) with { InProgress = true };
+        var email = Block(6, "Email", endsUtc, 30);
+
+        service.OnMinuteResolved(endsUtc.AddMinutes(-5).AddSeconds(-15), Verdict(endsUtc.AddMinutes(-7), null, null),
+            new PlanView(endsUtc.AddMinutes(-7), [thesis], email, false, null));
+        Present(service, endsUtc.AddMinutes(-5));
+
+        var headsUp = Assert.Single(notifier.Shown);
+        Assert.Equal(NudgeKind.BlockEnd, headsUp.Kind);
+        Assert.Equal(("Thesis", "Email"), (headsUp.BlockEnd!.PlannedName, headsUp.BlockEnd.NextName));
+        Assert.True(File.Exists(Path.Combine(_dir, "block-end.json")));
+        service.OnActivated(new NudgeActivation(NudgeKind.BlockEnd, headsUp.Id, NudgeResponse.Dismiss));
+
+        service.OnMinuteResolved(endsUtc.AddSeconds(-15), Verdict(endsUtc.AddMinutes(-2), null, null),
+            new PlanView(endsUtc.AddMinutes(-2), [thesis], email, false, null));
+        Present(service, endsUtc);
+        Assert.Equal([NudgeKind.BlockEnd], notifier.Shown.Select(n => n.Kind));
+
+        service.OnMinuteResolved(endsUtc.AddMinutes(2), Verdict(endsUtc, null, null),
+            new PlanView(endsUtc, [email], null, false, null));
+        Present(service, endsUtc.AddMinutes(3));
+
+        Assert.Equal([NudgeKind.BlockEnd, NudgeKind.StartRamp], notifier.Shown.Select(n => n.Kind));
+        Assert.Equal((6L, TimeSpan.FromMinutes(3)), (notifier.Shown[1].StartRamp!.PlannerTaskId, notifier.Shown[1].StartRamp!.LateBy));
+    }
+
+    [Fact]
+    public void TheBlockEndHeadsUp_Off_ShowsNothing()
+    {
+        var (service, notifier, _) = Create();
+        _config.BlockEndEnabled = false;
+        var endsUtc = NextMinute().AddMinutes(10);
+        var thesis = Block(5, "Thesis", endsUtc.AddMinutes(-45), 45) with { InProgress = true };
+
+        service.OnMinuteResolved(endsUtc.AddMinutes(-5).AddSeconds(-15), Verdict(endsUtc.AddMinutes(-7), null, null),
+            new PlanView(endsUtc.AddMinutes(-7), [thesis], null, false, null));
+        Present(service, endsUtc.AddMinutes(-5));
+
+        Assert.Empty(notifier.Shown);
+    }
+
     // ---- upload notices ---------------------------------------------------
 
     /// <summary>A stall reaches the notifier as a notice of its own kind, once, and leaves when the outbox drains.</summary>

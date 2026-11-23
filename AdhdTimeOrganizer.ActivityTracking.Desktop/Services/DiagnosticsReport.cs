@@ -70,6 +70,7 @@ public static class DiagnosticsReport
                         $"same app {config.AppHyperfocusNudgeMinutes} min, a break is {config.BreakMinutes} min, break timer {config.BreakTimerMinutes} min");
         text.AppendLine($"Drift nudges: {OnOff(config.DriftNudgesEnabled)}, after {config.DriftNudgeMinutes} min");
         text.AppendLine($"Start ramp: {OnOff(config.StartRampEnabled)}, blocks {config.StartRampBlocks}");
+        text.AppendLine($"Block-end warning: {OnOff(config.BlockEndEnabled)}, blocks {config.BlockEndBlocks}");
         // Counts only: the choices name the user's activities.
         text.AppendLine($"Time chime: {OnOff(config.TimeChimeEnabled)}, every {config.TimeChimeMinutes} min, " +
                         $"distractions {OnOff(config.TimeChimeDistractions)}, {config.TimeChimeChoices.Count(c => c.Chime)} ticked, " +
