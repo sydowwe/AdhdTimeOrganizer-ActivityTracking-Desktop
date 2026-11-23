@@ -80,7 +80,10 @@ public sealed class NudgeService : IDisposable
     private readonly ILogger _log = Log.ForContext<NudgeService>();
 
     private readonly Lock _lock = new();
-    private readonly Lock _stateSaveGate = new();
+    private readonly OrderedStateFiles _stateFiles = new();
+
+    /// <summary>Numbers each evaluation's snapshots, so they reach the disk in the order they were taken. Under <see cref="_lock"/>.</summary>
+    private long _snapshotNumber;
     private readonly HyperfocusPolicy _policy = new(TimeSpan.FromSeconds(10));
     private readonly DriftPolicy _drift = new();
     private readonly StartRampPolicy _ramp = new();
@@ -345,6 +348,7 @@ public sealed class NudgeService : IDisposable
         BreakReport? breakReport;
         DriftState? driftState = null;
         StartRampState? rampState = null;
+        long snapshotNumber;
 
         var settings = NudgeSettings.From(_config);
         var driftSettings = DriftSettings.From(_config);
@@ -398,11 +402,14 @@ public sealed class NudgeService : IDisposable
                 chimeState = _chime.Snapshot();
                 _chimeChanged = false;
             }
+
+            // Written outside the lock, so another thread's later snapshot may get to the disk first.
+            snapshotNumber = ++_snapshotNumber;
         }
 
-        if (driftState is not null) SaveState(_driftStatePath, driftState, "drift nudge");
-        if (rampState is not null) SaveState(_rampStatePath, rampState, "start ramp");
-        if (chimeState is not null) SaveState(_chimeStatePath, chimeState, "time chime");
+        if (driftState is not null) SaveState(_driftStatePath, driftState, snapshotNumber, "drift nudge");
+        if (rampState is not null) SaveState(_rampStatePath, rampState, snapshotNumber, "start ramp");
+        if (chimeState is not null) SaveState(_chimeStatePath, chimeState, snapshotNumber, "time chime");
 
         foreach (var kind in withdrawn) _notifier.Remove(kind);
         if (driftWithdrawn) _notifier.Remove(NudgeKind.Drift);
@@ -754,11 +761,11 @@ public sealed class NudgeService : IDisposable
     }
 
     /// <summary>Never throws: a failed save costs at most a repeated nudge after a restart.</summary>
-    private void SaveState<T>(string path, T state, string what)
+    private void SaveState<T>(string path, T state, long snapshotNumber, string what)
     {
         try
         {
-            lock (_stateSaveGate) JsonFile.Write(path, state);
+            _stateFiles.Write(path, state, snapshotNumber);
         }
         catch (Exception ex)
         {

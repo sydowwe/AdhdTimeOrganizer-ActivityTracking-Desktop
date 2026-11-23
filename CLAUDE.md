@@ -198,6 +198,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   retention, by last write. A file it can't open is skipped and logged once, and goes on a later pass. `Save` sets a
   damaged copy of the same minute aside before writing, and never writes over one it can't open: it throws, and the poll
   loop logs the minute as lost.
+- **Snapshots taken under a lock and written outside it carry their order.** `NudgeService.Evaluate` numbers each
+  evaluation's drift / ramp / chime snapshots under `_lock`, and `OrderedStateFiles` drops one older than what its file
+  already holds — a poll and a button press could otherwise write the older state last.
 - **`config.json` never falls back to defaults silently** (`AppConfig.Load(path)` → `ConfigLoad`): the tray's first act
   without a session is a save, which used to overwrite a damaged file — rules, pause, chime choices and all. A file that
   loads is copied to `config.json.bak`. A damaged one goes to `config.json.bad` (one kept), then `.bak` is used, **without its
