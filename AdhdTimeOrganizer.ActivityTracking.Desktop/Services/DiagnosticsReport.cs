@@ -56,7 +56,9 @@ public static class DiagnosticsReport
                         (status.LastSentUtc is { } sent ? $", last stored {sent:yyyy-MM-dd HH:mm:ss} UTC" : ", nothing stored since start"));
         text.AppendLine($"Dropped by the server since start: {status.RejectedWindows} min");
         text.AppendLine($"Pause keep-alive: {DescribeKeepAlive(keepAlive)}");
-        text.AppendLine($"Poll error: {(status.LastPollError is null ? "none" : "yes, see the log")}");
+        text.AppendLine($"Poll error: {DescribePollError(status, nowUtc)}");
+        text.AppendLine($"Last poll: {(status.LastPollUtc is { } lastPoll ? $"{lastPoll:yyyy-MM-dd HH:mm:ss} UTC" : "none since start")}, " +
+                        $"{(int)status.UnrecordedFor.TotalMinutes} min seen since the last stored minute");
         text.AppendLine();
 
         text.AppendLine("== Settings");
@@ -116,6 +118,15 @@ public static class DiagnosticsReport
         { Result: SendResult.Rejected } => $"Rejected at {answer.AtUtc:yyyy-MM-dd HH:mm} UTC (the server predates empty heartbeats)",
         _ => $"{answer.Result} at {answer.AtUtc:yyyy-MM-dd HH:mm} UTC"
     };
+
+    /// <summary>
+    /// How long the poll has been failing (prompt 25): a report of "nothing recorded since Tuesday" needs that before the log.
+    /// The message itself stays in the log — an exception's text can carry a path.
+    /// </summary>
+    private static string DescribePollError(TrackerStatus status, DateTime nowUtc) =>
+        status.PollFailingSinceUtc is { } since && since <= nowUtc
+            ? $"yes, failing for {NudgeToast.FormatLength(nowUtc - since)} (since {since:yyyy-MM-dd HH:mm} UTC), see the log"
+            : status.LastPollError is null ? "none" : "yes, see the log";
 
     /// <summary>"Quiet nudges for…": a nudge report ("I never get any") should say so first.</summary>
     private static string DescribeQuiet(DateTime? untilUtc, DateTime nowUtc) =>

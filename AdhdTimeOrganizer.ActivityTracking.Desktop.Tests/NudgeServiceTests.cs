@@ -492,6 +492,35 @@ public sealed class NudgeServiceTests : IDisposable
         Assert.Empty(restartedNotifier.Shown);
     }
 
+    // ---- recording health (prompt 25) ---------------------------------------
+
+    /// <summary>
+    /// Fed by the tray's timer, never the poll loop: a failing poll is said, ignores the quiet conditions (it is the record at
+    /// risk), and the notice's "Turn off" is the upload notices' switch — which takes the upload toast away too.
+    /// </summary>
+    [Fact]
+    public void ARecordingProblem_IsSaid_EvenWhenQuiet_AndTurnOffIsTheUploadNoticesSwitch()
+    {
+        var (service, notifier, _) = Create();
+        _config.NudgesQuietUntilUtc = DateTime.MaxValue;
+        var since = DateTime.UtcNow;
+        var now = since + RecordingHealthPolicy.FailingAfter;
+
+        service.OnRecordingStatus(now, new RecordingSnapshot(true, false, false, TimeSpan.FromSeconds(2), since, since, TimeSpan.Zero));
+
+        var shown = Assert.Single(notifier.Shown);
+        Assert.Equal((NudgeKind.RecordingHealth, RecordingProblem.PollFailing), (shown.Kind, shown.Recording!.Problem));
+
+        service.OnActivated(new NudgeActivation(NudgeKind.RecordingHealth, shown.Id, NudgeResponse.OpenLogs));
+        Assert.Single(_folders);
+
+        service.OnActivated(new NudgeActivation(NudgeKind.RecordingHealth, shown.Id, NudgeResponse.TurnOff));
+        Assert.False(_config.UploadNoticesEnabled);
+        Assert.True(_config.HyperfocusNudgesEnabled);
+        Assert.Contains(NudgeKind.RecordingHealth, notifier.Removed);
+        Assert.Contains(NudgeKind.UploadHealth, notifier.Removed);
+    }
+
     // ---- "Quiet nudges for…" (prompt 25) ------------------------------------
 
     /// <summary>A drift nudge due while quiet is held, not dropped: it shows once the quiet ends, while it is still true.</summary>

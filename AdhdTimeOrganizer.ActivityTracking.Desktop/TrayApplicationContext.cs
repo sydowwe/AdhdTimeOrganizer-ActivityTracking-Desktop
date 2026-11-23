@@ -155,6 +155,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         testNudge.DropDownItems.Add("Time chime", null, (_, _) => _nudges.ShowTest(NudgeKind.TimeChime));
         testNudge.DropDownItems.Add("Upload problem", null, (_, _) => _nudges.ShowTest(NudgeKind.UploadHealth));
         testNudge.DropDownItems.Add("Still paused", null, (_, _) => _nudges.ShowTest(NudgeKind.PauseReminder));
+        testNudge.DropDownItems.Add("Recording problem", null, (_, _) => _nudges.ShowTest(NudgeKind.RecordingHealth));
         contextMenu.Items.Add(testNudge);
 #endif
         contextMenu.Items.Add(new ToolStripSeparator());
@@ -308,6 +309,10 @@ public sealed class TrayApplicationContext : ApplicationContext
             status.LastSendResult == SendResult.RetryLater ? status.LastStatusCode : null));
         // "Tracking has been paused for 4 h": from here, because the poll loop is stopped while paused.
         _nudges.OnPauseStatus(nowUtc, PauseSnapshotNow());
+        // Is recording itself working? From here too, with the idle time read here: the poll loop's health is the question.
+        _nudges.OnRecordingStatus(nowUtc, new RecordingSnapshot(
+            status.IsRunning, status.PausedUntilUtc is { } paused && paused > nowUtc, status.IsLocked, Native.Win32.GetIdleTime(),
+            status.PollFailingSinceUtc, status.LastPollUtc, status.UnrecordedFor));
 
         var iconState = TrayIconStates.For(status, hasSession, nowUtc);
         if (iconState != _iconState)

@@ -122,6 +122,49 @@ public class NudgeToastTests
         if (code == 403) Assert.DoesNotContain("connection", body);
     }
 
+    /// <summary>
+    /// The recording notice (prompt 25) is a kind of its own, so it never replaces an upload notice: it builds, and its buttons
+    /// read back as Open log folder and the upload notices' switch.
+    /// </summary>
+    [Theory]
+    [InlineData(RecordingProblem.PollFailing)]
+    [InlineData(RecordingProblem.PollStopped)]
+    [InlineData(RecordingProblem.NothingStored)]
+    public void Build_RecordingHealth_OpensTheLog_AndHasTheUploadNoticesSwitch(RecordingProblem problem)
+    {
+        var nudge = Recording(problem, 12);
+        var notification = NudgeToast.Build(nudge);
+        var toast = XDocument.Parse(notification.Payload).Root!;
+
+        Assert.Equal("RecordingHealth", notification.Tag);
+        Assert.Equal(NudgeToast.Group, notification.Group);
+        Assert.Equal("long", (string?)toast.Attribute("duration"));
+        Assert.Equal(NudgeToast.Text(nudge).Title, toast.Descendants("text").First().Value);
+        Assert.Equal(
+            new[] { NudgeResponse.OpenLogs, NudgeResponse.TurnOff }.Select(r => new NudgeActivation(NudgeKind.RecordingHealth, 1, r)),
+            toast.Descendants("action").Select(a => NudgeToast.Parse(Arguments((string)a.Attribute("arguments")!))));
+        Assert.Equal(["Open log folder", "Turn off these notices"], toast.Descendants("action").Select(a => (string)a.Attribute("content")!));
+    }
+
+    /// <summary>Durations only, and what to do: the log folder, a restart.</summary>
+    [Fact]
+    public void Text_RecordingHealth_SaysWhatIsBroken_InDurations()
+    {
+        Assert.Equal(("Activity Tracker can’t record this PC",
+                "Reading the screen has failed for 12 min, so nothing is being recorded. The log folder says why; restarting the tracker may help."),
+            NudgeToast.Text(Recording(RecordingProblem.PollFailing, 12)));
+        Assert.Equal(("Activity Tracker has stopped recording",
+                "It hasn’t looked at the screen for 6 min, though you are at the computer. Restart the tracker; the log folder says what happened."),
+            NudgeToast.Text(Recording(RecordingProblem.PollStopped, 6)));
+        Assert.Equal(("Activity Tracker isn’t storing anything",
+                "34 min at the computer and not one minute stored. The log folder says why; restarting the tracker may help."),
+            NudgeToast.Text(Recording(RecordingProblem.NothingStored, 34)));
+    }
+
+    private static Nudge Recording(RecordingProblem problem, int minutes) =>
+        new(1, NudgeKind.RecordingHealth, TimeSpan.FromMinutes(minutes), null,
+            Recording: new RecordingNotice(problem, TimeSpan.FromMinutes(minutes)));
+
     private static Nudge Upload(UploadProblem problem) =>
         new(1, NudgeKind.UploadHealth, TimeSpan.Zero, null,
             Upload: new UploadNotice(problem, 90, TimeSpan.FromHours(26), 4));

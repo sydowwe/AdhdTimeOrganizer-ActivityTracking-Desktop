@@ -89,6 +89,7 @@ public sealed class NudgeService : IDisposable
     private readonly StartRampPolicy _ramp = new();
     private readonly ChimeSchedule _chime;
     private readonly UploadHealthPolicy _upload = new();
+    private readonly RecordingHealthPolicy _recording = new();
     private readonly PauseReminderPolicy _pause = new();
     private readonly Action? _resume;
     private readonly System.Threading.Timer _breakTimer;
@@ -260,6 +261,29 @@ public sealed class NudgeService : IDisposable
     }
 
     /// <summary>
+    /// Whether recording itself is working, from the tray's timer (the UI thread) — never from the poll loop, whose health is
+    /// the question (<see cref="RecordingHealthPolicy"/>). Not a nudge: no quiet conditions; the upload notices' switch.
+    /// </summary>
+    public void OnRecordingStatus(DateTime nowUtc, RecordingSnapshot snapshot)
+    {
+        try
+        {
+            RecordingHealthChange change;
+            lock (_lock) change = _recording.Evaluate(nowUtc, snapshot, _config.UploadNoticesEnabled);
+
+            if (change.Withdraw) _notifier.Remove(NudgeKind.RecordingHealth);
+            if (change.Show is not { } notice) return;
+
+            _log.Warning("Recording notice {Problem} after {Minutes} min", notice.Problem, (int)notice.For.TotalMinutes);
+            _notifier.Show(new Nudge(1, NudgeKind.RecordingHealth, notice.For, null, Recording: notice));
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Recording health evaluation failed");
+        }
+    }
+
+    /// <summary>
     /// Whether a pause "until I resume" has gone on long enough to say so, from the tray's timer (the UI thread) — the poll
     /// loop is stopped while paused. Not a nudge: no quiet conditions, its own switch (<see cref="PauseReminderPolicy"/>).
     /// </summary>
@@ -333,6 +357,8 @@ public sealed class NudgeService : IDisposable
                 NudgeKind.UploadHealth => new Nudge(1, kind, TimeSpan.FromHours(26), null,
                     Upload: new UploadNotice(UploadProblem.Stalled, 90, TimeSpan.FromHours(26), 0)),
                 NudgeKind.PauseReminder => new Nudge(1, kind, TimeSpan.FromHours(4), null),
+                NudgeKind.RecordingHealth => new Nudge(1, kind, TimeSpan.FromMinutes(12), null,
+                    Recording: new RecordingNotice(RecordingProblem.PollFailing, TimeSpan.FromMinutes(12))),
                 NudgeKind.UnmappedReview => new Nudge(1, kind, TimeSpan.FromMinutes(130), null, Review: new UnmappedInvite(
                     TimeSpan.FromMinutes(130), [new InviteApp("Discord", TimeSpan.FromMinutes(50), false), new InviteApp("Chrome", TimeSpan.FromMinutes(30), true)], 1)),
                 _ => _policy.IssueForTest(kind, DateTime.UtcNow)
@@ -527,7 +553,7 @@ public sealed class NudgeService : IDisposable
     {
         try
         {
-            if (activation.Kind == NudgeKind.UploadHealth)
+            if (activation.Kind is NudgeKind.UploadHealth or NudgeKind.RecordingHealth)
             {
                 HandleUploadResponse(activation.Response);
                 return;
@@ -587,8 +613,9 @@ public sealed class NudgeService : IDisposable
     }
 
     /// <summary>
-    /// An upload notice has no policy state to answer to, so a press is acted on whatever notice it came from: a stale
-    /// "Sign in" finds the tray already signed in and does nothing, and "Turn off" is the switch it says it is.
+    /// An upload or recording notice has no policy state to answer to, so a press is acted on whatever notice it came from: a
+    /// stale "Sign in" finds the tray already signed in and does nothing, and "Turn off" is the switch it says it is — one for
+    /// both, so it takes both toasts away.
     /// </summary>
     private void HandleUploadResponse(NudgeResponse response)
     {
@@ -604,7 +631,8 @@ public sealed class NudgeService : IDisposable
                 _config.UploadNoticesEnabled = false;
                 _config.Save();
                 _notifier.Remove(NudgeKind.UploadHealth);
-                _log.Information("Upload notices turned off from a notice");
+                _notifier.Remove(NudgeKind.RecordingHealth);
+                _log.Information("Upload and recording notices turned off from a notice");
                 break;
         }
     }

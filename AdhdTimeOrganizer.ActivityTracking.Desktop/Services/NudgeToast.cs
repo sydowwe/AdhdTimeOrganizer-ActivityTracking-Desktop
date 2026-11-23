@@ -70,6 +70,12 @@ internal static class NudgeToast
                 : Button("Open log folder", nudge, NudgeResponse.OpenLogs));
             builder.AddButton(Button("Turn off these notices", nudge, NudgeResponse.TurnOff));
         }
+        else if (nudge.Kind == NudgeKind.RecordingHealth)
+        {
+            builder.SetDuration(AppNotificationDuration.Long)
+                .AddButton(Button("Open log folder", nudge, NudgeResponse.OpenLogs))
+                .AddButton(Button("Turn off these notices", nudge, NudgeResponse.TurnOff));
+        }
         else if (nudge.Kind == NudgeKind.PauseReminder)
         {
             builder.SetDuration(AppNotificationDuration.Long)
@@ -122,6 +128,7 @@ internal static class NudgeToast
         NudgeKind.StartRamp when nudge.StartRamp is { } ramp => StartRampText(ramp),
         NudgeKind.TimeChime => ($"{FormatLength(nudge.Length)} on {nudge.AppName}", "A time check, nothing more."),
         NudgeKind.UploadHealth when nudge.Upload is { } upload => UploadText(upload),
+        NudgeKind.RecordingHealth when nudge.Recording is { } recording => RecordingText(recording),
         NudgeKind.UnmappedReview when nudge.Review is { } review => UnmappedReviewPolicy.Text(review),
         NudgeKind.PauseReminder => ($"Tracking has been paused for {FormatPause(nudge.Length)}",
             "Nothing on this PC is recorded until you resume."),
@@ -165,6 +172,17 @@ internal static class NudgeToast
                 "The server turned those minutes down and they are gone. A tracker older than the server is the usual cause: update it.")
         };
     }
+
+    /// <summary>What is broken and what to do about it. Durations only: the log says the rest.</summary>
+    private static (string Title, string Body) RecordingText(RecordingNotice recording) => recording.Problem switch
+    {
+        RecordingProblem.PollFailing => ("Activity Tracker can’t record this PC",
+            $"Reading the screen has failed for {FormatLength(recording.For)}, so nothing is being recorded. The log folder says why; restarting the tracker may help."),
+        RecordingProblem.PollStopped => ("Activity Tracker has stopped recording",
+            $"It hasn’t looked at the screen for {FormatLength(recording.For)}, though you are at the computer. Restart the tracker; the log folder says what happened."),
+        _ => ("Activity Tracker isn’t storing anything",
+            $"{FormatLength(recording.For)} at the computer and not one minute stored. The log folder says why; restarting the tracker may help.")
+    };
 
     /// <summary>"4 h", "47 h", then "3 days": whole units, rounded down — a pause is never younger than it says.</summary>
     internal static string FormatPause(TimeSpan length)

@@ -12,6 +12,9 @@ namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 /// <param name="OldestPendingUtc">When the oldest unsent window began; null with an empty outbox. Unlike <paramref name="LastSentUtc"/> it survives a restart.</param>
 /// <param name="RejectedWindows">Windows the server refused and the tracker dropped since it started — each one a lost minute.</param>
 /// <param name="LastStatusCode">The last heartbeat's answer; null when it got none (offline). Says <i>why</i> a retry waits.</param>
+/// <param name="PollFailingSinceUtc">The first failure of the current run of failed poll-loop passes; null once a poll completes.</param>
+/// <param name="LastPollUtc">The last poll that completed, or when the loop started before its first; null before any start.</param>
+/// <param name="UnrecordedFor">Recordable time credited since the last window was queued (<see cref="RecordingSnapshot.UnrecordedFor"/>).</param>
 public sealed record TrackerStatus(
     bool IsRunning,
     bool IsLocked,
@@ -25,7 +28,10 @@ public sealed record TrackerStatus(
     TrackerCoverage? Coverage = null,
     DateTime? OldestPendingUtc = null,
     int RejectedWindows = 0,
-    int? LastStatusCode = null);
+    int? LastStatusCode = null,
+    DateTime? PollFailingSinceUtc = null,
+    DateTime? LastPollUtc = null,
+    TimeSpan UnrecordedFor = default);
 
 /// <summary>A minute the server stored and what it said about it.</summary>
 public sealed record ResolvedMinute(DateTime WindowStartUtc, HeartbeatResponse Response);
@@ -86,6 +92,12 @@ public sealed class ActivityTrackerService : IDisposable
 
     private volatile bool _isLocked;
     private volatile string? _lastPollError;
+
+    // For RecordingHealthPolicy, read by the tray's timer. UTC ticks, 0 = none: a DateTime? can tear across threads.
+    private long _pollFailingSinceTicks; // set by the first failed pass, cleared only by a poll that completes
+    private long _lastPollTicks;         // the last completed poll, or the loop's start
+    private long _unrecordedTicks;       // recordable time credited since the last window was queued
+
     private DateTime? _lastSentUtc;
     private SendResult? _lastSendResult;
     private int? _lastStatusCode;
@@ -151,6 +163,10 @@ public sealed class ActivityTrackerService : IDisposable
         // the foreground, a poll interval at a time, and no switch between two polls.
         if (!ForegroundEvents.Install())
             _log.Warning("Could not hook foreground changes — the foreground is polled only, and switches between polls are missed");
+
+        // The loop is expected to poll from now: a start is not a silence.
+        Interlocked.Exchange(ref _lastPollTicks, DateTime.UtcNow.Ticks);
+        Interlocked.Exchange(ref _pollFailingSinceTicks, 0);
 
         _pollCts = new CancellationTokenSource();
         var token = _pollCts.Token;
@@ -235,6 +251,7 @@ public sealed class ActivityTrackerService : IDisposable
     private void Queue(ActivityWindow window)
     {
         _outbox.Save(window);
+        Interlocked.Exchange(ref _unrecordedTicks, 0); // stored: recording works
         _today.Add(window.WindowStart, window.Entries.Sum(e => e.ActiveSeconds));
     }
 
@@ -308,9 +325,14 @@ public sealed class ActivityTrackerService : IDisposable
         var pending = _outbox.Summary(); // disk read — kept outside the lock the poll loop takes
         var today = _today.On(DateTime.UtcNow);
         var coverage = _config.DriftNudgesEnabled ? _coverage : null;
+        var failingSince = Interlocked.Read(ref _pollFailingSinceTicks);
+        var lastPoll = Interlocked.Read(ref _lastPollTicks);
         lock (_lock)
             return new TrackerStatus(IsRunning, _isLocked, pending.Count, _lastSentUtc, _lastSendResult, _lastPollError, _config.PausedUntilUtc,
-                today, _lastResolved, coverage, pending.OldestStartUtc, Volatile.Read(ref _rejectedWindows), _lastStatusCode);
+                today, _lastResolved, coverage, pending.OldestStartUtc, Volatile.Read(ref _rejectedWindows), _lastStatusCode,
+                failingSince == 0 ? null : new DateTime(failingSince, DateTimeKind.Utc),
+                lastPoll == 0 ? null : new DateTime(lastPoll, DateTimeKind.Utc),
+                TimeSpan.FromTicks(Interlocked.Read(ref _unrecordedTicks)));
     }
 
     // ── Polling ──────────────────────────────────────────────────────────────
@@ -371,6 +393,11 @@ public sealed class ActivityTrackerService : IDisposable
                 {
                     Poll(session, now, maxCreditedGap);
 
+                    // Only a whole poll ends a run of failures: a pass that just handled a window switch says nothing about
+                    // whether the screen can be read.
+                    Interlocked.Exchange(ref _lastPollTicks, DateTime.UtcNow.Ticks);
+                    Interlocked.Exchange(ref _pollFailingSinceTicks, 0);
+
                     // After a sleep or a hang, the next poll is an interval from now — not a burst catching up.
                     nextPoll += intervalTicks;
                     if (nextPoll <= now) nextPoll = now + intervalTicks;
@@ -383,6 +410,7 @@ public sealed class ActivityTrackerService : IDisposable
             {
                 _log.Error(ex, "Poll failed");
                 _lastPollError = ex.Message;
+                Interlocked.CompareExchange(ref _pollFailingSinceTicks, DateTime.UtcNow.Ticks, 0);
             }
         }
 
@@ -484,7 +512,14 @@ public sealed class ActivityTrackerService : IDisposable
     internal void Credit(DateTime atUtc, TimeSpan elapsed, IReadOnlyList<Observation> observations)
     {
         List<ActivityWindow> closed;
-        lock (_lock) closed = _recorder.Record(atUtc, elapsed, observations);
+        bool credited;
+        lock (_lock)
+        {
+            // Something the user's own rules let through, over a span short enough to be credited: a window should follow.
+            credited = observations.Count > 0 && elapsed <= _recorder.MaxCreditedGap;
+            closed = _recorder.Record(atUtc, elapsed, observations);
+        }
+        if (credited) Interlocked.Add(ref _unrecordedTicks, elapsed.Ticks);
 
         foreach (var window in closed)
         {

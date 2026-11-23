@@ -41,7 +41,13 @@ public enum NudgeKind
     /// Not a nudge either: "Tracking has been paused for 4 h" (<see cref="PauseReminderPolicy"/>), fed by the tray's timer
     /// because the poll loop is stopped. No quiet conditions; a switch of its own.
     /// </summary>
-    PauseReminder
+    PauseReminder,
+
+    /// <summary>
+    /// Not a nudge: recording itself is broken — the poll failing or silent, or nothing stored (<see cref="RecordingHealthPolicy"/>).
+    /// Its own toast, so it never replaces an upload notice; the upload notices' switch.
+    /// </summary>
+    RecordingHealth
 }
 
 public enum NudgeResponse
@@ -57,7 +63,7 @@ public enum NudgeResponse
     Capture,
     /// <summary>Upload health only: open the sign-in form.</summary>
     SignIn,
-    /// <summary>Upload health only: open the log folder.</summary>
+    /// <summary>Upload and recording health only: open the log folder.</summary>
     OpenLogs,
     /// <summary>Evening review only: open today's unmapped time in the web app.</summary>
     Review,
@@ -83,12 +89,13 @@ public sealed record DriftDetails(string PlannedName, DateTime PlannedEndsUtc);
 /// <summary>
 /// A nudge to show. <see cref="Id"/> ties the toast's buttons back to it; ids are per kind's policy, so a press is
 /// routed by <see cref="Kind"/> first. For a drift nudge <see cref="Length"/> is the off-plan time and
-/// <see cref="AppName"/> what it went to. An upload-health notice carries <see cref="Upload"/> instead, the evening
-/// invite <see cref="Review"/>, and a start ramp <see cref="StartRamp"/> (its <see cref="Length"/> is the block's).
+/// <see cref="AppName"/> what it went to. An upload-health notice carries <see cref="Upload"/> instead, a recording-health
+/// one <see cref="Recording"/>, the evening invite <see cref="Review"/>, and a start ramp <see cref="StartRamp"/> (its
+/// <see cref="Length"/> is the block's).
 /// </summary>
 public sealed record Nudge(
     int Id, NudgeKind Kind, TimeSpan Length, string? AppName, DriftDetails? Drift = null, UploadNotice? Upload = null,
-    UnmappedInvite? Review = null, StartRampDetails? StartRamp = null);
+    UnmappedInvite? Review = null, StartRampDetails? StartRamp = null, RecordingNotice? Recording = null);
 
 /// <param name="BreakEndsUtc">When a running break timer runs out; null with none, and once it has (a break held past its end).</param>
 public sealed record NudgeStatus(TimeSpan? StretchLength, DateTime? BreakEndsUtc);

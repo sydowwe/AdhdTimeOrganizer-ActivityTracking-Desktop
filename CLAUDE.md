@@ -42,6 +42,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/StartRampPolicy.cs` | **Pure** start-ramp decisions: offer a planned block at its start, from the heartbeat's plan (`PlanView`) |
 | `Services/ChimeSchedule.cs` | **Pure** time-chime decisions over the server's per-minute resolution, and which lines are chosen (`ChimeSettings`, `ChimeChoices`) |
 | `Services/UploadHealthPolicy.cs` | **Pure** "is tracked time arriving?" decisions: signed out, stalled a day, windows the server refused → show / withdraw a notice |
+| `Services/RecordingHealthPolicy.cs` | **Pure** "is recording itself working?" decisions: the poll failing, the poll loop silent, recordable time with nothing stored → show / withdraw a notice |
 | `Services/UnmappedReviewPolicy.cs` | **Pure** evening-invite decisions: is the evening due / missed / handled, the invite's text from the server's answer; plus `UnmappedReviewStore` (the last handled evening, `unmapped-review.json`) |
 | `Services/UnmappedReviewService.cs` | The send loop's evening tick: holds the server's evening moment, asks the server for today's unmapped time when it comes, hands the invite on |
 | `Services/PauseKeepAlive.cs` | **Pure** when a paused tracker sends its empty heartbeat, and what that heartbeat is |
@@ -387,6 +388,21 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   connection" only when offline (review L2). State is in memory: a restart
   while still stalled shows the notice again. Counts and durations only in the text and the log. "Turn off" on one
   switches off only these, and a nudge's "Turn off" leaves them on.
+- **Recording notices** (prompt 25; `RecordingHealthPolicy`, toast kind `NudgeKind.RecordingHealth`, the same switch
+  `UploadNoticesEnabled`). The upload notices watch the send side only; a poll loop failing on every pass showed nothing but
+  "Error:" in the tooltip, and a dead poll loop once ended tracking without a word. Three problems, one toast at a time, in
+  this order: **the poll failing** for 10 min (T; `TrackerStatus.PollFailingSinceUtc`, set by the first failed pass and
+  cleared only by a poll that completes — a pass that only handled a window switch proves nothing); **the poll loop silent**,
+  no poll completed for 5 min with no failure to say why, held 1 min more (a PC waking finds the last poll hours old until the
+  loop's next pass; `LastPollUtc`, stamped at start too); **nothing stored** — 30 min (U) of *recordable* time with no window
+  queued (`UnrecordedFor`: time `Credit` gave to a non-empty observation list within the credited gap, reset by `Queue`). Only
+  what the user's own local rules let through counts, so someone working in ignored apps never trips it; server rules drop
+  windows after they are queued and don't matter (T, U and this decided 2026-11-23). Fed by the tray's 2 s timer with the
+  idle time read there (`Win32.GetIdleTime`), never from the poll loop, whose health is the question; shown only to someone at
+  the computer (input within a minute, unlocked), nothing while paused, no quiet conditions. Once per episode, again at most
+  daily, withdrawn when it clears; its own toast tag, so it never replaces an upload notice. **Open log folder** and **Turn
+  off these notices** (which removes both kinds). Durations only. "Copy diagnostics" says how long the poll has been failing,
+  when it last completed and the unstored minutes — never the error's text, which can carry a path.
 - **A paused tracker must look paused** (prompt 16, review M1). The installed tracker's log had nine "until I resume"
   pauses in two days, every one undone within seconds: double-click was being used as "open".
   - **Double-click never stops recording.** Signed out it signs in; paused it resumes (the start-up balloon says so);
@@ -415,7 +431,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   held and shows when the quiet ends **only if still true** — each family re-checks itself (stretch still running, still off
   plan in a block not over, ≥ 10 min of the block left), so there is no staleness cut-off (decided 2026-11-23). A chime mark is
   skipped. The **evening review is held** too, inside its own 3 h window, and missed past it (decided 2026-11-23). The
-  break-over toast, the upload notices and the "still paused" reminder ignore it. The tray says it in the status
+  break-over toast, the upload and recording notices and the "still paused" reminder ignore it. The tray says it in the status
   line and tooltip ("Tracking · nudges quiet until 14:30") and the submenu's title; **no icon of its own** — prompt 16 kept the
   icon to three looks, a fourth not being told apart at 16 px. "Copy diagnostics" says it on the "Quiet while" line.
 - Nudges are fed by the poll loop, so pausing tracking pauses them. A paused, asleep or hung gap as long as a
@@ -540,7 +556,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   can quote them: the heartbeat logs only a refusal's, cut to 300 characters, never a 5xx's (`ApiClient.BodyWorthLogging`);
   the other routes log none.
 - "Copy diagnostics" (tray) goes into bug reports, so `DiagnosticsReport` reads `AppConfig` field by field, never
-  serializes it: no token, rules as counts, the poll error as "see the log", and the log tail has the profile folder and
+  serializes it: no token, rules as counts, the poll error as how long it has failed and "see the log", and the log tail has the profile folder and
   e-mail-looking text masked. A new config field stays out of the report until someone decides it is safe;
   `DiagnosticsReportTests` plants a token, rule patterns and a title and asserts none comes out. The logger holds today's
   file open, so the tail is read with `FileShare.ReadWrite`.

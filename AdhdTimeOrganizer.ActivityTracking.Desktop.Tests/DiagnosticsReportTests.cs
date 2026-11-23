@@ -136,6 +136,25 @@ public sealed class DiagnosticsReportTests : IDisposable
         Assert.Contains("Pause reminders: off", report);
     }
 
+    /// <summary>Prompt 25: how long the poll has been failing, and when it last completed — never the error's own text.</summary>
+    [Fact]
+    public void APollFailing_SaysForHowLong_AndNotTheMessage()
+    {
+        var status = Status() with
+        {
+            LastPollError = @"Access denied: C:\Users\someone\secret.txt",
+            PollFailingSinceUtc = Now.AddMinutes(-12),
+            LastPollUtc = Now.AddMinutes(-12).AddSeconds(-5),
+            UnrecordedFor = TimeSpan.FromMinutes(3)
+        };
+
+        var report = DiagnosticsReport.Format(Env, Config(), status, serverRules: 7, keepAlive: null, [], Now, Profile);
+
+        Assert.Contains($"Poll error: yes, failing for 12 min (since {Now.AddMinutes(-12):yyyy-MM-dd HH:mm} UTC), see the log", report);
+        Assert.Contains($"Last poll: {Now.AddMinutes(-12).AddSeconds(-5):yyyy-MM-dd HH:mm:ss} UTC, 3 min seen since the last stored minute", report);
+        Assert.DoesNotContain("secret", report);
+    }
+
     // ---- the log tail ----------------------------------------------------
 
     /// <summary>The logger holds today's file open for writing; reading it must not need the file to be free.</summary>
