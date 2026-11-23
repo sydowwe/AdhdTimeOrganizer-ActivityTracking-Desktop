@@ -221,6 +221,14 @@ public sealed class AppConfig
     /// </summary>
     public bool UnmappedReviewEnabled { get; set; } = true;
 
+    // ── Pause reminder (see PauseReminderPolicy) ──────────────────────────────
+
+    /// <summary>
+    /// "Tracking has been paused for 4 h": a toast while a pause "until I resume" lasts, with Resume and Keep paused. Not a
+    /// nudge: a switch of its own, no quiet conditions.
+    /// </summary>
+    public bool PauseRemindersEnabled { get; set; } = true;
+
     // ── Privacy (see PrivacyFilter) ───────────────────────────────────────────
 
     /// <summary>Firefox Private Browsing and Edge InPrivate windows are handled like a hide-title rule.</summary>
@@ -234,6 +242,12 @@ public sealed class AppConfig
     /// resume", null when not paused. Saved, so a restart during a pause does not quietly start recording again.
     /// </summary>
     public DateTime? PausedUntilUtc { get; set; }
+
+    /// <summary>
+    /// When recording stopped for the pause in <see cref="PausedUntilUtc"/>; null when not paused, and in a config written
+    /// before it was saved. A new end for a pause in force keeps it: the pause reminder counts from when recording stopped.
+    /// </summary>
+    public DateTime? PausedSinceUtc { get; set; }
 
     /// <summary>
     /// The refresh token, encrypted with DPAPI for the current Windows user. It used to sit in this file

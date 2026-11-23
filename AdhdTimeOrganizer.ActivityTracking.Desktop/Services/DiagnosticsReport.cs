@@ -49,7 +49,7 @@ public static class DiagnosticsReport
 
         text.AppendLine("== State");
         text.AppendLine($"Signed in: {(!string.IsNullOrEmpty(config.RefreshToken) ? "yes" : "no")}");
-        text.AppendLine($"Tracking: {Describe(status, nowUtc)}");
+        text.AppendLine($"Tracking: {Describe(status, config.PausedSinceUtc, nowUtc)}");
         text.AppendLine($"Outbox: {status.PendingWindows} min waiting" +
                         (status.OldestPendingUtc is { } oldest ? $", oldest from {oldest:yyyy-MM-dd HH:mm} UTC" : ""));
         text.AppendLine($"Last send: {(status.LastSendResult?.ToString() ?? "none yet")}" +
@@ -76,6 +76,7 @@ public static class DiagnosticsReport
         text.AppendLine($"Upload notices: {OnOff(config.UploadNoticesEnabled)}");
         text.AppendLine($"Capture hotkey: {(string.IsNullOrWhiteSpace(config.CaptureHotkey) ? "off" : config.CaptureHotkey)}");
         text.AppendLine($"Evening review: {OnOff(config.UnmappedReviewEnabled)}");
+        text.AppendLine($"Pause reminders: {OnOff(config.PauseRemindersEnabled)}");
         text.AppendLine($"Private windows: {OnOff(config.HidePrivateWindows)}, handled as {config.PrivateWindowHandling}");
         text.AppendLine($"Rules: {config.LocalRules.Count} local, {(serverRules?.ToString() ?? "not downloaded yet")} from the server");
         text.AppendLine();
@@ -95,11 +96,15 @@ public static class DiagnosticsReport
         return Email.Replace(line, "[email]");
     }
 
-    private static string Describe(TrackerStatus status, DateTime nowUtc) =>
-        status.PausedUntilUtc is { } until && until > nowUtc
-            ? until == DateTime.MaxValue ? "paused until resumed" : $"paused until {until:yyyy-MM-dd HH:mm} UTC"
-            : status.IsRunning ? status.IsLocked ? "running, screen locked" : "running"
-            : "stopped";
+    /// <param name="pausedSinceUtc">When the pause began; its age is added when known (a config from before it was saved has none).</param>
+    private static string Describe(TrackerStatus status, DateTime? pausedSinceUtc, DateTime nowUtc)
+    {
+        if (status.PausedUntilUtc is not { } until || until <= nowUtc)
+            return status.IsRunning ? status.IsLocked ? "running, screen locked" : "running" : "stopped";
+
+        var paused = until == DateTime.MaxValue ? "paused until resumed" : $"paused until {until:yyyy-MM-dd HH:mm} UTC";
+        return pausedSinceUtc is { } since && since <= nowUtc ? $"{paused}, for {NudgeToast.FormatLength(nowUtc - since)}" : paused;
+    }
 
     /// <summary>Rejected is a server from before empty heartbeats: its 400 costs nothing, but it will still call a long pause silent.</summary>
     private static string DescribeKeepAlive(KeepAliveAnswer? answer) => answer switch

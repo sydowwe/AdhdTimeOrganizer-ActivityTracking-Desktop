@@ -13,7 +13,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | Path | What lives there |
 |---|---|
 | `Program.cs` | Velopack's hooks (first line — see "Releasing"), logging (Serilog → `%LOCALAPPDATA%\AdhdTimeOrganizer\logs`), single-instance mutex, tray startup |
-| `TrayApplicationContext.cs` | Tray icon and menu (incl. "Pause for…", the today/now glance and the "map these apps" prompt); pulls status from the tracker on a UI timer |
+| `TrayApplicationContext.cs` | Tray icon and menu (incl. "Pause for…", the today/now glance and the "map these apps" prompt); pulls status from the tracker on a UI timer, which also swaps the icon and feeds the upload notices and the pause reminder. Double-click never pauses: it opens the menu, resumes a pause, or signs in |
+| `TrayIcons.cs`, `Services/TrayIconState.cs` | The three tray icons — normal, paused (greyed, pause bars), attention (amber dot: signed out or a poll error) — drawn once from the embedded icon and disposed on exit; and the **pure** choice between them |
 | `LoginForm.cs`, `SettingsForm.cs`, `PrivacyForm.cs` | Sign-in (the browser by default; password + 2FA behind "Use a password instead"); settings editor; the user's ignore / hide-title rules and private-window handling |
 | `Services/BrowserSignIn.cs` | **Pure** browser sign-in: PKCE (S256), state, the `/connect/tracker` URL, and whether a request reaching the listener is our redirect |
 | `Services/LoopbackRedirectListener.cs`, `Services/BrowserSignInFlow.cs` | The loopback listener (`TcpListener` on `127.0.0.1`, free port, one redirect, the handler testable on a stream) and the run: listen → open the browser → wait → exchange |
@@ -42,6 +43,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/UnmappedReviewPolicy.cs` | **Pure** evening-invite decisions: is the evening due / missed / handled, the invite's text from the server's answer; plus `UnmappedReviewStore` (the last handled evening, `unmapped-review.json`) |
 | `Services/UnmappedReviewService.cs` | The send loop's evening tick: holds the server's evening moment, asks the server for today's unmapped time when it comes, hands the invite on |
 | `Services/PauseKeepAlive.cs` | **Pure** when a paused tracker sends its empty heartbeat, and what that heartbeat is |
+| `Services/PauseReminderPolicy.cs` | **Pure** "still paused" decisions: when a pause "until I resume" gets its "Tracking has been paused for 4 h" toast |
 | `Services/CaptureQueue.cs`, `Services/CaptureDelivery.cs` | Quick capture: parked thoughts as JSON files under `%LOCALAPPDATA%\…Desktop\captures` (**pure** rules: trim, cut, what each answer means) and the send loop's tick that delivers them |
 | `Services/CaptureFocus.cs`, `Services/HotkeyChord.cs` | **Pure** capture-box rules (where focus goes back, what the tracker credits while it is open, the plan line) and the hotkey as written in Settings ("Win+Alt+N") |
 | `CaptureForm.cs`, `Native/GlobalHotkey.cs`, `Native/CaptureBoxHandles.cs` | The one-line capture box, the `RegisterHotKey` window that opens it, and the handles the poll loop reads to stand the box in for the work |
@@ -313,7 +315,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   doesn't come again). The break-over nudge and the time chime are exempt.
 - Today's total and its top-5 breakdown (`TodayTotal`, `today.json`) count a window **once, when settled**: the total
   at queue time less what was never stored, the breakdown from the heartbeat's answer. The breakdown is the tray
-  glance's submenu, not a left-click flyout — double-click already pauses.
+  glance's submenu, not a left-click flyout — a single click is half of every double-click, which opens the menu.
 - **Upload notices are not nudges** (`UploadHealthPolicy`, toast kind `NudgeKind.UploadHealth`, switch
   `UploadNoticesEnabled`). Three problems, one toast at a time, in this order: signed out (minutes waiting for 10 min —
   it replaced the old "signed out" balloon), stalled (the **oldest unsent minute** is a day old and stays so for 10 min),
@@ -325,6 +327,27 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   a dropped-windows toast is not withdrawn (those minutes are gone) and leaves on exit. State is in memory: a restart
   while still stalled shows the notice again. Counts and durations only in the text and the log. "Turn off" on one
   switches off only these, and a nudge's "Turn off" leaves them on.
+- **A paused tracker must look paused** (prompt 16, review M1). The installed tracker's log had nine "until I resume"
+  pauses in two days, every one undone within seconds: double-click was being used as "open".
+  - **Double-click never stops recording.** Signed out it signs in; paused it resumes (the start-up balloon says so);
+    otherwise it opens the right-click menu, through `NotifyIcon`'s private `ShowContextMenu` so a click elsewhere closes
+    it (`TrayStateTests` pins that the method exists; without it a plain `Show` still opens the menu). "Pause Tracking" in
+    the menu still pauses until resumed.
+  - **The icon shows the state** (`TrayIconStates.For`): paused wins; then signed out or a poll error is "attention" — signed
+    out still records, so it must not look paused; locked is normal. Three icons, drawn once (`TrayIcons`, each a PNG
+    inside a one-image ICO so the `Icon` owns its handle), swapped only by `RefreshStatus` when the state changes,
+    disposed on exit after the `NotifyIcon`.
+  - **"Still paused" reminder** (`PauseReminderPolicy`, toast kind `NudgeKind.PauseReminder`, switch `PauseRemindersEnabled`,
+    on by default). Only for a pause "until I resume" — a timed one ends by itself. "Tracking has been paused for 4 h"
+    once it is 3 h old, then at most every 6 h, with **Resume** and **Keep paused** (which only closes it). Each waits for
+    input within the last minute (`Win32.GetIdleTime`, passed in): a toast to an empty desk is buried by morning, so there
+    is no night window. Fed by the tray's 2 s timer (`NudgeService.OnPauseStatus`) because the poll loop is stopped; not a
+    nudge, so no quiet conditions. Withdrawn when the pause ends, turns timed, or the switch goes off.
+  - **Its age outlives a restart**: `Pause` saves `PausedSinceUtc` beside `PausedUntilUtc` (a new end for a pause in force
+    keeps it), `Resume` clears both. A config from before it has none, and the pause counts from when the policy first
+    sees it. The reminder's own clock is in memory; the start-up "paused" balloon counts as a reminder
+    (`OnPauseAnnounced`), so a restart doesn't add a toast. "Copy diagnostics" says `Pause reminders: on/off` and how long
+    the pause has lasted.
 - Nudges are fed by the poll loop, so pausing tracking pauses them. A paused, asleep or hung gap as long as a
   break counts as a break.
 - A call (any app holding the microphone) counts as presence **for nudges only**. It must not change what
@@ -425,8 +448,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   hide-title rule on its own wording.
 - `LocalRules` is **replaced, never mutated**: the poll loop iterates it on its own thread. That is also
   why edits apply from the next poll without a restart.
-- A pause (`PausedUntilUtc`, `DateTime.MaxValue` = until resumed) is saved, so a restart in the middle of
-  one doesn't start recording early. The tray's timer resumes a timed one.
+- A pause (`PausedUntilUtc`, `DateTime.MaxValue` = until resumed, and its start `PausedSinceUtc`) is saved, so a restart
+  in the middle of one doesn't start recording early. The tray's timer resumes a timed one.
 
 ### Privacy and logging
 - No email, name or other personal data in logs. Log files outlive an account deletion. Ids, process

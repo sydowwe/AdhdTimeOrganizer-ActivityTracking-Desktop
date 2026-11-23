@@ -70,6 +70,7 @@ public sealed class DiagnosticsReportTests : IDisposable
         Assert.Contains("Server: https://server.test", report);
         Assert.Contains("Rules: 2 local, 7 from the server", report);
         Assert.Contains("Upload notices: on", report);
+        Assert.Contains("Pause reminders: on", report);
         Assert.Contains("Capture hotkey: Win+Alt+N", report);
         Assert.Contains("Pause keep-alive: none sent since start", report);
     }
@@ -115,6 +116,24 @@ public sealed class DiagnosticsReportTests : IDisposable
         Assert.Contains("Last send: none yet, nothing stored since start", report);
         Assert.Contains("from the server", report);
         Assert.Contains("not downloaded yet", report);
+    }
+
+    /// <summary>A "paused since Monday" report says how long; a config from before the start was saved still says paused.</summary>
+    [Theory]
+    [InlineData(195, "Tracking: paused until resumed, for 3 h 15 m")]
+    [InlineData(null, "Tracking: paused until resumed")]
+    public void APause_SaysHowLongItHasLasted_WhenThatIsKnown(int? minutesAgo, string expected)
+    {
+        var config = Config();
+        config.PausedUntilUtc = DateTime.MaxValue;
+        config.PausedSinceUtc = minutesAgo is { } m ? Now.AddMinutes(-m) : null;
+        config.PauseRemindersEnabled = false;
+
+        var report = DiagnosticsReport.Format(Env, config, new TrackerStatus(false, false, 0, null, null, null, DateTime.MaxValue),
+            serverRules: 7, keepAlive: null, [], Now, Profile);
+
+        Assert.Equal(expected, report.Split(Environment.NewLine).Single(l => l.StartsWith("Tracking:", StringComparison.Ordinal)));
+        Assert.Contains("Pause reminders: off", report);
     }
 
     // ---- the log tail ----------------------------------------------------

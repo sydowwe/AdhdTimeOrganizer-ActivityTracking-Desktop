@@ -35,7 +35,13 @@ public enum NudgeKind
     /// Not a nudge either: the evening invite to map today's unmapped time (<see cref="UnmappedReviewPolicy"/>). It shares
     /// the toast plumbing, has no policy state to answer to, and has a switch of its own.
     /// </summary>
-    UnmappedReview
+    UnmappedReview,
+
+    /// <summary>
+    /// Not a nudge either: "Tracking has been paused for 4 h" (<see cref="PauseReminderPolicy"/>), fed by the tray's timer
+    /// because the poll loop is stopped. No quiet conditions; a switch of its own.
+    /// </summary>
+    PauseReminder
 }
 
 public enum NudgeResponse
@@ -64,7 +70,11 @@ public enum NudgeResponse
     /// <summary>Start ramp only: not this block — and no drift nudge in it either.</summary>
     NotThisOne,
     /// <summary>Time chime only: no more chimes until local midnight.</summary>
-    StopForToday
+    StopForToday,
+    /// <summary>Pause reminder only: resume tracking.</summary>
+    Resume,
+    /// <summary>Pause reminder only: close it; the next one comes no sooner than it would have anyway.</summary>
+    KeepPaused
 }
 
 /// <summary>What a drift nudge says about the plan. <see cref="PlannedName"/> is user-authored: never log it.</summary>

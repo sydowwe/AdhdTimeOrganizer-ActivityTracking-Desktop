@@ -220,6 +220,27 @@ public sealed class SendLoopTests : IDisposable
         Assert.Contains("\"code\"", Assert.Single(_server.HeartbeatsSoFar()));
     }
 
+    /// <summary>
+    /// The pause reminder counts from when recording stopped, so the start is saved with the pause, and a pause in force
+    /// that gets a new end ("until tomorrow" turned "until I resume") keeps it.
+    /// </summary>
+    [Fact]
+    public void APause_SavesWhenItBegan_AndANewEndKeepsIt()
+    {
+        using var tracker = Start();
+        var before = DateTime.UtcNow;
+
+        tracker.Pause(DateTime.UtcNow.AddHours(8));
+        var since = Assert.NotNull(_config.PausedSinceUtc);
+        Assert.InRange(since, before, DateTime.UtcNow);
+
+        tracker.Pause(DateTime.MaxValue);
+
+        Assert.Equal(since, _config.PausedSinceUtc);
+        var saved = System.Text.Json.JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(_config.FilePath))!;
+        Assert.Equal((DateTime.MaxValue, since), (saved.PausedUntilUtc!.Value, saved.PausedSinceUtc!.Value));
+    }
+
     // ---- helpers ---------------------------------------------------------
 
     /// <summary>What the poll loop does with a finished window: to the outbox, and into today's total.</summary>

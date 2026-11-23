@@ -70,6 +70,12 @@ internal static class NudgeToast
                 : Button("Open log folder", nudge, NudgeResponse.OpenLogs));
             builder.AddButton(Button("Turn off these notices", nudge, NudgeResponse.TurnOff));
         }
+        else if (nudge.Kind == NudgeKind.PauseReminder)
+        {
+            builder.SetDuration(AppNotificationDuration.Long)
+                .AddButton(Button("Resume", nudge, NudgeResponse.Resume))
+                .AddButton(Button("Keep paused", nudge, NudgeResponse.KeepPaused));
+        }
         else if (nudge.Kind == NudgeKind.UnmappedReview)
         {
             builder.SetDuration(AppNotificationDuration.Long)
@@ -117,7 +123,9 @@ internal static class NudgeToast
         NudgeKind.TimeChime => ($"{FormatLength(nudge.Length)} on {nudge.AppName}", "A time check, nothing more."),
         NudgeKind.UploadHealth when nudge.Upload is { } upload => UploadText(upload),
         NudgeKind.UnmappedReview when nudge.Review is { } review => UnmappedReviewPolicy.Text(review),
-        _ => ("Break's over", $"That was {FormatLength(nudge.Length)}. Ready to get back to it?")
+        NudgeKind.PauseReminder => ($"Tracking has been paused for {FormatPause(nudge.Length)}",
+            "Nothing on this PC is recorded until you resume."),
+        _ =>("Break's over", $"That was {FormatLength(nudge.Length)}. Ready to get back to it?")
     };
 
     /// <summary>
@@ -151,6 +159,14 @@ internal static class NudgeToast
             _ => ($"{FormatLength(TimeSpan.FromMinutes(upload.Dropped))} of tracked time was refused",
                 "The server turned those minutes down and they are gone. A tracker older than the server is the usual cause: update it.")
         };
+    }
+
+    /// <summary>"4 h", "47 h", then "3 days": whole units, rounded down — a pause is never younger than it says.</summary>
+    internal static string FormatPause(TimeSpan length)
+    {
+        var hours = Math.Max(0, (int)length.TotalHours);
+        if (hours < 48) return $"{hours} h";
+        return $"{hours / 24} days";
     }
 
     internal static string FormatLength(TimeSpan length)

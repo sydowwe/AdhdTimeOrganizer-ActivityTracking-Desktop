@@ -165,11 +165,14 @@ public sealed class ActivityTrackerService : IDisposable
 
     /// <summary>
     /// Stops recording until <paramref name="untilUtc"/> (<see cref="DateTime.MaxValue"/>: until <see cref="Resume"/>).
-    /// Saved, so a restart in the middle does not start recording early. Sending carries on, as with any pause.
+    /// Saved, so a restart in the middle does not start recording early. Sending carries on, as with any pause. Its start
+    /// is saved too, and kept when a pause in force gets a new end: recording stopped at the first one.
     /// </summary>
     public void Pause(DateTime untilUtc)
     {
         _log.Information("Pausing until {Until}", untilUtc == DateTime.MaxValue ? "resumed" : untilUtc.ToString("O"));
+        var now = DateTime.UtcNow;
+        _config.PausedSinceUtc = IsPaused(now) ? _config.PausedSinceUtc ?? now : now;
         _config.PausedUntilUtc = untilUtc;
         _config.Save();
         Stop();
@@ -178,6 +181,7 @@ public sealed class ActivityTrackerService : IDisposable
     public void Resume()
     {
         _config.PausedUntilUtc = null;
+        _config.PausedSinceUtc = null;
         _config.Save();
         Start();
     }

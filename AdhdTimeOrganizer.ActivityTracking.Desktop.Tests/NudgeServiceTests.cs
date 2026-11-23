@@ -33,6 +33,7 @@ public sealed class NudgeServiceTests : IDisposable
     private readonly ConcurrentQueue<long> _skippedBlocks = new(); // filled from the thread pool
     private readonly List<BreakReport> _breakReports = [];
     private int _signIns;
+    private int _resumes;
     private int _captureBoxes;
 
     private DateTime _start = DateTime.UtcNow.AddHours(-2);
@@ -394,6 +395,59 @@ public sealed class NudgeServiceTests : IDisposable
         Assert.Equal(Program.LogDirectory, Assert.Single(_folders));
     }
 
+    // ---- the pause reminder -----------------------------------------------
+
+    /// <summary>
+    /// Fed from the tray's timer, not the poll loop: a pause "until I resume" three hours old is said once, as its own kind,
+    /// and leaves when tracking resumes. The nudges' quiet conditions and switches have no say.
+    /// </summary>
+    [Fact]
+    public void AnOldIndefinitePause_IsRemindedAbout_AndTheReminderLeavesOnResume()
+    {
+        var (service, notifier, _) = Create();
+        _config.HyperfocusNudgesEnabled = false;
+        _config.DriftNudgesEnabled = false;
+        var since = DateTime.UtcNow.AddHours(-3);
+        var paused = new PauseSnapshot(DateTime.MaxValue, since, TimeSpan.FromSeconds(3));
+
+        service.OnPauseStatus(DateTime.UtcNow, paused);
+        service.OnPauseStatus(DateTime.UtcNow.AddSeconds(2), paused);
+
+        var reminder = Assert.Single(notifier.Shown);
+        Assert.Equal(NudgeKind.PauseReminder, reminder.Kind);
+        Assert.InRange(reminder.Length, TimeSpan.FromHours(3), TimeSpan.FromHours(3.01));
+
+        service.OnPauseStatus(DateTime.UtcNow.AddMinutes(1), new PauseSnapshot(null, null, TimeSpan.Zero));
+        Assert.Equal([NudgeKind.PauseReminder], notifier.Removed);
+    }
+
+    [Fact]
+    public void PauseReminders_SwitchedOff_SayNothing()
+    {
+        var (service, notifier, _) = Create();
+        _config.PauseRemindersEnabled = false;
+
+        service.OnPauseStatus(DateTime.UtcNow, new PauseSnapshot(DateTime.MaxValue, DateTime.UtcNow.AddDays(-2), TimeSpan.Zero));
+
+        Assert.Empty(notifier.Shown);
+    }
+
+    /// <summary>Resume asks the tray to resume; Keep paused doesn't. Both close the toast, and neither touches another switch.</summary>
+    [Theory]
+    [InlineData(NudgeResponse.Resume, 1)]
+    [InlineData(NudgeResponse.KeepPaused, 0)]
+    public void ThePauseReminderButtons_ResumeOrNot_AndCloseIt(NudgeResponse response, int resumes)
+    {
+        var (service, notifier, _) = Create();
+
+        service.OnActivated(new NudgeActivation(NudgeKind.PauseReminder, 1, response));
+
+        Assert.Equal(resumes, _resumes);
+        Assert.Equal([NudgeKind.PauseReminder], notifier.Removed);
+        Assert.True(_config.PauseRemindersEnabled);
+        Assert.True(_config.UploadNoticesEnabled);
+    }
+
     /// <summary>
     /// The chime is fed the server's resolution with the drift verdict, outside any planned block. "Stop for today" removes
     /// it, is saved, and holds after a restart; nothing else is switched off.
@@ -485,7 +539,8 @@ public sealed class NudgeServiceTests : IDisposable
             },
             zone: _zone,
             capture: () => _captureBoxes++,
-            reportBreak: _breakReports.Add);
+            reportBreak: _breakReports.Add,
+            resume: () => _resumes++);
         _services.Add(service);
         return (service, notifier, opened);
     }

@@ -86,6 +86,8 @@ public sealed class NudgeService : IDisposable
     private readonly StartRampPolicy _ramp = new();
     private readonly ChimeSchedule _chime;
     private readonly UploadHealthPolicy _upload = new();
+    private readonly PauseReminderPolicy _pause = new();
+    private readonly Action? _resume;
     private readonly System.Threading.Timer _breakTimer;
 
     private DateTime _microphoneCheckedUtc = DateTime.MinValue;
@@ -107,11 +109,12 @@ public sealed class NudgeService : IDisposable
     /// <param name="skipBlock">The start ramp's "Not this one" on the server; null skips nothing there.</param>
     /// <param name="capture">A drift toast's "Capture a thought": opens the capture box on the UI thread. Null does nothing.</param>
     /// <param name="reportBreak">A started break changed (prompt 10): hands it to <see cref="BreakReporter"/>. Null tells no one.</param>
+    /// <param name="resume">"Resume" on a pause reminder; resumes tracking on the UI thread. Null does nothing.</param>
     public NudgeService(AppConfig config, SynchronizationContext? uiContext, Action? signIn = null,
         Func<long, Task<bool>>? startBlock = null, Func<long, Task<bool>>? skipBlock = null, Action? capture = null,
-        Action<BreakReport>? reportBreak = null)
+        Action<BreakReport>? reportBreak = null, Action? resume = null)
         : this(config, uiContext, onActivated => new NudgeNotifier(onActivated), OpenInBrowser, DefaultDriftStatePath, signIn,
-            startBlock: startBlock, skipBlock: skipBlock, capture: capture, reportBreak: reportBreak)
+            startBlock: startBlock, skipBlock: skipBlock, capture: capture, reportBreak: reportBreak, resume: resume)
     {
     }
 
@@ -127,13 +130,15 @@ public sealed class NudgeService : IDisposable
     /// <param name="zone">Where the time chime's "today" ends; tests pin it.</param>
     /// <param name="capture">"Capture a thought" on a drift toast; tests count it.</param>
     /// <param name="reportBreak">A started break changed; tests record the reports.</param>
+    /// <param name="resume">"Resume" on a pause reminder; tests count it.</param>
     internal NudgeService(AppConfig config, SynchronizationContext? uiContext,
         Func<Action<NudgeActivation>, INudgeNotifier> createNotifier, Action<Uri> openInBrowser, string driftStatePath,
         Action? signIn = null, Action<string>? openFolder = null, Func<long, Task<bool>>? startBlock = null,
         Func<long, Task<bool>>? skipBlock = null, TimeZoneInfo? zone = null, Action? capture = null,
-        Action<BreakReport>? reportBreak = null)
+        Action<BreakReport>? reportBreak = null, Action? resume = null)
     {
         _capture = capture;
+        _resume = resume;
         _reportBreak = reportBreak;
         _chime = new ChimeSchedule(zone ?? TimeZoneInfo.Local);
         _chimeStatePath = Path.Combine(Path.GetDirectoryName(driftStatePath)!, ChimeStateFileName);
@@ -236,6 +241,35 @@ public sealed class NudgeService : IDisposable
     }
 
     /// <summary>
+    /// Whether a pause "until I resume" has gone on long enough to say so, from the tray's timer (the UI thread) — the poll
+    /// loop is stopped while paused. Not a nudge: no quiet conditions, its own switch (<see cref="PauseReminderPolicy"/>).
+    /// </summary>
+    public void OnPauseStatus(DateTime nowUtc, PauseSnapshot snapshot)
+    {
+        try
+        {
+            PauseReminderChange change;
+            lock (_lock) change = _pause.Evaluate(nowUtc, snapshot, _config.PauseRemindersEnabled);
+
+            if (change.Withdraw) _notifier.Remove(NudgeKind.PauseReminder);
+            if (change.Show is not { } pausedFor) return;
+
+            _log.Information("Pause reminder after {Hours} h", (int)pausedFor.TotalHours);
+            _notifier.Show(new Nudge(1, NudgeKind.PauseReminder, pausedFor, null));
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Pause reminder evaluation failed");
+        }
+    }
+
+    /// <summary>The tray's start-up balloon said the tracker is paused: it counts as a pause reminder.</summary>
+    public void OnPauseAnnounced(DateTime nowUtc, PauseSnapshot snapshot)
+    {
+        lock (_lock) _pause.Announced(nowUtc, snapshot);
+    }
+
+    /// <summary>
     /// The evening invite to map today's unmapped time, from <see cref="UnmappedReviewService"/> on the send loop's thread.
     /// Not a nudge: no quiet conditions (Windows holds toasts itself) and no pause of its own to honour — the service
     /// already stayed quiet while tracking was paused.
@@ -279,6 +313,7 @@ public sealed class NudgeService : IDisposable
                 NudgeKind.TimeChime => _chime.IssueForTest(),
                 NudgeKind.UploadHealth => new Nudge(1, kind, TimeSpan.FromHours(26), null,
                     Upload: new UploadNotice(UploadProblem.Stalled, 90, TimeSpan.FromHours(26), 0)),
+                NudgeKind.PauseReminder => new Nudge(1, kind, TimeSpan.FromHours(4), null),
                 NudgeKind.UnmappedReview => new Nudge(1, kind, TimeSpan.FromMinutes(130), null, Review: new UnmappedInvite(
                     TimeSpan.FromMinutes(130), [new InviteApp("Discord", TimeSpan.FromMinutes(50), false), new InviteApp("Chrome", TimeSpan.FromMinutes(30), true)], 1)),
                 _ => _policy.IssueForTest(kind, DateTime.UtcNow)
@@ -479,6 +514,12 @@ public sealed class NudgeService : IDisposable
                 return;
             }
 
+            if (activation.Kind == NudgeKind.PauseReminder)
+            {
+                HandlePauseResponse(activation.Response);
+                return;
+            }
+
             if (activation.Kind == NudgeKind.StartRamp)
             {
                 HandleRampResponse(activation);
@@ -564,6 +605,19 @@ public sealed class NudgeService : IDisposable
 
         _notifier.Remove(NudgeKind.UnmappedReview);
         _log.Information("Evening review answered: {Response}", response);
+    }
+
+    /// <summary>
+    /// A pause reminder has no id to check: <b>Resume</b> asks the tray to resume (which does nothing once tracking runs), and
+    /// either button closes the toast. Keep paused changes nothing else — the next reminder keeps its distance.
+    /// </summary>
+    private void HandlePauseResponse(NudgeResponse response)
+    {
+        if (response == NudgeResponse.Resume) _resume?.Invoke();
+
+        lock (_lock) _pause.Answered();
+        _notifier.Remove(NudgeKind.PauseReminder);
+        _log.Information("Pause reminder answered: {Response}", response);
     }
 
     /// <summary>

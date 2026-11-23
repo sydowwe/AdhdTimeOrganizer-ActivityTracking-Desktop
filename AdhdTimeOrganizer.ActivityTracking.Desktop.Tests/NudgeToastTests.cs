@@ -171,6 +171,36 @@ public class NudgeToastTests
         Assert.Equal("Stop for today", (string?)toast.Descendants("action").Single().Attribute("content"));
     }
 
+    /// <summary>
+    /// The pause reminder is a kind of its own: it builds, says how long, and its two buttons read back as Resume and Keep
+    /// paused. Long on screen, but not a reminder-scenario toast: it comes again in six hours if ignored.
+    /// </summary>
+    [Fact]
+    public void Build_PauseReminder_SaysHowLong_WithResumeAndKeepPaused()
+    {
+        var nudge = new Nudge(1, NudgeKind.PauseReminder, TimeSpan.FromHours(4.6), null);
+        var notification = NudgeToast.Build(nudge);
+        var toast = XDocument.Parse(notification.Payload).Root!;
+
+        Assert.Equal("PauseReminder", notification.Tag);
+        Assert.Equal(NudgeToast.Group, notification.Group);
+        Assert.Equal(("Tracking has been paused for 4 h", "Nothing on this PC is recorded until you resume."), NudgeToast.Text(nudge));
+        Assert.Equal("long", (string?)toast.Attribute("duration"));
+        Assert.Null(toast.Attribute("scenario"));
+        Assert.Equal(
+            new[] { NudgeResponse.Resume, NudgeResponse.KeepPaused }.Select(r => new NudgeActivation(NudgeKind.PauseReminder, 1, r)),
+            toast.Descendants("action").Select(a => NudgeToast.Parse(Arguments((string)a.Attribute("arguments")!))));
+        Assert.Equal(["Resume", "Keep paused"], toast.Descendants("action").Select(a => (string)a.Attribute("content")!));
+    }
+
+    [Theory]
+    [InlineData(3.2, "3 h")]
+    [InlineData(47.9, "47 h")]
+    [InlineData(50, "2 days")]
+    [InlineData(80, "3 days")]
+    public void FormatPause_WholeUnits_RoundedDown(double hours, string expected) =>
+        Assert.Equal(expected, NudgeToast.FormatPause(TimeSpan.FromHours(hours)));
+
     [Fact]
     public void Build_BreakOver_IsAReminder_ThatStaysUntilAnswered()
     {

@@ -30,6 +30,7 @@ public sealed class SettingsForm : Form
     private readonly ComboBox _startRampBlocksBox;
     private readonly CheckBox _uploadNoticesBox;
     private readonly CheckBox _unmappedReviewBox;
+    private readonly CheckBox _pauseRemindersBox;
     private readonly CheckBox _chimeEnabledBox;
     private readonly ComboBox _chimeIntervalBox;
     private readonly CheckBox _chimeDistractionsBox;
@@ -149,6 +150,10 @@ public sealed class SettingsForm : Form
         _unmappedReviewBox = new CheckBox { Text = "On", Checked = config.UnmappedReviewEnabled, AutoSize = true };
         AddRow(layout, "Evening review of unmapped time:", _unmappedReviewBox,
             "At your evening-shutdown time: one notice with how much of today on this PC no rule maps, if it is worth a look. Needs no drift nudges.");
+
+        _pauseRemindersBox = new CheckBox { Text = "On", Checked = config.PauseRemindersEnabled, AutoSize = true };
+        AddRow(layout, "Still-paused reminder:", _pauseRemindersBox,
+            "While tracking is paused \"until I resume\": a notice after 3 hours, then at most every 6, only while you are at the computer. A timed pause gets none.");
 
         var ignoreRulesLink = new LinkLabel { Text = "Ignore rules and private windows…", AutoSize = true };
         ignoreRulesLink.LinkClicked += OnEditPrivacy;
@@ -275,6 +280,7 @@ public sealed class SettingsForm : Form
         _config.StartRampBlocks = (RampBlocks)_startRampBlocksBox.SelectedIndex;
         _config.UploadNoticesEnabled = _uploadNoticesBox.Checked;
         _config.UnmappedReviewEnabled = _unmappedReviewBox.Checked;
+        _config.PauseRemindersEnabled = _pauseRemindersBox.Checked;
         _config.TimeChimeEnabled = _chimeEnabledBox.Checked;
         _config.TimeChimeMinutes = ChimeSettings.IntervalChoices[Math.Max(0, _chimeIntervalBox.SelectedIndex)];
         _config.TimeChimeDistractions = _chimeDistractionsBox.Checked;

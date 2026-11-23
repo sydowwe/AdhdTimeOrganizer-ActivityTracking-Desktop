@@ -31,6 +31,9 @@ public sealed class TrayApplicationContext : ApplicationContext
     private const int DiagnosticsLines = 200;
 
     private readonly NotifyIcon _trayIcon;
+    private readonly TrayIcons _icons;
+    private readonly ContextMenuStrip _contextMenu;
+    private TrayIconState _iconState = TrayIconState.Normal;
     private readonly AppConfig _config;
     private readonly ApiClient _apiClient;
     private readonly NudgeService _nudges;
@@ -69,7 +72,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _nudges = new NudgeService(config, new WindowsFormsSynchronizationContext(), signIn: SignInFromNotice,
             startBlock: plannerTaskId => _apiClient.StartBlockAsync(plannerTaskId, CancellationToken.None),
             skipBlock: plannerTaskId => _apiClient.SkipBlockAsync(plannerTaskId, CancellationToken.None),
-            capture: OpenCapture, reportBreak: _breakReporter.Report);
+            capture: OpenCapture, reportBreak: _breakReporter.Report, resume: ResumeFromReminder);
         _tracker = new ActivityTrackerService(config, _apiClient, _nudges);
 
         // On this, the UI, thread: WM_HOTKEY comes through its message loop (see GlobalHotkey).
@@ -77,8 +80,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _hotkey.Pressed += OpenCapture;
         _captureItem = new ToolStripMenuItem("Capture a thought…", null, (_, _) => OpenCapture());
 
-        // Opens today's breakdown. A submenu rather than a left-click flyout: double-click already pauses and resumes,
-        // and a single click is half of every double-click. Filled when opened, so a refresh never rebuilds it under the mouse.
+        // Opens today's breakdown. A submenu rather than a left-click flyout: a single click is half of every double-click,
+        // which opens this menu. Filled when opened, so a refresh never rebuilds it under the mouse.
         _glanceItem = new ToolStripMenuItem("Today on this PC: 0 min");
         _glanceItem.DropDownItems.Add(new ToolStripMenuItem("…") { Enabled = false });
         _glanceItem.DropDownOpening += (_, _) => FillTodayBreakdown();
@@ -99,7 +102,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         // Hidden until a downloaded release waits; it would apply at the next start anyway.
         _updateItem = new ToolStripMenuItem("Restart to update", null, OnRestartToUpdate) { Visible = false };
 
-        var contextMenu = new ContextMenuStrip();
+        var contextMenu = _contextMenu = new ContextMenuStrip();
         // Windows' own startup settings can change it while the tracker runs.
         contextMenu.Opening += (_, _) => RefreshAutoStartItem();
         contextMenu.Items.Add(_glanceItem);
@@ -126,6 +129,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         testNudge.DropDownItems.Add("Start ramp", null, (_, _) => _nudges.ShowTest(NudgeKind.StartRamp));
         testNudge.DropDownItems.Add("Time chime", null, (_, _) => _nudges.ShowTest(NudgeKind.TimeChime));
         testNudge.DropDownItems.Add("Upload problem", null, (_, _) => _nudges.ShowTest(NudgeKind.UploadHealth));
+        testNudge.DropDownItems.Add("Still paused", null, (_, _) => _nudges.ShowTest(NudgeKind.PauseReminder));
         contextMenu.Items.Add(testNudge);
 #endif
         contextMenu.Items.Add(new ToolStripSeparator());
@@ -133,11 +137,15 @@ public sealed class TrayApplicationContext : ApplicationContext
         contextMenu.Items.Add(_updateItem);
         contextMenu.Items.Add("Exit", null, OnExit);
 
-        using var iconStream = typeof(TrayApplicationContext).Assembly
-            .GetManifestResourceStream("AdhdTimeOrganizer.ActivityTracking.Desktop.timeorganizer-icon.ico");
+        // Normal, paused and "needs you", drawn once; RefreshStatus swaps them (see TrayIconStates).
+        using (var iconStream = typeof(TrayApplicationContext).Assembly
+                   .GetManifestResourceStream("AdhdTimeOrganizer.ActivityTracking.Desktop.timeorganizer-icon.ico"))
+        using (var baseIcon = iconStream is not null ? new Icon(iconStream) : (Icon)SystemIcons.Application.Clone())
+            _icons = new TrayIcons(baseIcon);
+
         _trayIcon = new NotifyIcon
         {
-            Icon = iconStream is not null ? new Icon(iconStream) : SystemIcons.Application,
+            Icon = _icons.For(_iconState),
             Text = "Desktop Activity Tracker",
             Visible = true,
             ContextMenuStrip = contextMenu
@@ -196,7 +204,12 @@ public sealed class TrayApplicationContext : ApplicationContext
         _balloonOpensMapping = false;
         _trayIcon.ShowBalloonTip(10_000, "Activity Tracker — paused",
             $"{DescribePause(_config.PausedUntilUtc)}. Double-click the tray icon to resume.", ToolTipIcon.Info);
+        // That was the reminder for now: a restart doesn't add a "still paused" toast to it.
+        _nudges.OnPauseAnnounced(now, PauseSnapshotNow());
     }
+
+    private PauseSnapshot PauseSnapshotNow() =>
+        new(_config.PausedUntilUtc, _config.PausedSinceUtc, Native.Win32.GetIdleTime());
 
     private void ShowLogin()
     {
@@ -226,6 +239,15 @@ public sealed class TrayApplicationContext : ApplicationContext
         _nudges.OnUploadStatus(nowUtc, new UploadSnapshot(
             hasSession, status.PausedUntilUtc is { } pausedUntil && pausedUntil > nowUtc,
             status.PendingWindows, status.OldestPendingUtc, status.RejectedWindows));
+        // "Tracking has been paused for 4 h": from here, because the poll loop is stopped while paused.
+        _nudges.OnPauseStatus(nowUtc, PauseSnapshotNow());
+
+        var iconState = TrayIconStates.For(status, hasSession, nowUtc);
+        if (iconState != _iconState)
+        {
+            _iconState = iconState;
+            _trayIcon.Icon = _icons.For(iconState);
+        }
 
         var breakLeft = _nudges.GetStatus().BreakEndsUtc - nowUtc;
         var text = DescribeStatus(status, hasSession, breakLeft);
@@ -493,12 +515,58 @@ public sealed class TrayApplicationContext : ApplicationContext
     private static string Truncate(string value, int maxLength) =>
         value.Length <= maxLength ? value : value[..(maxLength - 1)] + "…";
 
+    /// <summary>
+    /// Never stops recording: it was a pause "until I resume", and the log showed it pressed by accident — every one undone
+    /// within seconds. Signed out it signs in; paused it resumes (the start-up balloon says so); otherwise it opens the menu.
+    /// </summary>
     private void OnTrayDoubleClick(object? sender, EventArgs e)
     {
-        if (!_apiClient.HasSession)
-            ShowLogin();
-        else
-            OnToggleTracking(sender, e);
+        switch (DoubleClickAction(_apiClient.HasSession, _tracker.IsPaused(DateTime.UtcNow)))
+        {
+            case TrayDoubleClick.SignIn:
+                ShowLogin();
+                break;
+            case TrayDoubleClick.Resume:
+                _tracker.Resume();
+                RefreshStatus();
+                break;
+            default:
+                ShowContextMenu();
+                break;
+        }
+    }
+
+    internal enum TrayDoubleClick { SignIn, Resume, OpenMenu }
+
+    internal static TrayDoubleClick DoubleClickAction(bool hasSession, bool isPaused) =>
+        !hasSession ? TrayDoubleClick.SignIn : isPaused ? TrayDoubleClick.Resume : TrayDoubleClick.OpenMenu;
+
+    /// <summary>
+    /// The menu a right-click opens. <see cref="NotifyIcon"/>'s own private <c>ShowContextMenu</c> brings it to the front
+    /// first, so a click elsewhere closes it; a plain <c>Show</c> would leave it hanging. If a WinForms update renames it,
+    /// the fallback still opens the menu (<c>SmallRuleTests</c> pins that the method exists).
+    /// </summary>
+    private void ShowContextMenu()
+    {
+        if (NotifyIconShowContextMenu is { } show)
+        {
+            show.Invoke(_trayIcon, null);
+            return;
+        }
+
+        _contextMenu.Show(Cursor.Position);
+    }
+
+    internal static readonly System.Reflection.MethodInfo? NotifyIconShowContextMenu = typeof(NotifyIcon).GetMethod(
+        "ShowContextMenu", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic, Type.EmptyTypes);
+
+    /// <summary>"Resume" on a pause reminder, on this thread. A reminder can outlive the pause, so it does nothing once tracking runs.</summary>
+    private void ResumeFromReminder()
+    {
+        if (!_tracker.IsPaused(DateTime.UtcNow)) return;
+
+        _tracker.Resume();
+        RefreshStatus();
     }
 
     /// <summary>"Sign in" on an upload notice. A notice can outlive the problem, so it does nothing once signed in.</summary>
@@ -636,6 +704,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _apiClient.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
+        _icons.Dispose(); // after the NotifyIcon that shows one
         Application.Exit();
     }
 }
