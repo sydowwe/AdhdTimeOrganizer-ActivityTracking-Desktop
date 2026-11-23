@@ -18,6 +18,18 @@ public class WindowLimitsTests
         Assert.Equal(29, entry.BackgroundSeconds);
     }
 
+    /// <summary>Review L5: the server's ProcessName NotEmpty refuses the whole minute for one blank entry.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Apply_DropsAnEntryWithoutAProcessName_AndKeepsTheRest(string blank)
+    {
+        var entry = Assert.Single(WindowLimits.Apply([Entry(blank, active: 40), Entry("code", active: 20)]));
+
+        Assert.Equal("code", entry.ProcessName);
+        Assert.Equal(20, entry.ActiveSeconds);
+    }
+
     [Fact]
     public void Apply_TrimsTheActiveTotalToSixty_FromTheBusiestEntries()
     {

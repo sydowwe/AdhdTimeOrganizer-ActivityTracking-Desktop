@@ -26,13 +26,18 @@ public static class WindowLimits
     public const int MaxSwitchesPerEntry = 120;
 
     /// <summary>
-    /// Clamps each entry to 60 seconds of active plus background time, drops empty ones, keeps the 200
-    /// busiest, and trims the active total to 60 seconds — taking the excess from the busiest entries, where
-    /// a rounding second is the smallest relative change.
+    /// Drops entries without a process name, clamps each entry to 60 seconds of active plus background time, drops empty
+    /// ones, keeps the 200 busiest, and trims the active total to 60 seconds — taking the excess from the busiest entries,
+    /// where a rounding second is the smallest relative change.
     /// </summary>
+    /// <remarks>
+    /// A blank process name is the server's <c>ProcessName</c> <c>NotEmpty</c>, which refuses the whole minute (review L5).
+    /// The one way to one is an executable called literally <c>.exe</c>; its seconds are lost, the rest of the minute is not.
+    /// </remarks>
     public static List<ActivityEntry> Apply(IEnumerable<ActivityEntry> entries)
     {
         var clamped = entries
+            .Where(e => !string.IsNullOrWhiteSpace(e.ProcessName))
             .Select(e =>
             {
                 var active = Math.Clamp(e.ActiveSeconds, 0, SecondsPerWindow);

@@ -94,7 +94,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 ### The wire contract
 - **A refused heartbeat is a lost minute.** The tracker cannot repair a batch the server calls
   malformed: a 4xx other than 401/403/408/409/425/429 is dropped (`ApiClient.Classify`). So every server
-  bound is mirrored in `WindowLimits` and applied before queuing: ≤ 60 s active + background per entry,
+  bound is mirrored in `WindowLimits` and applied before queuing: a non-blank process name (the entry is dropped),
+  ≤ 60 s active + background per entry,
   ≤ 60 s active per window, ≤ 200 entries, column widths, the 2000-byte (process, title) index limit, and
   ≤ 120 switches per entry (clamped, not refused).
   When the server's `DesktopActivityHeartbeatValidator` or `TrackingIngestLimits` change, change
