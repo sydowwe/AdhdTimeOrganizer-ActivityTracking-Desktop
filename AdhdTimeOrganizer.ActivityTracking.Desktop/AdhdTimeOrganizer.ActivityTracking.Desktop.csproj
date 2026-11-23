@@ -41,11 +41,15 @@
         <InternalsVisibleTo Include="AdhdTimeOrganizer.ActivityTracking.Desktop.Tests" />
     </ItemGroup>
 
+    <!--
+        Exact versions only, no wildcards: a release must build the same dependencies every time. packages.lock.json
+        (beside this file) pins the transitive ones too, and CI restores in locked mode. See Directory.Build.props.
+    -->
     <ItemGroup>
-        <PackageReference Include="Serilog" Version="4.*" />
+        <PackageReference Include="Serilog" Version="4.4.0" />
         <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
-        <PackageReference Include="Serilog.Sinks.Debug" Version="3.*" />
-        <PackageReference Include="NAudio.Wasapi" Version="2.*" />
+        <PackageReference Include="Serilog.Sinks.Debug" Version="3.0.0" />
+        <PackageReference Include="NAudio.Wasapi" Version="2.4.0" />
         <!-- Installer and updates: see Services/UpdateService.cs and "Releasing" in CLAUDE.md. -->
         <PackageReference Include="Velopack" Version="1.2.161" />
         <!-- Foundation holds AppNotifications; the full Microsoft.WindowsAppSDK would add WinUI, AI and ML (~150 MB). -->

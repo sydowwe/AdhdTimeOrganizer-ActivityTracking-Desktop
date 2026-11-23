@@ -1,0 +1,17 @@
+<Project>
+    <!--
+        Reproducible restores. Every project writes packages.lock.json beside itself, holding the exact version and
+        content hash of every package, transitive ones included; commit it with any package change.
+
+        On CI (GitHub sets CI=true) the restore is locked: a lock file that no longer matches the project files fails the
+        build instead of being rewritten, so a release builds exactly what was committed. Locally the lock file is
+        updated by any restore after a PackageReference change — review that diff like code.
+
+        The lock files cover win-x64 only (the RuntimeIdentifier the projects default to on an x64 machine). A cross-build
+        for another architecture would need it added to RuntimeIdentifiers first.
+    -->
+    <PropertyGroup>
+        <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+        <RestoreLockedMode Condition="'$(CI)' == 'true'">true</RestoreLockedMode>
+    </PropertyGroup>
+</Project>

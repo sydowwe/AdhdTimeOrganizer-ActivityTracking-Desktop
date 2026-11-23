@@ -43,6 +43,10 @@ jobs:
       - name: Restore vpk
         run: dotnet tool restore
 
+      # release.ps1's publish restores again, locked too (CI=true, see Directory.Build.props).
+      - name: Restore (locked)
+        run: dotnet restore AdhdTimeOrganizer.ActivityTracking.Desktop/AdhdTimeOrganizer.ActivityTracking.Desktop.csproj --locked-mode
+
       - name: Pack and upload
         if: github.ref_type == 'tag'
         shell: pwsh

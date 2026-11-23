@@ -481,7 +481,8 @@ updates from this repo's **GitHub Releases** (public, so no token ships in the a
 3. `git push origin main`, then `git push origin v<version>`. The tag push runs `.github/workflows/release.yml`: first the
    CI job (`ci.yml`: every test but the `NativeSmokeTests` cases that need a signed-in desktop, `-NotTrait 'Needs=Desktop'`,
    and the Release build), then, only if it passes, `scripts/release.ps1 -Upload` in a job of its own — the only one
-   holding `contents: write` — with the workflow's own `GITHUB_TOKEN`, which refuses a tag that disagrees with the csproj. The GitHub release's text is the commit subjects since the previous `v*` tag (the `release:` commit left out).
+   holding `contents: write` — with the workflow's own `GITHUB_TOKEN`, which refuses a tag that disagrees with the csproj.
+   The GitHub release's text is the commit subjects since the previous `v*` tag (the `release:` commit left out).
 4. Installed trackers find it within 6 h (`UpdatePolicy.CheckEvery`), or 2 min after their next start, download it quietly,
    and show "Restart to update" in the tray; otherwise it applies at the next start.
 5. To make the server's tracker-silence notification say "out of date" for older builds, set the server's
@@ -494,6 +495,13 @@ for 3 days. The button appears once the workflow with `workflow_dispatch` is on 
 
 **Every push to `main` and every pull request** runs `ci.yml` alone: the same tests and Release build, read-only, nothing
 packed. A red run there is a release that would not go out.
+
+**The same tag builds the same dependencies.** Package versions are exact (no `4.*`), and each project has a
+`packages.lock.json` pinning every package, transitive ones included, by version and content hash
+(`RestorePackagesWithLockFile` in `Directory.Build.props`). CI restores in locked mode (`RestoreLockedMode` when
+`CI=true`, plus an explicit `dotnet restore --locked-mode` step), so a lock file that disagrees with the project files fails
+the run instead of being quietly rewritten. Locally a restore after a package change rewrites the lock file: commit it with
+the change and read its diff. The lock files cover `win-x64` only.
 
 Locally: `dotnet tool restore` (vpk, pinned to the Velopack package's version in `.config/dotnet-tools.json`), then
 `./scripts/release.ps1`. Output goes to `artifacts-release/` (gitignored). **Never commit a signing certificate, its password
