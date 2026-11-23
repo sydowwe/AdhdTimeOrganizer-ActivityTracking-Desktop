@@ -398,6 +398,10 @@ public sealed class ActivityTrackerService : IDisposable
                     // whether the screen can be read.
                     Interlocked.Exchange(ref _lastPollTicks, DateTime.UtcNow.Ticks);
                     Interlocked.Exchange(ref _pollFailingSinceTicks, 0);
+
+                    if (session.FailureLog.Recovered(DateTime.UtcNow) is { } ended)
+                        _log.Information("Poll recovered after {Failures} failed passes over {Minutes} min",
+                            ended.Failures, (int)ended.For.TotalMinutes);
                 }
 
                 _lastPollError = null;
@@ -405,7 +409,15 @@ public sealed class ActivityTrackerService : IDisposable
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
-                _log.Error(ex, "Poll failed");
+                // The first failure in full, the same one again as a line every 10 min (PollFailureLog): a poll failing every
+                // pass would otherwise write its stack 17,000 times a day.
+                var (entry, failures, failingFor) = session.FailureLog.Failed(DateTime.UtcNow, $"{ex.GetType().FullName}: {ex.Message}");
+                if (entry == PollLogEntry.Full)
+                    _log.Error(ex, "Poll failed");
+                else if (entry == PollLogEntry.StillFailing)
+                    _log.Error("Poll still failing the same way: {Failures} failed passes over {Minutes} min",
+                        failures, (int)failingFor.TotalMinutes);
+
                 _lastPollError = ex.Message;
                 Interlocked.CompareExchange(ref _pollFailingSinceTicks, DateTime.UtcNow.Ticks, 0);
             }
@@ -418,6 +430,9 @@ public sealed class ActivityTrackerService : IDisposable
     private sealed class PollSession
     {
         public ScreenState Screen { get; } = new();
+
+        /// <summary>What a failed pass writes to the log; a run of failures belongs to one loop.</summary>
+        public PollFailureLog FailureLog { get; } = new();
 
         /// <summary>The <see cref="Stopwatch"/> timestamp the recorder has been credited up to.</summary>
         public long CreditedUntil { get; set; }
