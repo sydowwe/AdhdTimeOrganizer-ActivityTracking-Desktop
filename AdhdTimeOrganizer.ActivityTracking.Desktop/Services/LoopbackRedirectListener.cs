@@ -46,6 +46,13 @@ internal sealed class LoopbackRedirectHandler(string expectedState)
         {
             requestLine = null;
         }
+        catch (IOException ex)
+        {
+            // Reset or dropped by the other end — a probe, security software. Not ours, and nothing to answer on: the wait
+            // goes on (review L6).
+            _log.Debug(ex, "Sign-in listener: a connection failed before its request arrived");
+            return null;
+        }
 
         var verdict = requestLine is null
             ? new RedirectVerdict(RedirectKind.Malformed)
@@ -163,12 +170,20 @@ public sealed class LoopbackRedirectListener : IDisposable
         {
             while (true)
             {
+                // A failure here is the listener's own and ends the sign-in (BrowserSignIn.DescribeFailure says so).
                 using var client = await _listener.AcceptTcpClientAsync(limit.Token);
-                var remote = (client.Client.RemoteEndPoint as IPEndPoint)?.Address;
-                await using var stream = client.GetStream();
+                try
+                {
+                    var remote = (client.Client.RemoteEndPoint as IPEndPoint)?.Address;
+                    await using var stream = client.GetStream();
 
-                if (await _handler.HandleAsync(stream, remote, limit.Token) is { } code)
-                    return code;
+                    if (await _handler.HandleAsync(stream, remote, limit.Token) is { } code)
+                        return code;
+                }
+                catch (Exception ex) when (ex is IOException or SocketException or InvalidOperationException)
+                {
+                    // One connection's failure (already closed, reset) is not the user's sign-in: wait for the next.
+                }
             }
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)

@@ -153,7 +153,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   accepts exactly that redirect shape: the IPv4 literal (never `localhost`), any port from 1024 up, path `/cb`,
   nothing after it. The challenge is S256 only, the state is 16–128 base64url characters, and a code lives a minute
   and is spent by its first exchange, even a failed one. Change `BrowserSignIn` and the server's `TrackerSignInRules`
-  together. A 404 from the exchange means an older server: the password form still works there.
+  together. A 404 from the exchange means an older server: the password form still works there. A stray request — a
+  favicon, a wrong state, a connection reset before its request arrived — is not ours and the wait goes on; only the
+  listener's own socket failing ends the sign-in, with its own message (`BrowserSignIn.DescribeFailure`).
 
 ### Time accounting
 - All of it lives in `ActivityRecorder` and `ScreenState`, which have no clock and no Win32, so they're

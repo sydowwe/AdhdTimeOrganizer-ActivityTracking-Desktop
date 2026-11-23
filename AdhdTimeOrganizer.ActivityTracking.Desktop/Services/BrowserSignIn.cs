@@ -65,6 +65,14 @@ public static class BrowserSignIn
 
     public static string RedirectUri(int port) => $"http://127.0.0.1:{port}{CallbackPath}";
 
+    /// <summary>
+    /// What the sign-in form says when a run ends in an exception. One stray connection no longer ends it (the listener
+    /// waits on), so a socket failure here is the listener's own — not the browser failing to open (review L6).
+    /// </summary>
+    public static string DescribeFailure(Exception ex) => ex is System.Net.Sockets.SocketException or IOException
+        ? "The sign-in connection on this PC failed. Try again, or use a password instead."
+        : "Couldn't open the browser.";
+
     public static Uri ConnectPage(AppConfig config, string redirectUri, string codeChallenge, string state) =>
         config.WebAppUri($"{ConnectPagePath}?redirect_uri={Uri.EscapeDataString(redirectUri)}"
                          + $"&code_challenge={Uri.EscapeDataString(codeChallenge)}&state={Uri.EscapeDataString(state)}");

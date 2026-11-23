@@ -128,7 +128,7 @@ public sealed class LoginForm : Form
         catch (Exception ex)
         {
             Log.Error(ex, "Browser sign-in failed");
-            outcome = new LoginOutcome(LoginStatus.Failed, Message: "Couldn't open the browser.");
+            outcome = new LoginOutcome(LoginStatus.Failed, Message: BrowserSignIn.DescribeFailure(ex));
         }
         finally
         {

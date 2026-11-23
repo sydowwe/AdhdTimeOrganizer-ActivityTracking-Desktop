@@ -104,6 +104,56 @@ public sealed class LoopbackRedirectHandlerTests
         Assert.Null(await _handler.HandleAsync(connection, Loopback, TestContext.Current.CancellationToken));
     }
 
+    /// <summary>
+    /// Review L6: a connection reset by the other end (a probe, security software) threw out of the handler and the wait,
+    /// and the form said "Couldn't open the browser." It is not ours: nothing is answered, and our redirect still counts.
+    /// </summary>
+    [Fact]
+    public async Task AResetConnection_IsNotOurs_AndOurRedirectStillCountsAfterIt()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var reset = new ResetConnection();
+
+        Assert.Null(await _handler.HandleAsync(reset, Loopback, ct));
+        Assert.Equal(0, reset.Written);
+
+        Assert.Equal("ours", await _handler.HandleAsync(FakeConnection.Get($"/cb?code=ours&state={State}"), Loopback, ct));
+    }
+
+    [Theory]
+    [InlineData("socket", "The sign-in connection on this PC failed. Try again, or use a password instead.")]
+    [InlineData("io", "The sign-in connection on this PC failed. Try again, or use a password instead.")]
+    [InlineData("no browser", "Couldn't open the browser.")]
+    public void AFailedRun_SaysWhatFailed(string failure, string expected) =>
+        Assert.Equal(expected, BrowserSignIn.DescribeFailure(failure switch
+        {
+            "socket" => new System.Net.Sockets.SocketException(10048),
+            "io" => new IOException("Unable to read data from the transport connection"),
+            _ => new System.ComponentModel.Win32Exception(2)
+        }));
+
+    /// <summary>A connection the other end resets: every read throws, as a <c>NetworkStream</c> does.</summary>
+    private sealed class ResetConnection : Stream
+    {
+        public int Written { get; private set; }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new IOException("Unable to read data from the transport connection: An existing connection was forcibly closed by the remote host.",
+                new System.Net.Sockets.SocketException(10054));
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<int>(new IOException("Connection reset", new System.Net.Sockets.SocketException(10054)));
+        public override void Write(byte[] buffer, int offset, int count) => Written += count;
+        public override void Flush() { }
+
+        public override bool CanRead => true;
+        public override bool CanWrite => true;
+        public override bool CanSeek => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+    }
+
     /// <summary>A browser's request in, whatever the handler writes back out.</summary>
     private sealed class FakeConnection(string request) : Stream
     {
