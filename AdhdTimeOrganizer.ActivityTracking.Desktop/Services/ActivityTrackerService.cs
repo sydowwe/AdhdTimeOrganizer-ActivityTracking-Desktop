@@ -361,13 +361,13 @@ public sealed class ActivityTrackerService : IDisposable
         var session = new PollSession { CreditedUntil = Stopwatch.GetTimestamp() };
 
         // The first poll runs at once: there is nothing to credit yet, but it says what is on screen.
-        var nextPoll = session.CreditedUntil;
+        var schedule = new PollSchedule(session.CreditedUntil, intervalTicks);
 
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                var wait = Stopwatch.GetElapsedTime(Stopwatch.GetTimestamp(), nextPoll);
+                var wait = Stopwatch.GetElapsedTime(Stopwatch.GetTimestamp(), schedule.Next);
                 if (wait > TimeSpan.Zero) await ForegroundEvents.WaitAsync(wait, ct);
             }
             catch (OperationCanceledException) { break; }
@@ -388,8 +388,9 @@ public sealed class ActivityTrackerService : IDisposable
                     session.LastChangeHandled = Stopwatch.GetTimestamp();
                 }
 
+                // Scheduled before the poll runs, so one that throws waits its interval rather than spinning (PollSchedule).
                 var now = Stopwatch.GetTimestamp();
-                if (now >= nextPoll)
+                if (schedule.TakeDue(now))
                 {
                     Poll(session, now, maxCreditedGap);
 
@@ -397,10 +398,6 @@ public sealed class ActivityTrackerService : IDisposable
                     // whether the screen can be read.
                     Interlocked.Exchange(ref _lastPollTicks, DateTime.UtcNow.Ticks);
                     Interlocked.Exchange(ref _pollFailingSinceTicks, 0);
-
-                    // After a sleep or a hang, the next poll is an interval from now — not a burst catching up.
-                    nextPoll += intervalTicks;
-                    if (nextPoll <= now) nextPoll = now + intervalTicks;
                 }
 
                 _lastPollError = null;
