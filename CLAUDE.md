@@ -508,6 +508,14 @@ Locally: `dotnet tool restore` (vpk, pinned to the Velopack package's version in
 or a release token.** Releases are unsigned today: SmartScreen warns once, on the downloaded `Setup.exe` ("More info → Run
 anyway"). Updates are fetched by Velopack's updater, not a browser, so they carry no Mark of the Web and don't warn.
 
+**What an installed tracker trusts.** Unsigned, it applies whatever this repo's releases offer, so the trust chain is the
+GitHub account, the `v*` tags and the release workflow. Each link is held: the packages are locked (above); the actions
+are pinned to commit SHAs, the release in a comment beside each (a tag can be moved to other code, a commit cannot —
+update both workflow files together from `git ls-remote --tags`); only the pack job can write; and `v*` tags are meant to
+be protected by a tag ruleset (Settings → Rules → Rulesets: create, update and delete restricted, repository admins
+bypass), a repo setting only the owner can change. Signing stays off by decision (2026-11-23): one user, and updates
+don't warn.
+
 **What the installer must not break** — each of these fails without an error:
 - **The install folder is not the data folder.** The package id is `AdhdTimeOrganizer.Tracker`, so it installs to
   `%LocalAppData%\AdhdTimeOrganizer.Tracker\` (`current\` holds the app, `Update.exe` beside it). An uninstall deletes that
