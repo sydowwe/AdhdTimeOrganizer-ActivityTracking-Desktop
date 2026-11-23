@@ -179,26 +179,30 @@ public sealed class TrayApplicationContext : ApplicationContext
         _ = InitializeAsync();
     }
 
+    /// <summary>
+    /// With a saved token, tracking starts at once and the session is restored in the background (review L8); the order is
+    /// <see cref="SessionStartup"/>'s.
+    /// </summary>
     private async Task InitializeAsync()
     {
         _statusItem.Text = "Status: Connecting…";
 
-        var hasSession = await _apiClient.TryRestoreSessionAsync();
-        _isInitializing = false;
-
-        if (hasSession)
-            StartUnlessPaused();
-
-        // After the pause balloon, which it replaces: a damaged config matters more. Before the sign-in dialog, which a
-        // config restored without its token brings up, so the user knows why.
-        if (_configNotice is { } notice)
+        await new SessionStartup(
+            hasSavedToken: () => _apiClient.HasSession,
+            restore: _apiClient.TryRestoreSessionAsync,
+            startTracking: StartUnlessPaused,
+            // After the pause balloon, which it replaces: a damaged config matters more.
+            showConfigNotice: () =>
+            {
+                if (_configNotice is not { } notice) return;
+                _balloonOpensMapping = false;
+                _trayIcon.ShowBalloonTip(20_000, notice.Title, notice.Text, ToolTipIcon.Warning);
+            },
+            showLogin: ShowLogin).RunAsync(onStarted: () =>
         {
-            _balloonOpensMapping = false;
-            _trayIcon.ShowBalloonTip(20_000, notice.Title, notice.Text, ToolTipIcon.Warning);
-        }
-
-        if (!hasSession)
-            ShowLogin();
+            _isInitializing = false;
+            RefreshStatus();
+        });
 
         RefreshStatus();
     }

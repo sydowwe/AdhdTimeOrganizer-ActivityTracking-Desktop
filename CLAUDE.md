@@ -14,6 +14,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 |---|---|
 | `Program.cs` | Velopack's hooks (first line — see "Releasing"), logging (Serilog → `%LOCALAPPDATA%\AdhdTimeOrganizer\logs`), single-instance mutex, tray startup |
 | `TrayApplicationContext.cs` | Tray icon and menu (incl. "Pause for…", the today/now glance and the "map these apps" prompt); pulls status from the tracker on a UI timer, which also swaps the icon and feeds the upload notices and the pause reminder. Double-click never pauses: it opens the menu, resumes a pause, or signs in |
+| `Services/SessionStartup.cs` | The tray's start-up order: start tracking, the config notice, restore the session, the sign-in form if none |
 | `TrayIcons.cs`, `Services/TrayIconState.cs` | The three tray icons — normal, paused (greyed, pause bars), attention (amber dot: signed out or a poll error) — drawn once from the embedded icon and disposed on exit; and the **pure** choice between them |
 | `LoginForm.cs`, `SettingsForm.cs`, `PrivacyForm.cs` | Sign-in (the browser by default; password + 2FA behind "Use a password instead"); settings editor; the user's ignore / hide-title rules and private-window handling |
 | `Services/BrowserSignIn.cs` | **Pure** browser sign-in: PKCE (S256), state, the `/connect/tracker` URL, and whether a request reaching the listener is our redirect |
@@ -230,7 +231,10 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   catch and silently ended tracking. (`NotifyIcon.Text` also throws past 127 characters, so it's
   truncated.)
 - A session ends only when the server refuses the refresh token (400/401/403). Being offline, a throttle,
-  a 409 or a 5xx keeps it. While signed out, tracking continues into the outbox. The decisions are the
+  a 409 or a 5xx keeps it. While signed out, tracking continues into the outbox. **At start, with a saved token, recording
+  starts at once and the session is restored in the background** (`SessionStartup`, review L8): recording needs no network,
+  and a restore on a network that swallows the request takes the 30 s HTTP timeout. The sign-in form comes only after the
+  restore says there is no session. The decisions are the
   **pure** `Services/RefreshPolicy.cs`; `ApiClient` only sends and keeps the clock.
 - **Signing out revokes the token on the server, best-effort** (review M5). `ApiClient.SignOut` clears the session at once
   and then, in the background, posts the refresh token to `POST /api/auth/tracker/logout` with the access token held. A 401
