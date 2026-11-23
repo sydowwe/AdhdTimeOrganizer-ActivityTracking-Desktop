@@ -62,9 +62,13 @@ public sealed class TrayApplicationContext : ApplicationContext
     private bool _mappingPromptShown = true;
     private bool _balloonOpensMapping;
 
-    public TrayApplicationContext(AppConfig config)
+    /// <summary>What <see cref="AppConfig.Load(string)"/> had to do to the config, said once after start; null when nothing.</summary>
+    private readonly (string Title, string Text)? _configNotice;
+
+    public TrayApplicationContext(AppConfig config, (string Title, string Text)? configNotice = null)
     {
         _config = config;
+        _configNotice = configNotice;
         _apiClient = new ApiClient(config);
         _breakReporter = new BreakReporter(_apiClient.SendBreakAsync);
 
@@ -180,7 +184,16 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         if (hasSession)
             StartUnlessPaused();
-        else
+
+        // After the pause balloon, which it replaces: a damaged config matters more. Before the sign-in dialog, which a
+        // config restored without its token brings up, so the user knows why.
+        if (_configNotice is { } notice)
+        {
+            _balloonOpensMapping = false;
+            _trayIcon.ShowBalloonTip(20_000, notice.Title, notice.Text, ToolTipIcon.Warning);
+        }
+
+        if (!hasSession)
             ShowLogin();
 
         RefreshStatus();

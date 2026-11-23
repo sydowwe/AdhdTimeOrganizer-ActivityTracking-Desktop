@@ -65,11 +65,11 @@ public sealed class SettingsForm : Form
 
         _apiUrlBox = new TextBox { Text = config.ApiBaseUrl, Width = 260 };
         _webAppUrlBox = new TextBox { Text = config.WebAppUrl, Width = 260 };
-        _pollIntervalBox = Number(config.PollIntervalMs, 500, 10_000, increment: 250);
-        _idleThresholdBox = Number(config.IdleThresholdSeconds, 5, 600);
-        _passiveIdleBox = Number(config.MaxPassiveIdleMinutes, 0, 600, increment: 10);
-        _minBackgroundBox = Number(config.MinBackgroundWindowPercent, 0, 100);
-        _maxBackgroundBox = Number(config.MaxBackgroundWindowsPerMonitor, 0, 10);
+        _pollIntervalBox = Number(config.PollIntervalMs, ConfigLimits.PollIntervalMs, increment: 250);
+        _idleThresholdBox = Number(config.IdleThresholdSeconds, ConfigLimits.IdleThresholdSeconds);
+        _passiveIdleBox = Number(config.MaxPassiveIdleMinutes, ConfigLimits.MaxPassiveIdleMinutes, increment: 10);
+        _minBackgroundBox = Number(config.MinBackgroundWindowPercent, ConfigLimits.MinBackgroundWindowPercent);
+        _maxBackgroundBox = Number(config.MaxBackgroundWindowsPerMonitor, ConfigLimits.MaxBackgroundWindowsPerMonitor);
 
         AddRow(layout, "Server URL:", _apiUrlBox, "Changing it signs you out.");
         AddRow(layout, "Web app URL:", _webAppUrlBox, "Where the planner and your mappings open.");
@@ -83,10 +83,10 @@ public sealed class SettingsForm : Form
         AddRow(layout, "Background windows per monitor:", _maxBackgroundBox, null);
 
         _nudgesEnabledBox = new CheckBox { Text = "On", Checked = config.HyperfocusNudgesEnabled, AutoSize = true };
-        _nudgeAfterBox = Number(config.HyperfocusNudgeMinutes, 15, 600, increment: 15);
-        _appNudgeAfterBox = Number(config.AppHyperfocusNudgeMinutes, 0, 600, increment: 15);
-        _breakLengthBox = Number(config.BreakMinutes, 1, 60);
-        _breakTimerBox = Number(config.BreakTimerMinutes, 1, 120);
+        _nudgeAfterBox = Number(config.HyperfocusNudgeMinutes, ConfigLimits.HyperfocusNudgeMinutes, increment: 15);
+        _appNudgeAfterBox = Number(config.AppHyperfocusNudgeMinutes, ConfigLimits.AppHyperfocusNudgeMinutes, increment: 15);
+        _breakLengthBox = Number(config.BreakMinutes, ConfigLimits.BreakMinutes);
+        _breakTimerBox = Number(config.BreakTimerMinutes, ConfigLimits.BreakTimerMinutes);
         _quietFullscreenBox = new CheckBox { Text = "Full screen or presenting", Checked = config.QuietWhenFullscreen, AutoSize = true };
         _quietMicrophoneBox = new CheckBox { Text = "Microphone in use (a call)", Checked = config.QuietWhenMicrophoneInUse, AutoSize = true };
 
@@ -99,7 +99,7 @@ public sealed class SettingsForm : Form
         AddRow(layout, "Break timer (min):", _breakTimerBox, "How long \"Taking a break\" lasts before the back-to-it nudge.");
 
         _driftEnabledBox = new CheckBox { Text = "On", Checked = config.DriftNudgesEnabled, AutoSize = true };
-        _driftAfterBox = Number(config.DriftNudgeMinutes, 10, 120, increment: 5);
+        _driftAfterBox = Number(config.DriftNudgeMinutes, ConfigLimits.DriftNudgeMinutes, increment: 5);
 
         AddRow(layout, "Drift nudges:", _driftEnabledBox,
             "When your planner says one thing and your apps another. Apps without a mapping rule don't count either way.");
@@ -214,12 +214,12 @@ public sealed class SettingsForm : Form
         Location = new Point(area.Left + (area.Width - Width) / 2, area.Top + (area.Height - Height) / 2);
     }
 
-    private static NumericUpDown Number(int value, int min, int max, int increment = 1) => new()
+    private static NumericUpDown Number(int value, IntRange range, int increment = 1) => new()
     {
-        Minimum = min,
-        Maximum = max,
+        Minimum = range.Min,
+        Maximum = range.Max,
         Increment = increment,
-        Value = Math.Clamp(value, min, max),
+        Value = range.Clamp(value),
         Width = 100
     };
 

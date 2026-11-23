@@ -51,6 +51,17 @@ public sealed class PrivacyForm : Form
             Dock = DockStyle.Fill
         };
 
+        if (config.HideAllTitlesUntilReviewed)
+            layout.Controls.Add(new Label
+            {
+                Text = "Your settings file was damaged and your rules could not all be recovered, so every window title is " +
+                       "being hidden. Check the rules below and press Save to go back to hiding only what they say.",
+                AutoSize = true,
+                ForeColor = Color.DarkRed,
+                MaximumSize = new Size(760, 0),
+                Margin = new Padding(3, 3, 3, 9)
+            });
+
         _hidePrivateBox = new CheckBox
         {
             Text = "Hide the titles of private browser windows (Firefox Private Browsing, Edge InPrivate)",
@@ -175,6 +186,7 @@ public sealed class PrivacyForm : Form
         _config.HidePrivateWindows = _hidePrivateBox.Checked;
         _config.PrivateWindowHandling = _handlingBox.SelectedIndex == 1 ? PrivateWindowHandling.Drop : PrivateWindowHandling.KeepTimeAsAppName;
         _config.LocalRules = rules;
+        _config.HideAllTitlesUntilReviewed = false; // reviewed: the rules say what is hidden again
 
         DialogResult = DialogResult.OK;
         Close();

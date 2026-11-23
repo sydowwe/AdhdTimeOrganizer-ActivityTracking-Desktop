@@ -28,6 +28,20 @@ public class PrivacyFilterTests
     public void DefaultRules_KeepTheirMeaning(string process, string rawTitle, string? expected) =>
         Assert.Equal(expected, Apply(new AppConfig(), process, null, rawTitle));
 
+    /// <summary>
+    /// The rules could not be recovered (AppConfig.Load): every title is hidden until the Privacy form is saved — time still
+    /// counts — and an ignore rule still records nothing.
+    /// </summary>
+    [Fact]
+    public void HideAllTitlesUntilReviewed_HidesEveryTitle_ButIgnoreStillWins()
+    {
+        var config = new AppConfig { HideAllTitlesUntilReviewed = true };
+
+        Assert.Equal("Firefox - PRIVATE", Apply(config, "firefox", "Firefox", "My bank — Mozilla Firefox"));
+        Assert.Equal("code - PRIVATE", Apply(config, "code", null, "notes.md"));
+        Assert.Null(Apply(config, "SearchHost", null, "Search"));
+    }
+
     /// <summary>A config.json from before hide-title rules: same key, no action or match fields.</summary>
     [Fact]
     public void OldConfig_ReadsAsExactIgnoreRules()

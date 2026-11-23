@@ -57,7 +57,7 @@ public sealed record DriftSettings(bool Enabled, TimeSpan After)
 
     public static DriftSettings From(AppConfig config) => new(
         config.DriftNudgesEnabled,
-        TimeSpan.FromMinutes(Math.Clamp(config.DriftNudgeMinutes, MinMinutes, 120)));
+        TimeSpan.FromMinutes(ConfigLimits.DriftNudgeMinutes.Clamp(config.DriftNudgeMinutes)));
 }
 
 /// <summary>

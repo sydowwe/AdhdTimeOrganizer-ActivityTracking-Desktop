@@ -132,7 +132,7 @@ public sealed class ActivityTrackerService : IDisposable
         _sendTask = Task.Run(() => SendLoopAsync(_lifetimeCts.Token));
     }
 
-    private TimeSpan PollInterval => TimeSpan.FromMilliseconds(Math.Clamp(_config.PollIntervalMs, 250, 60_000));
+    private TimeSpan PollInterval => TimeSpan.FromMilliseconds(ConfigLimits.PollIntervalMs.Clamp(_config.PollIntervalMs));
 
     public void Start()
     {

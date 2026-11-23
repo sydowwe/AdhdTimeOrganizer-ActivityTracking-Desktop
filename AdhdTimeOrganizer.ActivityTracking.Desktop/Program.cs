@@ -65,11 +65,11 @@ Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
 
 Log.Information("Application starting");
 
-var config = AppConfig.Load();
+var configLoad = AppConfig.Load();
 
 try
 {
-    Application.Run(new TrayApplicationContext(config));
+    Application.Run(new TrayApplicationContext(configLoad.Config, configLoad.Notice()));
 }
 finally
 {

@@ -52,7 +52,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/NudgeService.cs` | Feeds polls to the policy, checks quiet conditions, shows and withdraws toasts, handles button presses |
 | `Services/NudgeNotifier.cs`, `NudgeToast.cs` | Windows App SDK notifications: registration, toast text and buttons, parsing a press |
 | `Native/` | P/Invoke (`Win32`, `MonitorHelper`), `ProcessInfoCache`, `AudioSessionHelper` (NAudio), `MicrophoneUsage` (registry: whether, and which apps), `ForegroundEvents` (the WinEvent hook) |
-| `Models/` | Wire models (`ActivityModels.cs`, `TrackerRule.cs`, `ServerResolution.cs` — the heartbeat's answer, the coverage, today's unmapped time and the evening moment) and `AppConfig` (`%LOCALAPPDATA%\…Desktop\config.json`) |
+| `Models/` | Wire models (`ActivityModels.cs`, `TrackerRule.cs`, `ServerResolution.cs` — the heartbeat's answer, the coverage, today's unmapped time and the evening moment) and `AppConfig` (`%LOCALAPPDATA%\…Desktop\config.json`; `Load` answers a `ConfigLoad`, with `ConfigLimits`, the one range per number, and `LenientEnumConverter`) |
+| `Services/JsonFile.cs` | Every state file's write (temp, flush to disk, move over) and read (read / missing / unreadable / could not open) |
 | `AdhdTimeOrganizer.ActivityTracking.Desktop.Tests/` | xunit v3 tests, including `NativeSmokeTests` against the real machine |
 
 ## Building and testing — always through `scripts/test.ps1`
@@ -187,6 +188,24 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 ### Durability and threads
 - Every finished window goes to the **outbox on disk** before anything tries to send it. Exit, suspend,
   logoff and session end call `ActivityTrackerService.Flush()`. Don't add an in-memory-only queue.
+- **Every state file goes through `JsonFile`** — config, outbox, captures, `today.json`, the nudges' and the evening
+  review's state. `Write` writes `.tmp`, **flushes it to the disk**, then moves it over: without the flush a power cut can
+  leave a zero-length file. Don't hand-write "temp, then move" again. `TryRead` tells **Missing**, **Unreadable** (empty,
+  cut short, not JSON, `null`) and **CouldNotOpen** (locked, denied) apart: only an unreadable file may be set aside; one
+  that could not be opened is left for the next try.
+- **`config.json` never falls back to defaults silently** (`AppConfig.Load(path)` → `ConfigLoad`): the tray's first act
+  without a session is a save, which used to overwrite a damaged file — rules, pause, chime choices and all. A file that
+  loads is copied to `config.json.bak`. A damaged one goes to `config.json.bad` (one kept), then `.bak` is used, **without its
+  refresh token** — it has been rotated since, and the server answers a rotated token by revoking every session of the
+  account — then defaults with `HideAllTitlesUntilReviewed` (see "Privacy before upload"); either is saved at once. One that
+  can't be opened (after ~2 s of retries) gets the same fall-back but is neither moved nor saved over. The tray says what
+  happened once, in a balloon, in counts (`ConfigLoad.Notice`).
+- **A config value this build doesn't know costs that value, not the file.** Config enums use `LenientEnumConverter`
+  (writes the member name like `JsonStringEnumConverter`; an unknown name reads as an undefined value), and
+  `AppConfig.Normalize` resets those, `null` lists and blank URLs to their defaults and clamps each number to its
+  `ConfigLimits` range — the same ranges the Settings form offers. A new config enum or number gets both. The file format
+  stays what 1.2.1 reads: a new field is written only when it differs from its default (`WhenWritingDefault`), unless an
+  older build ignoring it is harmless.
 - The send loop runs for the app's lifetime, independent of pausing, and stops a pass at the first
   window that has to wait (offline, signed out, server rules not known yet). The poll loop stops when
   tracking is paused.
@@ -457,6 +476,11 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   hide-title rule on its own wording.
 - `LocalRules` is **replaced, never mutated**: the poll loop iterates it on its own thread. That is also
   why edits apply from the next poll without a restart.
+- **Lost rules hide more, never less.** When the rules can't be recovered (a damaged config and no usable `.bak`),
+  `HideAllTitlesUntilReviewed` makes every window a hidden-title one — ignore rules still drop theirs — until the user saves
+  the Privacy form, which says why at the top. It is saved (so a restart doesn't lift it) and written only while true. A rule
+  with an unknown action becomes Ignore; one with an unknown match type loses that condition (process or title), so it
+  matches more; one left naming nothing turns on `HideAllTitlesUntilReviewed`.
 - A pause (`PausedUntilUtc`, `DateTime.MaxValue` = until resumed, and its start `PausedSinceUtc`) is saved, so a restart
   in the middle of one doesn't start recording early. The tray's timer resumes a timed one.
 

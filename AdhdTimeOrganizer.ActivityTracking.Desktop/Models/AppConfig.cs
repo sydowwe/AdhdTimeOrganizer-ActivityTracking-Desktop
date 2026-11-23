@@ -56,21 +56,21 @@ public enum PrivateWindowHandling
 public sealed class LocalRule
 {
     [JsonPropertyName("action")]
-    [JsonConverter(typeof(JsonStringEnumConverter<LocalRuleAction>))]
+    [JsonConverter(typeof(LenientEnumConverter<LocalRuleAction>))]
     public LocalRuleAction Action { get; set; } = LocalRuleAction.Ignore;
 
     [JsonPropertyName("processName")]
     public string? ProcessName { get; set; }
 
     [JsonPropertyName("processNameMatchType")]
-    [JsonConverter(typeof(JsonStringEnumConverter<PatternMatchType>))]
+    [JsonConverter(typeof(LenientEnumConverter<PatternMatchType>))]
     public PatternMatchType ProcessNameMatchType { get; set; } = PatternMatchType.Exact;
 
     [JsonPropertyName("windowTitle")]
     public string? WindowTitle { get; set; }
 
     [JsonPropertyName("windowTitleMatchType")]
-    [JsonConverter(typeof(JsonStringEnumConverter<PatternMatchType>))]
+    [JsonConverter(typeof(LenientEnumConverter<PatternMatchType>))]
     public PatternMatchType WindowTitleMatchType { get; set; } = PatternMatchType.Exact;
 }
 
@@ -94,11 +94,11 @@ public sealed class AppConfig
     public static string ConfigPath { get; } = Path.Combine(ConfigDirectory, "config.json");
 
     /// <summary>
-    /// Where <see cref="Save"/> writes: <see cref="ConfigPath"/>, except in tests, which must never write over the
-    /// config of the tracker the user is running.
+    /// Where <see cref="Save"/> writes: <see cref="ConfigPath"/>, or the path it was <see cref="Load(string)"/>ed from — in
+    /// tests, which must never write over the config of the tracker the user is running, a temp one.
     /// </summary>
     [JsonIgnore]
-    public string FilePath { get; init; } = ConfigPath;
+    public string FilePath { get; internal set; } = ConfigPath;
 
     // Ties the DPAPI blob to this app as well as to the Windows user.
     private static readonly byte[] TokenEntropy = "AdhdTimeOrganizer.ActivityTracking.Desktop"u8.ToArray();
@@ -175,7 +175,7 @@ public sealed class AppConfig
     public bool StartRampEnabled { get; set; } = true;
 
     /// <summary>Which planned blocks it asks about, by the importance the planner already gives them.</summary>
-    [JsonConverter(typeof(JsonStringEnumConverter<RampBlocks>))]
+    [JsonConverter(typeof(LenientEnumConverter<RampBlocks>))]
     public RampBlocks StartRampBlocks { get; set; } = RampBlocks.NotOptional;
 
     // ── Time chime (see ChimeSchedule) ────────────────────────────────────────
@@ -235,8 +235,17 @@ public sealed class AppConfig
     /// <summary>Firefox Private Browsing and Edge InPrivate windows are handled like a hide-title rule.</summary>
     public bool HidePrivateWindows { get; set; } = true;
 
-    [JsonConverter(typeof(JsonStringEnumConverter<PrivateWindowHandling>))]
+    [JsonConverter(typeof(LenientEnumConverter<PrivateWindowHandling>))]
     public PrivateWindowHandling PrivateWindowHandling { get; set; } = PrivateWindowHandling.KeepTimeAsAppName;
+
+    /// <summary>
+    /// Every window is recorded as if a hide-title rule matched it, until the user saves the Privacy form. Set by
+    /// <see cref="Load(string)"/> when the user's rules could not be recovered — a damaged file with no usable backup, or a
+    /// rule this build cannot evaluate — so a title the user had hidden is not uploaded from the next poll. Written only
+    /// while true: a normal config.json is the same as before it existed, and a build that does not know it ignores it.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool HideAllTitlesUntilReviewed { get; set; }
 
     /// <summary>
     /// Tracking is paused until then: a time from "Pause for…", <see cref="DateTime.MaxValue"/> for "until I
@@ -334,13 +343,37 @@ public sealed class AppConfig
     /// <summary>A page of the web app, for <c>Process.Start</c>. <paramref name="pathAndQuery"/> starts with <c>/</c>.</summary>
     public Uri WebAppUri(string pathAndQuery) => new(new Uri(WebAppUrl.TrimEnd('/') + "/"), pathAndQuery.TrimStart('/'));
 
-    public static AppConfig Load()
+    public static ConfigLoad Load() => Load(ConfigPath);
+
+    /// <summary>
+    /// The config at <paramref name="path"/>, <see cref="Normalize"/>d, and how it was obtained. Never falls back to
+    /// defaults silently: the first thing a tray without a session does is save, which would overwrite the user's rules.
+    /// </summary>
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item>Read: a legacy plain-text token moves to DPAPI, and the file — as it is now on disk — is copied to
+    /// <c>.bak</c>, the last file that loaded.</item>
+    /// <item>Damaged (empty, cut short, not JSON): moved to <c>.bad</c> (one kept), then <c>.bak</c> is used, then defaults
+    /// with every title hidden; either is saved at once, so a crash right after cannot come back as a clean first start.</item>
+    /// <item>Could not be opened, even after a short wait: the same fall-back, but the file is left where it is and nothing
+    /// is saved over it here.</item>
+    /// <item>From <c>.bak</c>, the refresh token is dropped: it has almost certainly been rotated since, and the server
+    /// answers an old one as a stolen token — by revoking every session of the account.</item>
+    /// </list>
+    /// </remarks>
+    public static ConfigLoad Load(string path)
     {
-        try
+        var read = ReadWaitingForLock(path);
+        switch (read.Status)
         {
-            if (File.Exists(ConfigPath))
+            case JsonFileStatus.Missing:
+                return new ConfigLoad(new AppConfig { FilePath = path }, ConfigOrigin.Created);
+
+            case JsonFileStatus.Read:
             {
-                var config = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(ConfigPath)) ?? new AppConfig();
+                var config = read.Value!;
+                config.FilePath = path;
+                var reset = config.Normalize();
 
                 if (config.LegacyRefreshToken is { } legacy)
                 {
@@ -349,15 +382,174 @@ public sealed class AppConfig
                     config.Save();
                 }
 
-                return config;
+                WriteBackup(path);
+                return new ConfigLoad(config, ConfigOrigin.Loaded, reset);
             }
+
+            case JsonFileStatus.Unreadable:
+                Log.Warning(read.Error, "{File} is damaged — moving it to .bad and falling back", Path.GetFileName(path));
+                try
+                {
+                    File.Move(path, path + ".bad", overwrite: true);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Could not move the damaged {File} aside", Path.GetFileName(path));
+                }
+                return FallBack(path, couldNotOpen: false);
+
+            default:
+                Log.Warning(read.Error, "{File} could not be opened — falling back, leaving it in place", Path.GetFileName(path));
+                return FallBack(path, couldNotOpen: true);
+        }
+    }
+
+    /// <summary>A virus scan or a backup tool can hold the file for a moment at logon.</summary>
+    private static JsonFileRead<AppConfig> ReadWaitingForLock(string path)
+    {
+        var read = JsonFile.TryRead<AppConfig>(path);
+        for (var attempt = 0; attempt < 5 && read.Status == JsonFileStatus.CouldNotOpen; attempt++)
+        {
+            Thread.Sleep(400);
+            read = JsonFile.TryRead<AppConfig>(path);
+        }
+        return read;
+    }
+
+    private static void WriteBackup(string path)
+    {
+        try
+        {
+            JsonFile.WriteBytes(path + ".bak", File.ReadAllBytes(path));
         }
         catch (Exception ex)
         {
-            Log.Warning(ex, "Could not read {ConfigPath} — using defaults", ConfigPath);
+            Log.Warning(ex, "Could not write the config backup");
+        }
+    }
+
+    private static ConfigLoad FallBack(string path, bool couldNotOpen)
+    {
+        var backup = JsonFile.TryRead<AppConfig>(path + ".bak");
+        ConfigLoad load;
+        if (backup.Value is { } config)
+        {
+            config.FilePath = path;
+            var reset = config.Normalize();
+            config.RefreshToken = null;
+            config.LegacyRefreshToken = null;
+            Log.Warning("Config restored from the backup, without its refresh token");
+            load = new ConfigLoad(config, ConfigOrigin.FromBackup, reset, couldNotOpen);
+        }
+        else
+        {
+            Log.Warning(backup.Error, "No usable config backup ({Status}) — defaults, with every title hidden", backup.Status);
+            load = new ConfigLoad(new AppConfig { FilePath = path, HideAllTitlesUntilReviewed = true }, ConfigOrigin.Defaults,
+                CouldNotOpen: couldNotOpen);
         }
 
-        return new AppConfig();
+        if (!couldNotOpen)
+        {
+            try
+            {
+                load.Config.Save();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Could not save the recovered config");
+            }
+        }
+        return load;
+    }
+
+    /// <summary>
+    /// Makes a config read from disk safe to run on: a value this build does not know goes back to its default, a missing
+    /// list to its default, and each number into its <see cref="ConfigLimits"/> range. A privacy rule with a match type this
+    /// build does not know loses that condition, so it hides or ignores more, never less; one left naming nothing turns on
+    /// <see cref="HideAllTitlesUntilReviewed"/>. Returns how many values were unknown or missing; clamped numbers are not
+    /// counted, only logged.
+    /// </summary>
+    internal int Normalize()
+    {
+        var defaults = new AppConfig();
+        var reset = 0;
+
+        if (string.IsNullOrWhiteSpace(ApiBaseUrl)) { ApiBaseUrl = defaults.ApiBaseUrl; reset++; }
+        if (string.IsNullOrWhiteSpace(WebAppUrl)) { WebAppUrl = defaults.WebAppUrl; reset++; }
+        if (CaptureHotkey is null) { CaptureHotkey = defaults.CaptureHotkey; reset++; }
+
+        if (!Enum.IsDefined(StartRampBlocks)) { StartRampBlocks = defaults.StartRampBlocks; reset++; }
+        if (!Enum.IsDefined(PrivateWindowHandling)) { PrivateWindowHandling = defaults.PrivateWindowHandling; reset++; }
+
+        if (TimeChimeChoices is null) { TimeChimeChoices = defaults.TimeChimeChoices; reset++; }
+        else if (TimeChimeChoices.Any(c => c?.Key is null || c.Name is null))
+        {
+            reset++;
+            TimeChimeChoices = TimeChimeChoices.Where(c => c?.Key is not null).Select(c => c with { Name = c.Name ?? "" }).ToList();
+        }
+
+        if (LocalRules is null) { LocalRules = defaults.LocalRules; reset++; }
+        else
+        {
+            var rules = new List<LocalRule>(LocalRules.Count);
+            foreach (var rule in LocalRules)
+            {
+                if (rule is null) { reset++; continue; }
+                reset += NormalizeRule(rule);
+                rules.Add(rule);
+            }
+            LocalRules = rules; // replaced, never mutated: see LocalRules
+        }
+
+        if (!ChimeSettings.IntervalChoices.Contains(TimeChimeMinutes)) TimeChimeMinutes = ChimeSettings.DefaultMinutes;
+        PollIntervalMs = Clamp(PollIntervalMs, ConfigLimits.PollIntervalMs, nameof(PollIntervalMs));
+        IdleThresholdSeconds = Clamp(IdleThresholdSeconds, ConfigLimits.IdleThresholdSeconds, nameof(IdleThresholdSeconds));
+        MaxPassiveIdleMinutes = Clamp(MaxPassiveIdleMinutes, ConfigLimits.MaxPassiveIdleMinutes, nameof(MaxPassiveIdleMinutes));
+        MinBackgroundWindowPercent = Clamp(MinBackgroundWindowPercent, ConfigLimits.MinBackgroundWindowPercent, nameof(MinBackgroundWindowPercent));
+        MaxBackgroundWindowsPerMonitor = Clamp(MaxBackgroundWindowsPerMonitor, ConfigLimits.MaxBackgroundWindowsPerMonitor, nameof(MaxBackgroundWindowsPerMonitor));
+        HyperfocusNudgeMinutes = Clamp(HyperfocusNudgeMinutes, ConfigLimits.HyperfocusNudgeMinutes, nameof(HyperfocusNudgeMinutes));
+        AppHyperfocusNudgeMinutes = Clamp(AppHyperfocusNudgeMinutes, ConfigLimits.AppHyperfocusNudgeMinutes, nameof(AppHyperfocusNudgeMinutes));
+        BreakMinutes = Clamp(BreakMinutes, ConfigLimits.BreakMinutes, nameof(BreakMinutes));
+        BreakTimerMinutes = Clamp(BreakTimerMinutes, ConfigLimits.BreakTimerMinutes, nameof(BreakTimerMinutes));
+        DriftNudgeMinutes = Clamp(DriftNudgeMinutes, ConfigLimits.DriftNudgeMinutes, nameof(DriftNudgeMinutes));
+
+        if (reset > 0) Log.Warning("Config: {Count} unknown or missing values went back to their defaults", reset);
+        return reset;
+    }
+
+    private int NormalizeRule(LocalRule rule)
+    {
+        var reset = 0;
+        var lostCondition = false;
+
+        // Ignore records nothing: the most private reading of an action this build does not know.
+        if (!Enum.IsDefined(rule.Action)) { rule.Action = LocalRuleAction.Ignore; reset++; }
+
+        if (!Enum.IsDefined(rule.ProcessNameMatchType))
+        {
+            rule.ProcessNameMatchType = PatternMatchType.Exact;
+            if (!string.IsNullOrEmpty(rule.ProcessName)) { rule.ProcessName = null; lostCondition = true; }
+            reset++;
+        }
+
+        if (!Enum.IsDefined(rule.WindowTitleMatchType))
+        {
+            rule.WindowTitleMatchType = PatternMatchType.Exact;
+            // "" is "only an empty title" whatever the match type, so it survives.
+            if (!string.IsNullOrEmpty(rule.WindowTitle)) { rule.WindowTitle = null; lostCondition = true; }
+            reset++;
+        }
+
+        // A rule left naming nothing matches nothing (PrivacyFilter.IsUsable); it can't be widened, so hide everything.
+        if (lostCondition && !PrivacyFilter.IsUsable(rule)) HideAllTitlesUntilReviewed = true;
+        return reset;
+    }
+
+    private static int Clamp(int value, IntRange range, string name)
+    {
+        var clamped = range.Clamp(value);
+        if (clamped != value) Log.Information("Config: {Setting} {Value} is outside {Min}–{Max}, using {Clamped}", name, value, range.Min, range.Max, clamped);
+        return clamped;
     }
 
     public void Save()

@@ -111,8 +111,8 @@ public sealed record NudgeSettings(
         config.HyperfocusNudgesEnabled,
         TimeSpan.FromMinutes(Math.Max(0, config.HyperfocusNudgeMinutes)),
         TimeSpan.FromMinutes(Math.Max(0, config.AppHyperfocusNudgeMinutes)),
-        TimeSpan.FromMinutes(Math.Clamp(config.BreakMinutes, 1, 120)),
-        TimeSpan.FromMinutes(Math.Clamp(config.BreakTimerMinutes, 1, 240)));
+        TimeSpan.FromMinutes(ConfigLimits.BreakMinutes.Clamp(config.BreakMinutes)),
+        TimeSpan.FromMinutes(ConfigLimits.BreakTimerMinutes.Clamp(config.BreakTimerMinutes)));
 }
 
 /// <summary>

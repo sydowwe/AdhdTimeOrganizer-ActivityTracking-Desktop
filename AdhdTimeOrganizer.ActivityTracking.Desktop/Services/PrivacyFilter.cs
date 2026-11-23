@@ -31,7 +31,8 @@ public sealed class PrivacyFilter
     /// <summary>The title to record, or null to record nothing.</summary>
     public string? Apply(AppConfig config, string processName, string? productName, string? rawTitle, string normalizedTitle)
     {
-        var hideTitle = config.HidePrivateWindows && IsPrivateWindow(rawTitle);
+        // The user's rules could not all be recovered: every title is hidden until they have looked at them.
+        var hideTitle = config.HideAllTitlesUntilReviewed || (config.HidePrivateWindows && IsPrivateWindow(rawTitle));
 
         foreach (var rule in config.LocalRules)
         {

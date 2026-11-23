@@ -78,6 +78,8 @@ public static class DiagnosticsReport
         text.AppendLine($"Evening review: {OnOff(config.UnmappedReviewEnabled)}");
         text.AppendLine($"Pause reminders: {OnOff(config.PauseRemindersEnabled)}");
         text.AppendLine($"Private windows: {OnOff(config.HidePrivateWindows)}, handled as {config.PrivateWindowHandling}");
+        if (config.HideAllTitlesUntilReviewed)
+            text.AppendLine("Every title hidden: the rules could not be recovered and Privacy has not been saved since");
         text.AppendLine($"Rules: {config.LocalRules.Count} local, {(serverRules?.ToString() ?? "not downloaded yet")} from the server");
         text.AppendLine();
 
