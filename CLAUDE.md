@@ -25,6 +25,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `scripts/release-tag.ps1`, `scripts/release.ps1`, `.github/workflows/release.yml` | Bump `<Version>`, commit and tag; publish self-contained, check the files, `vpk pack` with release notes (and upload on a `v*` tag; a manual run is a dry run) — see "Releasing" |
 | `.github/workflows/ci.yml` | Tests and the Release build on every push to `main` and every pull request, read-only; `release.yml` runs it first |
 | `Services/ActivityTrackerService.cs` | Poll loop (foreground changes as they happen, plus a poll for the rest of the desktop), send loop (drains the outbox), lock/suspend/session-end handling |
+| `Services/PollSchedule.cs` | **Pure** when the next poll is due; taking one moves the schedule on *before* the poll runs, so a poll that throws waits its interval instead of spinning |
 | `Services/ActivityRecorder.cs` | **Pure** minute accounting: measured elapsed time, split at minute boundaries, gap cap, switch counts, the hold-back that idle backdating retracts from |
 | `Services/ScreenState.cs` | **Pure** "what is on screen now": which observations a span is credited to, what counts as a switch, when idleness starts a backdate |
 | `Services/WindowLimits.cs` | The server's validation rules, applied before a window is queued |
