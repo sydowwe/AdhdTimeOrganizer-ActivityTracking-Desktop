@@ -77,6 +77,8 @@ public sealed class ActivityTrackerService : IDisposable
     private readonly CancellationTokenSource _lifetimeCts = new();
     private readonly SemaphoreSlim _sendSignal = new(0, 1);
     private readonly Task _sendTask;
+    private int _sendPassesStarted;
+    private int _sendPassesFinished;
     private CancellationTokenSource? _pollCts;
     private Task? _pollTask;
 
@@ -247,6 +249,16 @@ public sealed class ActivityTrackerService : IDisposable
         }
         catch (SemaphoreFullException) { /* already signalled */ }
     }
+
+    /// <summary>
+    /// Send-loop passes begun and run to the end (each: captures, outbox, keep-alive, coverage, review). For tests that
+    /// assert something did <i>not</i> happen: read <see cref="SendPassesStarted"/>, call <see cref="RequestSend"/>, and
+    /// wait for <see cref="SendPassesFinished"/> to pass the number read — a whole pass has then run since the request.
+    /// </summary>
+    internal int SendPassesStarted => Volatile.Read(ref _sendPassesStarted);
+
+    /// <inheritdoc cref="SendPassesStarted"/>
+    internal int SendPassesFinished => Volatile.Read(ref _sendPassesFinished);
 
     /// <summary>
     /// Parks a thought from the capture box: on disk first, then the send loop is woken to deliver it. False when there was
@@ -643,6 +655,8 @@ public sealed class ActivityTrackerService : IDisposable
     {
         while (!ct.IsCancellationRequested)
         {
+            Interlocked.Increment(ref _sendPassesStarted);
+
             // First: a thought is a few bytes, and the user just parked it; it should not wait behind an offline afternoon.
             try
             {
@@ -693,6 +707,8 @@ public sealed class ActivityTrackerService : IDisposable
             {
                 _log.Error(ex, "Evening review failed");
             }
+
+            Interlocked.Increment(ref _sendPassesFinished);
 
             try { await _sendSignal.WaitAsync(SendInterval, ct); }
             catch (OperationCanceledException) { break; }

@@ -75,6 +75,10 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   `HttpMessageHandler`; build `NudgeService` through its internal constructor with a fake `INudgeNotifier`, a
   browser stand-in and a temp drift-state path; put `OutboxStore` and `TodayTotal` in a temp folder.
   `NudgeServiceTests` and `SendLoopTests` show the shape.
+- **Wait on something observable, never a fixed sleep.** To assert the send loop did *not* do something, wait for a whole
+  pass since the request (`SendLoopTests.SendAndWaitForAWholePass`, on `ActivityTrackerService.SendPassesStarted` /
+  `SendPassesFinished`). Pass `TestContext.Current.CancellationToken` to anything that takes a token (xUnit1051 is a
+  warning, and warnings fail CI).
 - `-BuildOnly` also builds Release: `AppConfig.ApiBaseUrl` defaults to `localhost` under `#if DEBUG`
   and to production otherwise, so Release is a different compile.
 - The build is architecture-specific (the Windows App SDK is self-contained; see below): the exe lands in
@@ -494,7 +498,9 @@ uploads nothing (`release.ps1` refuses `-Upload` off a tag in CI), and keeps the
 for 3 days. The button appears once the workflow with `workflow_dispatch` is on GitHub's `main`.
 
 **Every push to `main` and every pull request** runs `ci.yml` alone: the same tests and Release build, read-only, nothing
-packed. A red run there is a release that would not go out.
+packed. A red run there is a release that would not go out. **A warning fails CI** (`TreatWarningsAsErrors`, set in the
+CI job only, so a local build just shows it); NuGet's vulnerability-audit warnings NU1901–NU1904 are the exception, so a
+fresh advisory doesn't block a release that has no fix to ship.
 
 **The same tag builds the same dependencies.** Package versions are exact (no `4.*`), and each project has a
 `packages.lock.json` pinning every package, transitive ones included, by version and content hash

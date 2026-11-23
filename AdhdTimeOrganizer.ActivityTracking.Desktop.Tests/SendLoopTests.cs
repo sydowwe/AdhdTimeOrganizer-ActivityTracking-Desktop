@@ -136,7 +136,7 @@ public sealed class SendLoopTests : IDisposable
 
         using var tracker = Start();
         await WaitFor(tracker, s => s.PendingWindows == 0);
-        await Task.Delay(500);
+        await SendAndWaitForAWholePass(tracker);
 
         Assert.Equal(0, _server.CoverageRequests);
     }
@@ -153,8 +153,7 @@ public sealed class SendLoopTests : IDisposable
         using var tracker = Start();
         await WaitUntil(() => _server.HeartbeatCount > 0);
 
-        tracker.RequestSend();
-        await Task.Delay(500);
+        await SendAndWaitForAWholePass(tracker);
 
         Assert.Contains("\"entries\":[]", Assert.Single(_server.HeartbeatsSoFar()));
         var status = tracker.GetStatus();
@@ -175,8 +174,7 @@ public sealed class SendLoopTests : IDisposable
         using var tracker = Start();
         await WaitUntil(() => _server.HeartbeatCount > 0);
 
-        tracker.RequestSend();
-        await Task.Delay(500);
+        await SendAndWaitForAWholePass(tracker);
 
         Assert.Single(_server.HeartbeatsSoFar());
         var status = tracker.GetStatus();
@@ -188,18 +186,12 @@ public sealed class SendLoopTests : IDisposable
     public async Task NoKeepAlive_WhileRecording_OrSignedOut()
     {
         using (var recording = Start())
-        {
-            recording.RequestSend();
-            await Task.Delay(500);
-        }
+            await SendAndWaitForAWholePass(recording);
 
         _config.PausedUntilUtc = DateTime.MaxValue;
         _config.RefreshToken = null;
         using (var signedOut = Start())
-        {
-            signedOut.RequestSend();
-            await Task.Delay(500);
-        }
+            await SendAndWaitForAWholePass(signedOut);
 
         Assert.Equal(0, _server.HeartbeatCount);
     }
@@ -214,8 +206,7 @@ public sealed class SendLoopTests : IDisposable
         using var tracker = Start();
         await WaitFor(tracker, s => s.PendingWindows == 0);
 
-        tracker.RequestSend();
-        await Task.Delay(500);
+        await SendAndWaitForAWholePass(tracker);
 
         Assert.Contains("\"code\"", Assert.Single(_server.HeartbeatsSoFar()));
     }
@@ -310,8 +301,7 @@ public sealed class SendLoopTests : IDisposable
         using (var tracker = Start(captures))
         {
             tracker.Capture("Email the landlord");
-            tracker.RequestSend();
-            await Task.Delay(300);
+            await SendAndWaitForAWholePass(tracker);
         }
 
         Assert.Empty(_server.CapturesSoFar());
@@ -352,8 +342,20 @@ public sealed class SendLoopTests : IDisposable
         while (!condition())
         {
             Assert.True(DateTime.UtcNow < deadline, "the send loop did not get there in time");
-            await Task.Delay(50);
+            await Task.Delay(50, TestContext.Current.CancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Wakes the send loop and waits until a whole pass — captures, outbox, keep-alive, coverage, review — has run since:
+    /// what a test needs before asserting that something did <i>not</i> happen, instead of sleeping and hoping. The count
+    /// is read before the request, so a pass already under way when it comes does not count; the one after it does.
+    /// </summary>
+    private static async Task SendAndWaitForAWholePass(ActivityTrackerService tracker)
+    {
+        var started = tracker.SendPassesStarted;
+        tracker.RequestSend();
+        await WaitUntil(() => tracker.SendPassesFinished > started);
     }
 
     public void Dispose()

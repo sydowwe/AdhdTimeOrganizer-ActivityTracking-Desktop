@@ -18,6 +18,12 @@ permissions:
 jobs:
   test:
     runs-on: windows-latest
+    # A warning fails CI; a local build still only shows it. MSBuild reads these environment variables as properties, so
+    # every build in this job is covered. NuGet's vulnerability-audit warnings (NU1901-NU1904) stay warnings: an advisory
+    # published tomorrow must not block a release that has no fix to ship.
+    env:
+      TreatWarningsAsErrors: 'true'
+      WarningsNotAsErrors: 'NU1901;NU1902;NU1903;NU1904'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
