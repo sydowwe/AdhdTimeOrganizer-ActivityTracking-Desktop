@@ -29,7 +29,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/WindowLimits.cs` | The server's validation rules, applied before a window is queued |
 | `Services/WindowTitleNormalizer.cs` | Strips counters, unsaved markers and app-name suffixes from titles |
 | `Services/OutboxStore.cs` | Finished windows as JSON files under `%LOCALAPPDATA%\…Desktop\outbox` until sent; a damaged one as `.json.bad` |
-| `Services/ApiClient.cs` | Login, 2FA, token refresh, heartbeat (and its answer), the server-rules and mapping-coverage downloads, the start ramp's Start now and Not this one; `Classify` decides retry vs. drop per status code |
+| `Services/ApiClient.cs` | Login, 2FA, token refresh, sign-out (and its revoke on the server), heartbeat (and its answer), the server-rules and mapping-coverage downloads, the start ramp's Start now and Not this one; `Classify` decides retry vs. drop per status code |
 | `Services/RefreshPolicy.cs` | **Pure** refresh decisions: save / sign out / keep, whether an attempt left the token possibly rotated, how long to hold it back |
 | `Services/TodayTotal.cs` | Today's recorded foreground time on this PC, for the tray glance; saved to `today.json` |
 | `Services/PrivacyFilter.cs` | Recording-time privacy: local rules and private browser windows → keep, hide the title, or drop |
@@ -227,6 +227,12 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 - A session ends only when the server refuses the refresh token (400/401/403). Being offline, a throttle,
   a 409 or a 5xx keeps it. While signed out, tracking continues into the outbox. The decisions are the
   **pure** `Services/RefreshPolicy.cs`; `ApiClient` only sends and keeps the clock.
+- **Signing out revokes the token on the server, best-effort** (review M5). `ApiClient.SignOut` clears the session at once
+  and then, in the background, posts the refresh token to `POST /api/auth/tracker/logout` with the access token held. A 401
+  (the access token expired through a pause) or no access token yet gets one refresh — that pair is used for the revoke
+  only, never saved — and one more logout. 10 s for all of it, no retry; a 404 is a server from before the route. A changed
+  server URL in Settings revokes against the old URL. When the server itself refused the token nothing is sent
+  (`EndSession`). The tray never waits for it.
 - **A refresh whose answer may have been lost is not sent again for 6 s** (`RefreshPolicy.ReplayDelay`). That
   covers a refresh that failed after it was sent, a timeout, a 409, a 5xx or a 2xx without both tokens; a
   request that never left (DNS, connect, TLS) can go again at once. The server rotates on every refresh. For a

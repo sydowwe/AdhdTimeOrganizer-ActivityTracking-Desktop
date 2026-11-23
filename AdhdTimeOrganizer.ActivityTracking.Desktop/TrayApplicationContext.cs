@@ -645,10 +645,10 @@ public sealed class TrayApplicationContext : ApplicationContext
             _tracker.Start();
         }
 
-        // A session belongs to the server that issued it.
+        // A session belongs to the server that issued it — and is revoked there, not on the new one.
         if (!string.Equals(previousUrl, _config.ApiBaseUrl, StringComparison.OrdinalIgnoreCase))
         {
-            _apiClient.SignOut();
+            _ = _apiClient.SignOut(previousUrl);
             ShowLogin();
         }
 
@@ -689,8 +689,9 @@ public sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        // Signing out keeps tracking into the outbox; it is sent after the next sign-in.
-        _apiClient.SignOut();
+        // Signing out keeps tracking into the outbox; it is sent after the next sign-in. The server's revoke runs on its
+        // own, not waited for.
+        _ = _apiClient.SignOut();
         RefreshStatus();
         ShowLogin();
     }

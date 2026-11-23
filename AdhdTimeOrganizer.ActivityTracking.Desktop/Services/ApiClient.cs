@@ -78,6 +78,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     private const string TrackerStartBlockPath = "/api/tracker/desktop/start-block";
     private const string TrackerSkipBlockPath = "/api/tracker/desktop/skip-block";
     private const string TrackerBreakPath = "/api/tracker/desktop/break";
+    private const string LogoutPath = "/api/auth/tracker/logout";
 
     /// <summary>Shared with the phone, so not under <c>desktop/</c>. Servers from 2026-11-08; an older one answers 404.</summary>
     private const string CapturePath = "/api/tracker/capture";
@@ -226,13 +227,110 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     /// <summary>Raised after every sign-out, including the server refusing the refresh token. Any thread.</summary>
     public event Action? SignedOut;
 
-    public void SignOut()
+    /// <summary>
+    /// The user signs out: the session is cleared here at once, and the refresh token is revoked on the server in the
+    /// background (<see cref="RevokeAsync"/>), best-effort. <paramref name="serverUrl"/> is the server that issued the
+    /// session when it is no longer the configured one — a changed URL in Settings.
+    /// </summary>
+    /// <returns>The revoke, which never throws; the tray does not wait for it, tests do.</returns>
+    public Task SignOut(string? serverUrl = null)
+    {
+        var refreshToken = config.RefreshToken;
+        var accessToken = _accessToken;
+        var baseUrl = serverUrl ?? config.ApiBaseUrl;
+
+        EndSession();
+
+        return string.IsNullOrEmpty(refreshToken)
+            ? Task.CompletedTask
+            : Task.Run(() => RevokeAsync(baseUrl, accessToken, refreshToken));
+    }
+
+    /// <summary>Forgets the session locally. Alone when the server itself refused the token: there is nothing left to revoke.</summary>
+    private void EndSession()
     {
         _accessToken = null;
         config.RefreshToken = null;
         config.Save();
         SignedOut?.Invoke();
     }
+
+    /// <summary>How long a sign-out's revoke may take, the refresh it may need included. It is never retried.</summary>
+    internal static readonly TimeSpan RevokeTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// <c>POST /api/auth/tracker/logout</c> with the refresh token, against <paramref name="baseUrl"/>. The route wants a live
+    /// access token, and one held through a long pause has expired (they live 15 min): then the refresh token is exchanged
+    /// once — the new pair is used for the revoke only, never saved — and the revoke goes again. Nothing is retried, and the
+    /// local sign-out stands whatever the answer.
+    /// </summary>
+    private async Task RevokeAsync(string baseUrl, string? accessToken, string refreshToken)
+    {
+        using var timeout = new CancellationTokenSource(RevokeTimeout);
+        try
+        {
+            var step = accessToken is null
+                ? RevokeStep.NeedsFreshToken
+                : await PostLogoutAsync(baseUrl, accessToken, refreshToken, timeout.Token);
+
+            if (step == RevokeStep.NeedsFreshToken)
+            {
+                using var response = await _http.PostAsJsonAsync(
+                    new Uri(new Uri(baseUrl), "/api/auth/tracker/refresh"), new { refreshToken }, timeout.Token);
+                var tokens = response.IsSuccessStatusCode ? await response.Content.ReadFromJsonAsync<TokenResponse>(timeout.Token) : null;
+                if (tokens is not { AccessToken.Length: > 0, RefreshToken.Length: > 0 })
+                {
+                    // 400/401/403: the token was dead already, which is what the revoke was for.
+                    _log.Information("Sign-out: the refresh before the revoke answered {StatusCode} — not revoked", (int)response.StatusCode);
+                    return;
+                }
+                step = await PostLogoutAsync(baseUrl, tokens.AccessToken, tokens.RefreshToken, timeout.Token);
+            }
+
+            switch (step)
+            {
+                case RevokeStep.Revoked:
+                    _log.Information("Sign-out: the refresh token was revoked on the server");
+                    break;
+                case RevokeStep.NotSupported:
+                    _log.Information("Sign-out: the server predates the logout route — signed out locally only");
+                    break;
+                case RevokeStep.NeedsFreshToken:
+                    _log.Warning("Sign-out: the revoke refused a fresh access token too — signed out locally only");
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Sign-out: the revoke on the server failed — signed out locally only");
+        }
+    }
+
+    private async Task<RevokeStep> PostLogoutAsync(string baseUrl, string accessToken, string refreshToken, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(baseUrl), LogoutPath))
+        {
+            Content = JsonContent.Create(new { refreshToken })
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await _http.SendAsync(request, ct);
+
+        var step = ClassifyLogout(response.StatusCode);
+        if (step == RevokeStep.Failed)
+            _log.Warning("Sign-out: the revoke answered {StatusCode} — signed out locally only", (int)response.StatusCode);
+        return step;
+    }
+
+    internal enum RevokeStep { Revoked, NotSupported, NeedsFreshToken, Failed }
+
+    /// <summary>What the logout route's answer means: a 401 is an expired access token, a 404 a server from before the route.</summary>
+    internal static RevokeStep ClassifyLogout(HttpStatusCode statusCode) => (int)statusCode switch
+    {
+        >= 200 and < 300 => RevokeStep.Revoked,
+        401 => RevokeStep.NeedsFreshToken,
+        404 => RevokeStep.NotSupported,
+        _ => RevokeStep.Failed
+    };
 
     /// <summary>
     /// Send an aggregated activity window to the backend. When stored, the outcome carries what the server resolved
@@ -634,7 +732,7 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
                     return RefreshOutcome.Refreshed;
                 case RefreshDecision.SignOut:
                     _log.Warning("Refresh token refused ({StatusCode}) — session ended", response.StatusCode);
-                    SignOut();
+                    EndSession(); // nothing to revoke: the server has just refused it
                     return RefreshOutcome.Rejected;
                 default:
                     _log.Warning("Token refresh answered {StatusCode} — keeping the session, will retry", response.StatusCode);
