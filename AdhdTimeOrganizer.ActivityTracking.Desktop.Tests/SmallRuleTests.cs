@@ -22,6 +22,41 @@ public class SendResultClassificationTests
     [InlineData(HttpStatusCode.RequestEntityTooLarge, SendResult.Rejected)]
     public void Classify(HttpStatusCode status, SendResult expected) =>
         Assert.Equal(expected, ApiClient.Classify(status));
+
+    /// <summary>Review M7: a 5xx's database detail can quote a window title, and the log tail goes into "Copy diagnostics".</summary>
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.BadGateway)]
+    [InlineData(HttpStatusCode.Conflict)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public void TheBodyOfAnythingButARefusal_IsNeverLogged(HttpStatusCode status) =>
+        Assert.Null(ApiClient.BodyWorthLogging(ApiClient.Classify(status), status,
+            "duplicate key value violates unique constraint: (chrome, My secret document - Google Docs)"));
+
+    [Fact]
+    public void ARefusalsBody_IsLogged_CutToItsLimit()
+    {
+        Assert.Equal("""{"errors":{"entries[0].processName":["must not be empty"]}}""",
+            ApiClient.BodyWorthLogging(SendResult.Rejected, HttpStatusCode.BadRequest,
+                """{"errors":{"entries[0].processName":["must not be empty"]}}"""));
+
+        var page = "<html>" + new string('x', 5000) + "</html>";
+        var logged = ApiClient.BodyWorthLogging(SendResult.Rejected, HttpStatusCode.BadRequest, page)!;
+        Assert.Equal(ApiClient.MaxLoggedBodyLength + 1, logged.Length);
+        Assert.EndsWith("…", logged);
+
+        Assert.Null(ApiClient.BodyWorthLogging(SendResult.Rejected, HttpStatusCode.BadRequest, "  "));
+        Assert.Null(ApiClient.BodyWorthLogging(SendResult.Sent, HttpStatusCode.OK, "{}"));
+    }
+
+    [Fact]
+    public void TheCut_NeverSplitsASurrogatePair()
+    {
+        var body = new string('x', ApiClient.MaxLoggedBodyLength - 1) + "😀" + "tail";
+        var logged = ApiClient.BodyWorthLogging(SendResult.Rejected, HttpStatusCode.BadRequest, body)!;
+        Assert.False(char.IsHighSurrogate(logged[^2]));
+    }
 }
 
 public class PassivePresenceTests

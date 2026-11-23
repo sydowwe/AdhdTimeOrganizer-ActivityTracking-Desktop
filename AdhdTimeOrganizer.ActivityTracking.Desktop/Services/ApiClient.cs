@@ -351,8 +351,12 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
             var body = await response.Content.ReadAsStringAsync(ct);
             if (result != SendResult.Sent)
             {
-                _log.Warning("Window {WindowStart} answered {StatusCode} ({Result}): {Body}",
-                    window.WindowStart, (int)response.StatusCode, result, body);
+                if (BodyWorthLogging(result, response.StatusCode, body) is { } excerpt)
+                    _log.Warning("Window {WindowStart} answered {StatusCode} ({Result}): {Body}",
+                        window.WindowStart, (int)response.StatusCode, result, excerpt);
+                else
+                    _log.Warning("Window {WindowStart} answered {StatusCode} ({Result})",
+                        window.WindowStart, (int)response.StatusCode, result);
                 return new HeartbeatOutcome(result);
             }
             return new HeartbeatOutcome(result, ReadHeartbeatResponse(body));
@@ -386,6 +390,24 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
         {
             return null;
         }
+    }
+
+    /// <summary>The most of a refused heartbeat's answer that goes into the log.</summary>
+    internal const int MaxLoggedBodyLength = 300;
+
+    /// <summary>
+    /// The part of a heartbeat's answer worth logging (review M7): only a refusal's — the validator's message is what says
+    /// why the minute was lost — cut to <see cref="MaxLoggedBodyLength"/>; never a 5xx's, whose database detail can quote a
+    /// window title, and never a retry's. The log's tail goes into "Copy diagnostics".
+    /// </summary>
+    internal static string? BodyWorthLogging(SendResult result, HttpStatusCode statusCode, string? body)
+    {
+        if (result != SendResult.Rejected || (int)statusCode >= 500 || string.IsNullOrWhiteSpace(body)) return null;
+        if (body.Length <= MaxLoggedBodyLength) return body;
+
+        var cut = MaxLoggedBodyLength;
+        if (char.IsHighSurrogate(body[cut - 1])) cut--;
+        return body[..cut] + "…";
     }
 
     /// <summary>

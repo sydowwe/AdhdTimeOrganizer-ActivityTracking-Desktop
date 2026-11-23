@@ -500,7 +500,9 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 
 ### Privacy and logging
 - No email, name or other personal data in logs. Log files outlive an account deletion. Ids, process
-  names and status codes are fine. Window titles and paths are personal; don't log them either.
+  names and status codes are fine. Window titles and paths are personal; don't log them either. A server's answer body
+  can quote them: the heartbeat logs only a refusal's, cut to 300 characters, never a 5xx's (`ApiClient.BodyWorthLogging`);
+  the other routes log none.
 - "Copy diagnostics" (tray) goes into bug reports, so `DiagnosticsReport` reads `AppConfig` field by field, never
   serializes it: no token, rules as counts, the poll error as "see the log", and the log tail has the profile folder and
   e-mail-looking text masked. A new config field stays out of the report until someone decides it is safe;
