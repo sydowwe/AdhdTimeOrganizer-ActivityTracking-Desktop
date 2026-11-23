@@ -67,6 +67,22 @@ public sealed class NudgeServiceTests : IDisposable
         Assert.True(saved.HyperfocusNudgesEnabled);
     }
 
+    /// <summary>
+    /// Review L9: the break timer fires on a thread-pool thread, where an exception ends the process with nothing flushed.
+    /// A null list in a hand-edited config makes the chime settings throw; the timer's tick logs it and carries on.
+    /// </summary>
+    [Fact]
+    public void TheBreakTimer_CannotThrow()
+    {
+        var (service, _, _) = Create();
+        _config.TimeChimeChoices = null!;
+        Assert.ThrowsAny<Exception>(() => ChimeSettings.From(_config)); // the trigger is real
+
+        var thrown = Record.Exception(() => service.OnBreakTimer(DateTime.UtcNow));
+
+        Assert.Null(thrown);
+    }
+
     [Fact]
     public void TurnOff_OnAHyperfocusToast_LeavesDriftNudgesOn()
     {

@@ -157,8 +157,24 @@ public sealed class NudgeService : IDisposable
         _rampStatePath = Path.Combine(Path.GetDirectoryName(driftStatePath)!, StartRampStateFileName);
         if (LoadState<DriftState>(_driftStatePath, "drift nudge") is { } drift) _drift.Restore(drift);
         if (LoadState<StartRampState>(_rampStatePath, "start ramp") is { } ramp) _ramp.Restore(ramp);
-        _breakTimer = new System.Threading.Timer(_ => Evaluate(DateTime.UtcNow));
+        _breakTimer = new System.Threading.Timer(_ => OnBreakTimer(DateTime.UtcNow));
         _notifier = createNotifier(OnActivated);
+    }
+
+    /// <summary>
+    /// The break timer ran out. On a thread-pool thread, where an exception ends the process with nothing flushed — so
+    /// guarded like every other way into <see cref="Evaluate"/> (review L9).
+    /// </summary>
+    internal void OnBreakTimer(DateTime nowUtc)
+    {
+        try
+        {
+            Evaluate(nowUtc);
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Break timer evaluation failed");
+        }
     }
 
     /// <summary>
