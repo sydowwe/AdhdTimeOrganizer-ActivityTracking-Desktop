@@ -1,0 +1,34 @@
+# Builds and tests every push to main and every pull request. release.yml runs this same job before it packs, so a
+# release goes out behind exactly the gate main does. Read-only: nothing here publishes or writes to the repo.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # Every test, so a new class is covered by default, minus the NativeSmokeTests cases that need a signed-in desktop
+      # (a monitor, an audio device, hotkeys and hooks), which carry the Needs=Desktop trait. The wire and vector tests
+      # skip their server-copy check here: the server repo is not checked out beside this one.
+      - name: Test
+        shell: pwsh
+        run: ./scripts/test.ps1 -NotTrait 'Needs=Desktop'
+
+      # Release compiles the other ApiBaseUrl branch in AppConfig.
+      - name: Release build
+        shell: pwsh
+        run: ./scripts/test.ps1 -BuildOnly

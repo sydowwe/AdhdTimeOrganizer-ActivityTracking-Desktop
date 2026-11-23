@@ -22,6 +22,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/AppVersion.cs` | The csproj's `<Version>` and the `X-Client-Version: desktop/<version>` header `ApiClient` puts on every request |
 | `Services/UpdatePolicy.cs`, `Services/UpdateService.cs` | **Pure** update decisions (when to look, the tray's version line and restart item) and the Velopack side: check GitHub Releases, download, hand a waiting release to the updater |
 | `scripts/release-tag.ps1`, `scripts/release.ps1`, `.github/workflows/release.yml` | Bump `<Version>`, commit and tag; publish self-contained, check the files, `vpk pack` with release notes (and upload on a `v*` tag; a manual run is a dry run) — see "Releasing" |
+| `.github/workflows/ci.yml` | Tests and the Release build on every push to `main` and every pull request, read-only; `release.yml` runs it first |
 | `Services/ActivityTrackerService.cs` | Poll loop (foreground changes as they happen, plus a poll for the rest of the desktop), send loop (drains the outbox), lock/suspend/session-end handling |
 | `Services/ActivityRecorder.cs` | **Pure** minute accounting: measured elapsed time, split at minute boundaries, gap cap, switch counts, the hold-back that idle backdating retracts from |
 | `Services/ScreenState.cs` | **Pure** "what is on screen now": which observations a span is credited to, what counts as a switch, when idleness starts a backdate |
@@ -477,9 +478,10 @@ updates from this repo's **GitHub Releases** (public, so no token ships in the a
    `main` it runs the full test suite, raises `<Version>` in the app's csproj, commits `release: <version>` and makes the
    annotated tag `v<version>`. It refuses anything but plain `x.y.z` higher than the current version (Velopack only offers a
    higher one; the server parses the header) and a tag that already exists here or on origin. It pushes nothing.
-3. `git push origin main`, then `git push origin v<version>`. The tag push runs `.github/workflows/release.yml`: every
-   test but the `NativeSmokeTests` cases that need a signed-in desktop (`-NotTrait 'Needs=Desktop'`), then `scripts/release.ps1 -Upload` with the workflow's own `GITHUB_TOKEN`, which refuses a tag that disagrees with
-   the csproj. The GitHub release's text is the commit subjects since the previous `v*` tag (the `release:` commit left out).
+3. `git push origin main`, then `git push origin v<version>`. The tag push runs `.github/workflows/release.yml`: first the
+   CI job (`ci.yml`: every test but the `NativeSmokeTests` cases that need a signed-in desktop, `-NotTrait 'Needs=Desktop'`,
+   and the Release build), then, only if it passes, `scripts/release.ps1 -Upload` in a job of its own — the only one
+   holding `contents: write` — with the workflow's own `GITHUB_TOKEN`, which refuses a tag that disagrees with the csproj. The GitHub release's text is the commit subjects since the previous `v*` tag (the `release:` commit left out).
 4. Installed trackers find it within 6 h (`UpdatePolicy.CheckEvery`), or 2 min after their next start, download it quietly,
    and show "Restart to update" in the tray; otherwise it applies at the next start.
 5. To make the server's tracker-silence notification say "out of date" for older builds, set the server's
@@ -489,6 +491,9 @@ updates from this repo's **GitHub Releases** (public, so no token ships in the a
 **Trying the pipeline without publishing:** Actions → Release → Run workflow (on `main`). It runs the same tests and pack,
 uploads nothing (`release.ps1` refuses `-Upload` off a tag in CI), and keeps the packages as the `release-dry-run` artifact
 for 3 days. The button appears once the workflow with `workflow_dispatch` is on GitHub's `main`.
+
+**Every push to `main` and every pull request** runs `ci.yml` alone: the same tests and Release build, read-only, nothing
+packed. A red run there is a release that would not go out.
 
 Locally: `dotnet tool restore` (vpk, pinned to the Velopack package's version in `.config/dotnet-tools.json`), then
 `./scripts/release.ps1`. Output goes to `artifacts-release/` (gitignored). **Never commit a signing certificate, its password

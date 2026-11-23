@@ -11,8 +11,9 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# Read-only by default; only the pack job below may write (it creates the GitHub release).
 permissions:
-  contents: write
+  contents: read
 
 # Two releases never upload at once: the second one's delta is built against the first.
 concurrency:
@@ -20,8 +21,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The CI job, unchanged (ci.yml): nothing is packed unless it passes.
+  test:
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: test
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       # The whole history and its tags: the release notes are the commits since the previous v* tag.
       - uses: actions/checkout@v4
@@ -34,13 +42,6 @@ jobs:
 
       - name: Restore vpk
         run: dotnet tool restore
-
-      # Every test, so a new class is covered by default, minus the NativeSmokeTests cases that need a signed-in desktop
-      # (a monitor, an audio device, hotkeys and hooks), which carry the Needs=Desktop trait. The wire and vector tests
-      # skip their server-copy check here: the server repo is not checked out beside this one.
-      - name: Test
-        shell: pwsh
-        run: ./scripts/test.ps1 -NotTrait 'Needs=Desktop'
 
       - name: Pack and upload
         if: github.ref_type == 'tag'
