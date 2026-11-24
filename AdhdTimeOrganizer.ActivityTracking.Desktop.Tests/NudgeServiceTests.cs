@@ -32,6 +32,7 @@ public sealed class NudgeServiceTests : IDisposable
     private readonly ConcurrentQueue<long> _startedBlocks = new(); // filled from the thread pool
     private readonly ConcurrentQueue<long> _skippedBlocks = new(); // filled from the thread pool
     private readonly List<BreakReport> _breakReports = [];
+    private readonly List<AwayAnswered> _awayAnswers = [];
     private int _signIns;
     private int _resumes;
     private int _captureBoxes;
@@ -656,7 +657,74 @@ public sealed class NudgeServiceTests : IDisposable
         Assert.DoesNotContain(notifier.Shown, n => n.Kind == NudgeKind.TimeChime);
     }
 
+    /// <summary>
+    /// Prompt 23 end to end: the poll loop's polls and its "away from" instant reach the policy, the return shows the question
+    /// with the chosen answer, and pressing it hands the absence and the activity to the reporter.
+    /// </summary>
+    [Fact]
+    public void AnAbsence_IsAskedAboutOnReturn_AndTheAnswerIsReported()
+    {
+        var (service, notifier, _) = Create();
+        _config.AwayAnswers = [new AwayChoice(21, "Rest")];
+        var left = DateTime.UtcNow.AddHours(-1);
+
+        AwayFor(service, left, minutes: 47);
+
+        var question = Assert.Single(notifier.Shown);
+        Assert.Equal(NudgeKind.AwayReturn, question.Kind);
+        Assert.Equal((left, left.AddMinutes(47)), (question.Away!.FromUtc, question.Away.ToUtc));
+        Assert.Equal([new AwayAnswer(21, "Rest", false)], question.Away.Answers);
+
+        service.OnActivated(new NudgeActivation(NudgeKind.AwayReturn, question.Id, NudgeResponse.AwayAnswer, 0));
+
+        Assert.Equal([new AwayAnswered(left, left.AddMinutes(47), 21)], _awayAnswers);
+    }
+
+    /// <summary>"Something else" opens the web app's manual log with the absence filled in, and sends nothing.</summary>
+    [Fact]
+    public void SomethingElse_OpensTheManualLog_PreFilled()
+    {
+        var (service, notifier, opened) = Create();
+        var left = new DateTime(DateTime.UtcNow.AddHours(-1).Ticks / TimeSpan.TicksPerSecond * TimeSpan.TicksPerSecond, DateTimeKind.Utc);
+
+        AwayFor(service, left, minutes: 30);
+        service.OnActivated(new NudgeActivation(NudgeKind.AwayReturn, Assert.Single(notifier.Shown).Id, NudgeResponse.SomethingElse));
+
+        var uri = Assert.Single(opened);
+        Assert.Equal("https://app.test" + NudgeService.ManualLogPath(left, left.AddMinutes(30)), uri.ToString());
+        Assert.Contains($"start={left:yyyy-MM-dd'T'HH:mm:ss'Z'}", uri.Query);
+        Assert.Empty(_awayAnswers);
+    }
+
+    /// <summary>The tray's pause status reaches the policy: an absence a pause fell into is not asked about.</summary>
+    [Fact]
+    public void AnAbsenceWithAPauseInIt_IsNotAsked()
+    {
+        var (service, notifier, _) = Create();
+        var left = DateTime.UtcNow.AddHours(-1);
+        Present(service, left);
+        service.OnPoll(left.AddMinutes(1), TimeSpan.FromMinutes(2), isLocked: false, isPresent: false, null, awayFromUtc: left);
+
+        service.OnPauseStatus(left.AddMinutes(2), new PauseSnapshot(DateTime.MaxValue, left.AddMinutes(2), TimeSpan.FromMinutes(2)));
+        Present(service, left.AddMinutes(40));
+
+        Assert.DoesNotContain(notifier.Shown, n => n.Kind == NudgeKind.AwayReturn);
+    }
+
     // ---- helpers ---------------------------------------------------------
+
+    /// <summary>
+    /// Present at <paramref name="left"/>, gone from then — the first away poll says so, as the poll loop does — polls a minute
+    /// apart, back <paramref name="minutes"/> later.
+    /// </summary>
+    private static void AwayFor(NudgeService service, DateTime left, int minutes)
+    {
+        var gap = TimeSpan.FromMinutes(2);
+        service.OnPoll(left, gap, isLocked: false, isPresent: true, new ActivitySample { ProcessName = "code", WindowTitle = "Chapter 2" });
+        service.OnPoll(left.AddMinutes(1), gap, isLocked: false, isPresent: false, null, awayFromUtc: left);
+        for (var m = 2; m < minutes; m++) service.OnPoll(left.AddMinutes(m), gap, isLocked: false, isPresent: false, null);
+        service.OnPoll(left.AddMinutes(minutes), gap, isLocked: false, isPresent: true, new ActivitySample { ProcessName = "code", WindowTitle = "Chapter 2" });
+    }
 
     /// <summary>Minutes spent on the YouTube activity, outside any block unless one is given, answered as the send loop would.</summary>
     private void YouTubeMinutes(NudgeService service, int count, PlannedBlock? block = null)
@@ -708,7 +776,8 @@ public sealed class NudgeServiceTests : IDisposable
             zone: _zone,
             capture: () => _captureBoxes++,
             reportBreak: _breakReports.Add,
-            resume: () => _resumes++);
+            resume: () => _resumes++,
+            reportAway: _awayAnswers.Add);
         _services.Add(service);
         return (service, notifier, opened);
     }

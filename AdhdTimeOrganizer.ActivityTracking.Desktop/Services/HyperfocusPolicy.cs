@@ -33,6 +33,13 @@ public enum NudgeKind
     BlockEnd,
 
     /// <summary>
+    /// "Away 47 min — what was it?": one question at the return from an absence, answered with an activity in one click
+    /// (<see cref="AwayReturnPolicy"/>). Outside the gap between the families: it is a question, not a reproach, and the moment
+    /// it is easy to answer doesn't wait.
+    /// </summary>
+    AwayReturn,
+
+    /// <summary>
     /// Not a nudge: uploads are stuck, the session ended or the server refused windows (<see cref="UploadHealthPolicy"/>).
     /// It shares the toast plumbing and has a switch of its own.
     /// </summary>
@@ -87,7 +94,11 @@ public enum NudgeResponse
     /// <summary>Pause reminder only: resume tracking.</summary>
     Resume,
     /// <summary>Pause reminder only: close it; the next one comes no sooner than it would have anyway.</summary>
-    KeepPaused
+    KeepPaused,
+    /// <summary>Away question only: the absence was the activity on the button pressed (<see cref="NudgeActivation.Choice"/>).</summary>
+    AwayAnswer,
+    /// <summary>Away question only: open the web app's manual log, pre-filled with the absence.</summary>
+    SomethingElse
 }
 
 /// <summary>What a drift nudge says about the plan. <see cref="PlannedName"/> is user-authored: never log it.</summary>
@@ -99,12 +110,12 @@ public sealed record DriftDetails(string PlannedName, DateTime PlannedEndsUtc);
 /// <see cref="AppName"/> what it went to. An upload-health notice carries <see cref="Upload"/> instead, a recording-health
 /// one <see cref="Recording"/>, the evening invite <see cref="Review"/>, and a start ramp <see cref="StartRamp"/> (its
 /// <see cref="Length"/> is the block's). A block-end heads-up carries <see cref="BlockEnd"/>, its <see cref="Length"/> the
-/// time left.
+/// time left; an away question <see cref="Away"/>, its <see cref="Length"/> the absence.
 /// </summary>
 public sealed record Nudge(
     int Id, NudgeKind Kind, TimeSpan Length, string? AppName, DriftDetails? Drift = null, UploadNotice? Upload = null,
     UnmappedInvite? Review = null, StartRampDetails? StartRamp = null, RecordingNotice? Recording = null,
-    BlockEndDetails? BlockEnd = null);
+    BlockEndDetails? BlockEnd = null, AwayDetails? Away = null);
 
 /// <param name="BreakEndsUtc">When a running break timer runs out; null with none, and once it has (a break held past its end).</param>
 public sealed record NudgeStatus(TimeSpan? StretchLength, DateTime? BreakEndsUtc);
@@ -191,6 +202,9 @@ public sealed class HyperfocusPolicy(TimeSpan maxObservedGap)
 
     /// <summary>Settable because it follows the poll interval, which Settings can change.</summary>
     public TimeSpan MaxObservedGap { get; set; } = maxObservedGap;
+
+    /// <summary>A break the user started ("Taking a break") is open: the away question doesn't ask what it was.</summary>
+    public bool InStartedBreak => _breakStartUtc is not null;
 
     /// <summary>
     /// Folds in one poll. <paramref name="appKey"/> identifies the foreground app (null when away or on an

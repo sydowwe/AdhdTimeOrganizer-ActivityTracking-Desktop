@@ -136,6 +136,29 @@ public class WireSampleTests
         Assert.True(JsonNode.DeepEquals(Samples.Value["breakRequest"], written), written?.ToJsonString());
     }
 
+    /// <summary>
+    /// The away answer (prompt 23), written exactly as the sample, which the server checks binds: a renamed <c>activityId</c> is
+    /// a 400 the reporter drops, and the answer is lost without a word.
+    /// </summary>
+    [Fact]
+    public void TheAwayRequest_IsWrittenAsTheSample()
+    {
+        var from = new DateTime(2026, 10, 18, 11, 2, 10, DateTimeKind.Utc);
+        var written = JsonSerializer.SerializeToNode(AwayRequest.Of(new AwayAnswered(from, new DateTime(2026, 10, 18, 11, 49, 40), 21)));
+
+        Assert.True(JsonNode.DeepEquals(Samples.Value["awayRequest"], written), written?.ToJsonString());
+    }
+
+    [Fact]
+    public void TheActivitiesAndAwaySamples_ReadThroughTheTrackerModels()
+    {
+        var activities = Samples.Value["activities"]!.Deserialize<TrackerActivities>();
+        var recorded = Samples.Value["awayRecorded"]!.Deserialize<AwayRecorded>();
+
+        Assert.Equal([new TrackerActivity(21, "Meetings"), new TrackerActivity(22, "Rest")], activities!.Activities);
+        Assert.Equal(2850, recorded!.RecordedSeconds);
+    }
+
     [Fact]
     public void TheCapturedSample_ReadsThroughTheTrackerModels()
     {
@@ -151,6 +174,8 @@ public class WireSampleTests
     [InlineData("unmapped", typeof(UnmappedToday))]
     [InlineData("eveningMoment", typeof(EveningMoment))]
     [InlineData("captured", typeof(CaptureResponse))]
+    [InlineData("activities", typeof(TrackerActivities))]
+    [InlineData("awayRecorded", typeof(AwayRecorded))]
     public void TheTrackerModels_HaveEveryFieldTheServerSends(string sample, Type model)
     {
         var node = Samples.Value[sample]!;

@@ -5,7 +5,8 @@ using Microsoft.Windows.AppNotifications.Builder;
 namespace AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 
 /// <param name="Kind">Which policy issued the nudge: ids are counted per policy.</param>
-internal sealed record NudgeActivation(NudgeKind Kind, int NudgeId, NudgeResponse Response);
+/// <param name="Choice">Which of the away question's answers was pressed; null on every other button.</param>
+internal sealed record NudgeActivation(NudgeKind Kind, int NudgeId, NudgeResponse Response, int? Choice = null);
 
 /// <summary>What a nudge says and which buttons it has, and how a button press comes back.</summary>
 internal static class NudgeToast
@@ -16,6 +17,10 @@ internal static class NudgeToast
     private const string KindArgument = "kind";
     private const string IdArgument = "nudge";
     private const string ActionArgument = "action";
+    private const string ChoiceArgument = "choice";
+
+    /// <summary>An activity's name on a button is cut to this many characters: the toast's buttons share one row.</summary>
+    internal const int MaxAnswerLabel = 32;
 
     public static string Tag(NudgeKind kind) => kind.ToString();
 
@@ -69,6 +74,15 @@ internal static class NudgeToast
             builder.MuteAudio()
                 .AddButton(Button("OK", nudge, NudgeResponse.Dismiss));
         }
+        else if (nudge.Kind == NudgeKind.AwayReturn)
+        {
+            // A question at the return: an ordinary toast, one button per activity (the planned block first), then Something
+            // else. Closing it is "skip". It leaves the notification centre once a press would no longer count (Expiration).
+            var answers = nudge.Away?.Answers ?? [];
+            for (var i = 0; i < answers.Count; i++)
+                builder.AddButton(Button(AnswerLabel(answers[i].Name), nudge, NudgeResponse.AwayAnswer, i));
+            builder.AddButton(Button("Something else", nudge, NudgeResponse.SomethingElse));
+        }
         else if (nudge.Kind == NudgeKind.UploadHealth)
         {
             builder.SetDuration(AppNotificationDuration.Long);
@@ -111,6 +125,8 @@ internal static class NudgeToast
             notification.Expiration = DateTimeOffset.Now + ChimeSchedule.ToastLifetime;
         if (nudge is { Kind: NudgeKind.BlockEnd, BlockEnd: { } blockEnd } && blockEnd.EndsUtc > DateTime.UtcNow)
             notification.Expiration = new DateTimeOffset(DateTime.SpecifyKind(blockEnd.EndsUtc, DateTimeKind.Utc));
+        if (nudge is { Kind: NudgeKind.AwayReturn, Away: { } away } && away.ToUtc + AwayReturnPolicy.AnswerFor > DateTime.UtcNow)
+            notification.Expiration = new DateTimeOffset(DateTime.SpecifyKind(away.ToUtc + AwayReturnPolicy.AnswerFor, DateTimeKind.Utc));
         return notification;
     }
 
@@ -122,7 +138,11 @@ internal static class NudgeToast
         && int.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var nudgeId)
         && arguments.TryGetValue(ActionArgument, out var action)
         && Enum.TryParse<NudgeResponse>(action, out var response)
-            ? new NudgeActivation(kind, nudgeId, response)
+            ? new NudgeActivation(kind, nudgeId, response,
+                arguments.TryGetValue(ChoiceArgument, out var choiceText)
+                && int.TryParse(choiceText, NumberStyles.None, CultureInfo.InvariantCulture, out var choice)
+                    ? choice
+                    : null)
             : null;
 
     internal static (string Title, string Body) Text(Nudge nudge) => nudge.Kind switch
@@ -137,6 +157,7 @@ internal static class NudgeToast
         NudgeKind.StartRamp when nudge.StartRamp is { } ramp => StartRampText(ramp),
         NudgeKind.TimeChime => ($"{FormatLength(nudge.Length)} on {nudge.AppName}", "A time check, nothing more."),
         NudgeKind.BlockEnd when nudge.BlockEnd is { } blockEnd => BlockEndText(blockEnd),
+        NudgeKind.AwayReturn when nudge.Away is { } away => AwayText(away),
         NudgeKind.UploadHealth when nudge.Upload is { } upload => UploadText(upload),
         NudgeKind.RecordingHealth when nudge.Recording is { } recording => RecordingText(recording),
         NudgeKind.UnmappedReview when nudge.Review is { } review => UnmappedReviewPolicy.Text(review),
@@ -178,6 +199,34 @@ internal static class NudgeToast
             _ => "Time to wrap up the thought."
         };
         return (title, body);
+    }
+
+    /// <summary>
+    /// "Away 47 min — what was it?" over the span on the local clock and, when a planned block covered it, its name: the
+    /// planned answer is the first button, and the line says why it is there.
+    /// </summary>
+    private static (string Title, string Body) AwayText(AwayDetails away)
+    {
+        static string Local(DateTime utc) =>
+            TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), TimeZoneInfo.Local)
+                .ToString("HH:mm", CultureInfo.InvariantCulture);
+
+        var span = $"{Local(away.FromUtc)}–{Local(away.ToUtc)}";
+        var body = away.Answers.FirstOrDefault(a => a.IsPlanned) is { } planned
+            ? $"{span} · planned then: {planned.Name}. One click files it in your history."
+            : $"{span}. One click files it in your history.";
+        return ($"Away {FormatLength(away.ToUtc - away.FromUtc)} — what was it?", body);
+    }
+
+    /// <summary>
+    /// An activity's name as a button label. The SDK writes a label into a single-quoted XML attribute unescaped (see
+    /// <see cref="Button"/>), so the markup characters a name may hold are escaped here, and a long name is cut.
+    /// </summary>
+    internal static string AnswerLabel(string name)
+    {
+        var label = name.Trim();
+        if (label.Length > MaxAnswerLabel) label = label[..(MaxAnswerLabel - 1)].TrimEnd() + "…";
+        return label.Length == 0 ? "?" : label.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
     }
 
     /// <summary>What went wrong and what to do about it. Counts and durations only.</summary>
@@ -231,9 +280,12 @@ internal static class NudgeToast
     /// "I'm back" made <c>BuildNotification</c> throw ("Required white space was missing") and the nudge never
     /// appeared. Labels use the typographic apostrophe; text elements are escaped and may use either.
     /// </remarks>
-    private static AppNotificationButton Button(string label, Nudge nudge, NudgeResponse response) =>
-        new AppNotificationButton(label.Replace('\'', '’'))
+    private static AppNotificationButton Button(string label, Nudge nudge, NudgeResponse response, int? choice = null)
+    {
+        var button = new AppNotificationButton(label.Replace('\'', '’'))
             .AddArgument(KindArgument, nudge.Kind.ToString())
             .AddArgument(IdArgument, nudge.Id.ToString(CultureInfo.InvariantCulture))
             .AddArgument(ActionArgument, response.ToString());
+        return choice is { } i ? button.AddArgument(ChoiceArgument, i.ToString(CultureInfo.InvariantCulture)) : button;
+    }
 }

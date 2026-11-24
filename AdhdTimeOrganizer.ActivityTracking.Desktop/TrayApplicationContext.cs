@@ -35,6 +35,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ApiClient _apiClient;
     private readonly NudgeService _nudges;
     private readonly BreakReporter _breakReporter;
+    private readonly AwayReporter _awayReporter;
     private readonly ActivityTrackerService _tracker;
     private readonly UpdateService _updates = new();
     private readonly System.Windows.Forms.Timer _statusTimer;
@@ -76,12 +77,14 @@ public sealed class TrayApplicationContext : ApplicationContext
         _announceStart = announceStart;
         _apiClient = new ApiClient(config);
         _breakReporter = new BreakReporter(_apiClient.SendBreakAsync);
+        _awayReporter = new AwayReporter(_apiClient.SendAwayAsync);
 
         // Button presses on a nudge are handed to this, the UI, thread.
         _nudges = new NudgeService(config, new WindowsFormsSynchronizationContext(), signIn: SignInFromNotice,
             startBlock: plannerTaskId => _apiClient.StartBlockAsync(plannerTaskId, CancellationToken.None),
             skipBlock: plannerTaskId => _apiClient.SkipBlockAsync(plannerTaskId, CancellationToken.None),
-            capture: OpenCapture, reportBreak: _breakReporter.Report, resume: ResumeFromReminder);
+            capture: OpenCapture, reportBreak: _breakReporter.Report, resume: ResumeFromReminder,
+            reportAway: _awayReporter.Report);
         _tracker = new ActivityTrackerService(config, _apiClient, _nudges);
         var ui = new WindowsFormsSynchronizationContext();
         _apiClient.SignedIn += () => ui.Post(_ => OnSignedIn(), null);
@@ -153,6 +156,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         testNudge.DropDownItems.Add("Drift", null, (_, _) => _nudges.ShowTest(NudgeKind.Drift));
         testNudge.DropDownItems.Add("Start ramp", null, (_, _) => _nudges.ShowTest(NudgeKind.StartRamp));
         testNudge.DropDownItems.Add("Block ending", null, (_, _) => _nudges.ShowTest(NudgeKind.BlockEnd));
+        testNudge.DropDownItems.Add("Away, what was it", null, (_, _) => _nudges.ShowTest(NudgeKind.AwayReturn));
         testNudge.DropDownItems.Add("Time chime", null, (_, _) => _nudges.ShowTest(NudgeKind.TimeChime));
         testNudge.DropDownItems.Add("Upload problem", null, (_, _) => _nudges.ShowTest(NudgeKind.UploadHealth));
         testNudge.DropDownItems.Add("Still paused", null, (_, _) => _nudges.ShowTest(NudgeKind.PauseReminder));
@@ -732,7 +736,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         var previousHotkey = _config.CaptureHotkey;
 
         using var settingsForm = new SettingsForm(_config, ChimeChoices.Candidates(
-            _tracker.GetTodayTop(SettingsChimeLines), _nudges.GetChimeDistractions(), _config.TimeChimeChoices));
+                _tracker.GetTodayTop(SettingsChimeLines), _nudges.GetChimeDistractions(), _config.TimeChimeChoices),
+            loadActivities: _apiClient.FetchActivitiesAsync);
         if (settingsForm.ShowDialog() != DialogResult.OK) return;
 
         _config.Save();
@@ -833,6 +838,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _tracker.Dispose(); // flushes the minute in progress to the outbox
         _nudges.Dispose();  // after the poll loop, which feeds it; clears its toasts
         _breakReporter.Dispose(); // a report not sent yet is let go: it only ever served the phone's nudge
+        _awayReporter.Dispose();  // an answer not sent yet is let go: the web app can still log that time
         _apiClient.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();

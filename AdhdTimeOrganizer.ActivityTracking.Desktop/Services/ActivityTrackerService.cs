@@ -488,7 +488,8 @@ public sealed class ActivityTrackerService : IDisposable
         CreditUntil(session, now);
         var nowUtc = DateTime.UtcNow;
 
-        if (session.Screen.Polled(nowUtc, poll) is { } awayFrom)
+        var awayFromUtc = session.Screen.Polled(nowUtc, poll);
+        if (awayFromUtc is { } awayFrom)
         {
             TimeSpan retracted;
             lock (_lock)
@@ -505,7 +506,8 @@ public sealed class ActivityTrackerService : IDisposable
         }
 
         // Catches its own failures: a nudge going wrong must not show up as a poll error.
-        _nudges?.OnPoll(nowUtc, maxCreditedGap, isLocked, poll.IsPresent, poll.Foreground);
+        // The instant taken back from is also where an absence began, for the away question.
+        _nudges?.OnPoll(nowUtc, maxCreditedGap, isLocked, poll.IsPresent, poll.Foreground, awayFromUtc);
     }
 
     /// <summary>Credits the time up to <paramref name="timestamp"/> to what was on screen, and queues the windows that closed.</summary>

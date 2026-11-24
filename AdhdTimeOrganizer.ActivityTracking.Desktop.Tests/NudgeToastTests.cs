@@ -299,6 +299,62 @@ public class NudgeToastTests
     public void FormatPause_WholeUnits_RoundedDown(double hours, string expected) =>
         Assert.Equal(expected, NudgeToast.FormatPause(TimeSpan.FromHours(hours)));
 
+    /// <summary>
+    /// The away question (prompt 23): one button per answer — each reading back with its index — then Something else; an
+    /// ordinary toast that leaves the notification centre when a press would no longer count. Activity names are the user's
+    /// and land in button labels, which the SDK doesn't escape: markup and an apostrophe must still build and read back as
+    /// written, and a long name is cut.
+    /// </summary>
+    [Fact]
+    public void Build_AwayReturn_OneButtonPerAnswer_ThenSomethingElse()
+    {
+        var toUtc = DateTime.UtcNow.AddMinutes(-1);
+        var longName = new string('x', 50);
+        var nudge = new Nudge(6, NudgeKind.AwayReturn, TimeSpan.FromMinutes(47), null, Away: new AwayDetails(toUtc.AddMinutes(-47), toUtc,
+            [new AwayAnswer(70, "O'Reilly & <\"co\">", true), new AwayAnswer(21, longName, false)]));
+        var notification = NudgeToast.Build(nudge);
+        var toast = XDocument.Parse(notification.Payload).Root!;
+
+        Assert.Equal("AwayReturn", notification.Tag);
+        Assert.Equal(NudgeToast.Group, notification.Group);
+        Assert.Null(toast.Attribute("scenario"));
+        Assert.Equal(new DateTimeOffset(DateTime.SpecifyKind(toUtc + AwayReturnPolicy.AnswerFor, DateTimeKind.Utc)), notification.Expiration);
+        Assert.Equal(NudgeToast.Text(nudge).Title, toast.Descendants("text").First().Value);
+        Assert.Equal(
+            [
+                new NudgeActivation(NudgeKind.AwayReturn, 6, NudgeResponse.AwayAnswer, 0),
+                new NudgeActivation(NudgeKind.AwayReturn, 6, NudgeResponse.AwayAnswer, 1),
+                new NudgeActivation(NudgeKind.AwayReturn, 6, NudgeResponse.SomethingElse)
+            ],
+            toast.Descendants("action").Select(a => NudgeToast.Parse(Arguments((string)a.Attribute("arguments")!))));
+        Assert.Equal(["O’Reilly & <\"co\">", new string('x', NudgeToast.MaxAnswerLabel - 1) + "…", "Something else"],
+            toast.Descendants("action").Select(a => (string)a.Attribute("content")!));
+    }
+
+    [Fact]
+    public void Text_AwayReturn_SaysHowLongAndWhen_AndThePlannedBlock()
+    {
+        var fromUtc = new DateTime(2026, 11, 24, 10, 2, 0, DateTimeKind.Utc);
+        var toUtc = fromUtc.AddMinutes(47);
+        var span = $"{TimeZoneInfo.ConvertTimeFromUtc(fromUtc, TimeZoneInfo.Local):HH:mm}–{TimeZoneInfo.ConvertTimeFromUtc(toUtc, TimeZoneInfo.Local):HH:mm}";
+        Nudge Away(params AwayAnswer[] answers) =>
+            new(1, NudgeKind.AwayReturn, toUtc - fromUtc, null, Away: new AwayDetails(fromUtc, toUtc, answers));
+
+        Assert.Equal(("Away 47 min — what was it?", $"{span} · planned then: Thesis. One click files it in your history."),
+            NudgeToast.Text(Away(new AwayAnswer(7, "Thesis", true), new AwayAnswer(21, "Rest", false))));
+        Assert.Equal(("Away 47 min — what was it?", $"{span}. One click files it in your history."),
+            NudgeToast.Text(Away(new AwayAnswer(21, "Rest", false))));
+    }
+
+    [Fact]
+    public void Parse_ReadsTheAwayAnswersIndex()
+    {
+        Assert.Equal(new NudgeActivation(NudgeKind.AwayReturn, 3, NudgeResponse.AwayAnswer, 1), NudgeToast.Parse(
+            new Dictionary<string, string> { ["kind"] = "AwayReturn", ["nudge"] = "3", ["action"] = "AwayAnswer", ["choice"] = "1" }));
+        Assert.Null(NudgeToast.Parse(
+            new Dictionary<string, string> { ["kind"] = "AwayReturn", ["nudge"] = "3", ["action"] = "AwayAnswer", ["choice"] = "-1" })!.Choice);
+    }
+
     [Fact]
     public void Build_BreakOver_IsAReminder_ThatStaysUntilAnswered()
     {

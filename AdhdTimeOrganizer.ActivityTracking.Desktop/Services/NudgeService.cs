@@ -55,6 +55,17 @@ public sealed class NudgeService : IDisposable
         "/activity-tracking/desktop/review"
         + (date is { } d ? $"?date={d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)}" : "");
 
+    /// <summary>
+    /// The away question's "Something else" opens the web app's manual log with the absence filled in: <c>start</c> and
+    /// <c>end</c> as UTC instants with their <c>Z</c>, which the page shows on the user's clock. A web app from before the
+    /// parameters opens the empty form.
+    /// </summary>
+    internal static string ManualLogPath(DateTime fromUtc, DateTime toUtc) =>
+        $"/activity-history/manual?start={Instant(fromUtc)}&end={Instant(toUtc)}";
+
+    private static string Instant(DateTime utc) =>
+        DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
+
     /// <summary>The invite on screen, for the day its Review opens; set on the send loop, read on the toast's thread.</summary>
     private volatile UnmappedInvite? _review;
 
@@ -76,6 +87,7 @@ public sealed class NudgeService : IDisposable
     private readonly Func<long, Task<bool>> _skipBlock;
     private readonly Action? _capture;
     private readonly Action<BreakReport>? _reportBreak;
+    private readonly Action<AwayAnswered>? _reportAway;
     private readonly string _driftStatePath;
     private readonly string _rampStatePath;
     private readonly string _blockEndStatePath;
@@ -91,6 +103,7 @@ public sealed class NudgeService : IDisposable
     private readonly DriftPolicy _drift = new();
     private readonly StartRampPolicy _ramp = new();
     private readonly BlockEndPolicy _blockEnd = new();
+    private readonly AwayReturnPolicy _away = new();
     private readonly ChimeSchedule _chime;
     private readonly UploadHealthPolicy _upload = new();
     private readonly RecordingHealthPolicy _recording = new();
@@ -119,11 +132,13 @@ public sealed class NudgeService : IDisposable
     /// <param name="capture">A drift toast's "Capture a thought": opens the capture box on the UI thread. Null does nothing.</param>
     /// <param name="reportBreak">A started break changed (prompt 10): hands it to <see cref="BreakReporter"/>. Null tells no one.</param>
     /// <param name="resume">"Resume" on a pause reminder; resumes tracking on the UI thread. Null does nothing.</param>
+    /// <param name="reportAway">An absence answered with an activity (prompt 23): hands it to <see cref="AwayReporter"/>. Null tells no one.</param>
     public NudgeService(AppConfig config, SynchronizationContext? uiContext, Action? signIn = null,
         Func<long, Task<bool>>? startBlock = null, Func<long, Task<bool>>? skipBlock = null, Action? capture = null,
-        Action<BreakReport>? reportBreak = null, Action? resume = null)
+        Action<BreakReport>? reportBreak = null, Action? resume = null, Action<AwayAnswered>? reportAway = null)
         : this(config, uiContext, onActivated => new NudgeNotifier(onActivated), OpenInBrowser, DefaultDriftStatePath, signIn,
-            startBlock: startBlock, skipBlock: skipBlock, capture: capture, reportBreak: reportBreak, resume: resume)
+            startBlock: startBlock, skipBlock: skipBlock, capture: capture, reportBreak: reportBreak, resume: resume,
+            reportAway: reportAway)
     {
     }
 
@@ -140,15 +155,17 @@ public sealed class NudgeService : IDisposable
     /// <param name="capture">"Capture a thought" on a drift toast; tests count it.</param>
     /// <param name="reportBreak">A started break changed; tests record the reports.</param>
     /// <param name="resume">"Resume" on a pause reminder; tests count it.</param>
+    /// <param name="reportAway">An answered absence; tests record the answers.</param>
     internal NudgeService(AppConfig config, SynchronizationContext? uiContext,
         Func<Action<NudgeActivation>, INudgeNotifier> createNotifier, Action<Uri> openInBrowser, string driftStatePath,
         Action? signIn = null, Action<string>? openFolder = null, Func<long, Task<bool>>? startBlock = null,
         Func<long, Task<bool>>? skipBlock = null, TimeZoneInfo? zone = null, Action? capture = null,
-        Action<BreakReport>? reportBreak = null, Action? resume = null)
+        Action<BreakReport>? reportBreak = null, Action? resume = null, Action<AwayAnswered>? reportAway = null)
     {
         _capture = capture;
         _resume = resume;
         _reportBreak = reportBreak;
+        _reportAway = reportAway;
         _chime = new ChimeSchedule(zone ?? TimeZoneInfo.Local);
         _chimeStatePath = Path.Combine(Path.GetDirectoryName(driftStatePath)!, ChimeStateFileName);
         if (LoadState<ChimeState>(_chimeStatePath, "time chime") is { } chime) _chime.Restore(chime);
@@ -188,8 +205,10 @@ public sealed class NudgeService : IDisposable
     /// <summary>
     /// One poll, from the poll loop. <paramref name="isPresent"/> is the tracker's own verdict (input, or
     /// sound in the foreground); <paramref name="foreground"/> is null when away or on an ignored window.
+    /// <paramref name="awayFromUtc"/> is the instant idle backdating took back from, on the first poll that found the user gone.
     /// </summary>
-    public void OnPoll(DateTime nowUtc, TimeSpan maxObservedGap, bool isLocked, bool isPresent, ActivitySample? foreground)
+    public void OnPoll(DateTime nowUtc, TimeSpan maxObservedGap, bool isLocked, bool isPresent, ActivitySample? foreground,
+        DateTime? awayFromUtc = null)
     {
         try
         {
@@ -199,6 +218,9 @@ public sealed class NudgeService : IDisposable
                 var present = isPresent || (!isLocked && IsMicrophoneInUse(nowUtc));
                 var app = present ? foreground : null;
                 if (present && !isLocked) _presentUtc = nowUtc;
+
+                // Before the hyperfocus policy sees the poll: the return ends a started break there.
+                _away.Record(nowUtc, present && !isLocked, awayFromUtc, _policy.InStartedBreak, maxObservedGap);
 
                 _policy.MaxObservedGap = maxObservedGap;
                 _policy.Record(nowUtc, present,
@@ -233,6 +255,7 @@ public sealed class NudgeService : IDisposable
                 {
                     _ramp.Record(nowUtc, plan);
                     _blockEnd.Record(nowUtc, plan);
+                    _away.RecordPlan(plan);
                 }
                 _chime.Record(nowUtc, minute, chimeSettings);
                 _chimeChanged = true;
@@ -303,7 +326,12 @@ public sealed class NudgeService : IDisposable
         try
         {
             PauseReminderChange change;
-            lock (_lock) change = _pause.Evaluate(nowUtc, snapshot, _config.PauseRemindersEnabled);
+            lock (_lock)
+            {
+                change = _pause.Evaluate(nowUtc, snapshot, _config.PauseRemindersEnabled);
+                // A pause is not an absence: the gap it leaves in the polls is never asked about.
+                if (snapshot.PausedUntilUtc is not null) _away.Forget();
+            }
 
             if (change.Withdraw) _notifier.Remove(NudgeKind.PauseReminder);
             if (change.Show is not { } pausedFor) return;
@@ -365,6 +393,7 @@ public sealed class NudgeService : IDisposable
                 NudgeKind.Drift => _drift.IssueForTest(DateTime.UtcNow),
                 NudgeKind.StartRamp => _ramp.IssueForTest(DateTime.UtcNow),
                 NudgeKind.BlockEnd => _blockEnd.IssueForTest(DateTime.UtcNow),
+                NudgeKind.AwayReturn => _away.IssueForTest(DateTime.UtcNow),
                 NudgeKind.TimeChime => _chime.IssueForTest(),
                 NudgeKind.UploadHealth => new Nudge(1, kind, TimeSpan.FromHours(26), null,
                     Upload: new UploadNotice(UploadProblem.Stalled, 90, TimeSpan.FromHours(26), 0)),
@@ -399,6 +428,7 @@ public sealed class NudgeService : IDisposable
         Nudge? ramp;
         Nudge? nudge;
         Nudge? drift;
+        Nudge? away = null;
         Nudge? blockEnd = null;
         Nudge? chime = null;
         ChimeState? chimeState = null;
@@ -406,6 +436,7 @@ public sealed class NudgeService : IDisposable
         bool driftWithdrawn;
         bool rampWithdrawn;
         bool blockEndWithdrawn;
+        bool awayWithdrawn;
         DateTime? breakEndsUtc;
         BreakReport? breakReport;
         DriftState? driftState = null;
@@ -418,6 +449,7 @@ public sealed class NudgeService : IDisposable
         var rampSettings = StartRampSettings.From(_config);
         var blockEndSettings = BlockEndSettings.From(_config);
         var chimeSettings = ChimeSettings.From(_config);
+        var awaySettings = AwaySettings.From(_config);
         lock (_lock)
         {
             ramp = _ramp.TakeDue(nowUtc, rampSettings, nowUtc - _presentUtc <= RampPresentFor,
@@ -438,7 +470,11 @@ public sealed class NudgeService : IDisposable
                 _driftChanged = true;
             }
 
+            // The away question keeps no gap to the families and none holds it: it waits only for a pass with no other toast.
             if (ramp is null && nudge is null && drift is null)
+                away = _away.TakeDue(nowUtc, awaySettings, nowUtc - _presentUtc <= RampPresentFor, () => IsQuiet(nowUtc));
+
+            if (ramp is null && nudge is null && drift is null && away is null)
             {
                 blockEnd = _blockEnd.TakeDue(nowUtc, blockEndSettings, nowUtc - _presentUtc <= RampPresentFor,
                     () => IsQuiet(nowUtc), out var blockEndChanged);
@@ -447,7 +483,7 @@ public sealed class NudgeService : IDisposable
                     _rampChanged |= _ramp.Announce(nextId, nowUtc);
             }
 
-            if (ramp is null && nudge is null && drift is null && blockEnd is null)
+            if (ramp is null && nudge is null && drift is null && away is null && blockEnd is null)
             {
                 chime = _chime.TakeDue(nowUtc, chimeSettings, () => IsQuiet(nowUtc), out var chimeChanged);
                 _chimeChanged |= chimeChanged;
@@ -457,6 +493,7 @@ public sealed class NudgeService : IDisposable
             driftWithdrawn = _drift.TakeWithdrawn();
             rampWithdrawn = _ramp.TakeWithdrawn();
             blockEndWithdrawn = _blockEnd.TakeWithdrawn();
+            awayWithdrawn = _away.TakeWithdrawn();
             breakEndsUtc = _policy.GetStatus(nowUtc).BreakEndsUtc;
             // Taken here, where every change lands: a poll (back at the desk) and a press (started, 5 more, I'm back) both evaluate.
             breakReport = _policy.TakeBreakReport();
@@ -495,6 +532,7 @@ public sealed class NudgeService : IDisposable
         if (driftWithdrawn) _notifier.Remove(NudgeKind.Drift);
         if (rampWithdrawn) _notifier.Remove(NudgeKind.StartRamp);
         if (blockEndWithdrawn) _notifier.Remove(NudgeKind.BlockEnd);
+        if (awayWithdrawn) _notifier.Remove(NudgeKind.AwayReturn);
 
         if (ramp is not null)
         {
@@ -515,6 +553,14 @@ public sealed class NudgeService : IDisposable
             // No names: the planned activity and what the time went to are both the user's own words.
             _log.Information("Nudge {Kind} after {Minutes} min off plan", drift.Kind, (int)drift.Length.TotalMinutes);
             _notifier.Show(drift);
+        }
+
+        if (away is not null)
+        {
+            // No names: the answers are the user's own words.
+            _log.Information("Away question after {Minutes} min away, {Answers} answer(s)", (int)away.Length.TotalMinutes,
+                away.Away!.Answers.Count);
+            _notifier.Show(away);
         }
 
         if (blockEnd is not null)
@@ -639,6 +685,12 @@ public sealed class NudgeService : IDisposable
                 return;
             }
 
+            if (activation.Kind == NudgeKind.AwayReturn)
+            {
+                HandleAwayResponse(activation);
+                return;
+            }
+
             var isDrift = activation.Kind == NudgeKind.Drift;
             if (activation.Response == NudgeResponse.TurnOff)
                 TurnOff(isDrift);
@@ -746,6 +798,43 @@ public sealed class NudgeService : IDisposable
         _notifier.Remove(NudgeKind.TimeChime);
         _log.Information("Time chime stopped for today");
         Evaluate(nowUtc); // saves the state
+    }
+
+    /// <summary>
+    /// A press on the away question. An activity goes to the server through <see cref="AwayReporter"/> (the test toast's answers
+    /// are not activities, so nothing is sent for them); <b>Something else</b> opens the web app's manual log with the absence
+    /// filled in. A press on a toast no longer current does nothing.
+    /// </summary>
+    private void HandleAwayResponse(NudgeActivation activation)
+    {
+        AwayOutcome? outcome;
+        lock (_lock) outcome = _away.Respond(activation.NudgeId, activation.Response, activation.Choice, DateTime.UtcNow);
+
+        if (outcome is null)
+        {
+            _log.Debug("Ignored {Response} on away question {NudgeId}: no longer current", activation.Response, activation.NudgeId);
+            return;
+        }
+
+        if (outcome.Answer is { } answer)
+        {
+            // No name: the activity is the user's own words.
+            _log.Information("Away question answered: {Which} activity, {Minutes} min",
+                answer.IsPlanned ? "the planned" : "a chosen", (int)(outcome.ToUtc - outcome.FromUtc).TotalMinutes);
+            if (answer.ActivityId > 0)
+                _reportAway?.Invoke(new AwayAnswered(outcome.FromUtc, outcome.ToUtc, answer.ActivityId));
+            return;
+        }
+
+        _log.Information("Away question answered: something else");
+        try
+        {
+            _openInBrowser(_config.WebAppUri(ManualLogPath(outcome.FromUtc, outcome.ToUtc)));
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Could not open the manual log");
+        }
     }
 
     /// <summary>

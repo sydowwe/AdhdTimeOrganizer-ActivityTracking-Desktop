@@ -43,6 +43,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
 | `Services/DriftPolicy.cs` | **Pure** drift-nudge decisions over the server's per-minute plan verdicts (`MinuteVerdict`) |
 | `Services/StartRampPolicy.cs` | **Pure** start-ramp decisions: offer a planned block at its start, from the heartbeat's plan (`PlanView`) |
 | `Services/BlockEndPolicy.cs` | **Pure** block-end heads-up decisions: "Thesis ends in 5 min — next: Email at 11:30", from the same `PlanView` |
+| `Services/AwayReturnPolicy.cs`, `Services/AwayReporter.cs`, `Models/AwayModels.cs` | **Pure** "Away 47 min — what was it?" decisions (which absences, which answers) and the delivery of an answer (`POST …/desktop/away`), retried in memory |
 | `Services/ChimeSchedule.cs` | **Pure** time-chime decisions over the server's per-minute resolution, and which lines are chosen (`ChimeSettings`, `ChimeChoices`) |
 | `Services/UploadHealthPolicy.cs` | **Pure** "is tracked time arriving?" decisions: signed out, stalled a day, windows the server refused → show / withdraw a notice |
 | `Services/RecordingHealthPolicy.cs` | **Pure** "is recording itself working?" decisions: the poll failing, the poll loop silent, recordable time with nothing stored → show / withdraw a notice |
@@ -288,8 +289,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   `GetPackageFamilyName` on the limited handle (`ProcessInfo.PackageFamilyName`); a desktop app by its path.
 
 ### Nudges and notifications
-- Nudges are **client-side**: their decisions never involve the server. A nudge sends three things: the start ramp's
-  Start now and Not this one (below), and the break the user started (the next point). The policies live in `HyperfocusPolicy`, `DriftPolicy`, `StartRampPolicy`, `BlockEndPolicy` and `ChimeSchedule`, pure like
+- Nudges are **client-side**: their decisions never involve the server. A nudge sends four things: the start ramp's
+  Start now and Not this one (below), the break the user started (the next point), and an answered away question. The policies live in `HyperfocusPolicy`, `DriftPolicy`, `StartRampPolicy`, `BlockEndPolicy`, `AwayReturnPolicy` and `ChimeSchedule`, pure like
   `ActivityRecorder` — keep clocks, Win32 and toasts out of them.
 - **A break the user started is said where they are** (prompt 10, servers from 2026-11-10). "Taking a break" starts the
   timer (`BreakTimerMinutes`). The phone may be where the break is spent, so:
@@ -375,6 +376,30 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     an evaluation with no other toast and goes before the chime. State in `block-end.json` beside `drift.json`. Logs carry
     the block id and minutes only. The server's own "time's up" push (`PlannedBlockOverrun`, after the end, phone and web)
     is separate and stays.
+- **"Away 47 min — what was it?"** (`AwayReturnPolicy`, `NudgeKind.AwayReturn`, on by default, `AwayReturnEnabled`; prompt 23).
+  The tracker sees the computer and nothing else, so a meeting elsewhere, lunch or a call is a hole in the day; the one moment
+  the user still knows what filled it is when they sit back down.
+  - **Which absences.** From the instant idle backdating takes back from (`ScreenState.Polled`'s answer, passed to `OnPoll`) —
+    or, for a lock or a gap the poll loop didn't see (sleep, a hang), from the last poll that found the user present — to the
+    first poll that finds them back; 15 min to 4 h (past that it was a night). A call is presence, as for every nudge. **Not
+    asked**: a break the user started ("Taking a break" said what it was: `HyperfocusPolicy.InStartedBreak`, read before that
+    policy sees the return), an absence a pause fell into (the tray's pause status calls `Forget`), anything before a restart.
+  - **The answers.** The planned block that covered at least half of the absence — from the last heartbeat answer before it,
+    its `planned` and `next`, since nothing is sent while the user is away — then up to two activities picked in Settings
+    (`AwayAnswers`, id and name, from `GET /api/tracker/desktop/activities`, fetched when Settings opens), each activity once;
+    then **Something else**, which opens `WebAppUrl/activity-history/manual?start=…&end=…` (UTC instants; the web app's form
+    starts on its 5-minute grid and keeps the end). Closing the toast is "skip". An activity's name is a button label, which
+    the SDK doesn't escape: `NudgeToast.AnswerLabel` escapes markup and cuts it to 32 characters. The press carries the
+    answer's index (`NudgeActivation.Choice`).
+  - **When.** At the return, to someone at the computer; held under the quiet conditions; **outside the gap between families**
+    (a question, not a reproach) but only in a pass with no ramp, hyperfocus or drift toast, and before the block-end heads-up
+    and the chime. One not shown within 30 min of the return is let go; a newer absence replaces a held one. An ordinary toast,
+    `Expiration` 2 h after the return, and a press counts as long (`AwayReturnPolicy.AnswerFor`).
+  - **Delivery.** `AwayReporter` sends `POST /api/tracker/desktop/away` `{ from, to, activityId }` (pinned as `awayRequest`, and
+    the answer as `awayRecorded`, in `DesktopTrackerWire.samples.json`): oldest first, in memory, retried each minute
+    (`BreakReporter.Classify`'s rule), let go a day after the absence. The server writes History through the attribution sink,
+    so a retry or time the activity already holds adds nothing. Never the heartbeat or the outbox. State is in memory only;
+    logs carry minutes and counts, never an activity's name.
 - **The time chime** (`ChimeSchedule`, `NudgeKind.TimeChime`, off by default, `TimeChimeEnabled`) makes time felt
   *outside* a plan: "15 min on YouTube", silently, at each interval of continuous time in a chosen activity.
   - **What is chosen is the server's answer, never a process list** — YouTube in Chrome chimes, docs in Chrome don't. It
@@ -402,7 +427,7 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     `review/androidTrackerPrompts/decisions.md` (11-2, 11-3, 11-5, 11-6, 11-7).
 - The three families keep `HyperfocusPolicy.MinGapBetweenKinds` (10 min) apart: a nudge due within it of another
   family's is held like under a quiet condition, never dropped by it. The start ramp is evaluated first (a block's start
-  doesn't come again). The break-over nudge, the block-end heads-up and the time chime are exempt.
+  doesn't come again). The break-over nudge, the away question, the block-end heads-up and the time chime are exempt.
 - Today's total and its top-5 breakdown (`TodayTotal`, `today.json`) count a window **once, when settled**: the total
   at queue time less what was never stored, the breakdown from the heartbeat's answer. The breakdown is the tray
   glance's submenu, not a left-click flyout — a single click is half of every double-click, which opens the menu.

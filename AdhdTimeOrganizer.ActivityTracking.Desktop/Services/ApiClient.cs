@@ -79,6 +79,8 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
     private const string TrackerStartBlockPath = "/api/tracker/desktop/start-block";
     private const string TrackerSkipBlockPath = "/api/tracker/desktop/skip-block";
     private const string TrackerBreakPath = "/api/tracker/desktop/break";
+    private const string TrackerAwayPath = "/api/tracker/desktop/away";
+    private const string TrackerActivitiesPath = "/api/tracker/desktop/activities";
     private const string LogoutPath = "/api/auth/tracker/logout";
 
     /// <summary>Shared with the phone, so not under <c>desktop/</c>. Servers from 2026-11-08; an older one answers 404.</summary>
@@ -604,6 +606,47 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
             _log.Warning(ex, "Break report send failed — will retry");
             return BreakSendResult.Later;
         }
+    }
+
+    /// <summary>
+    /// An answered absence (prompt 23) into the user's History. Never throws but for the caller's cancellation; what each answer
+    /// means is <see cref="BreakReporter.Classify"/>'s rule. A 404 is a server from before the route, or an activity no longer
+    /// the user's: either way the answer is dropped, and the web app can still log the time.
+    /// </summary>
+    public async Task<BreakSendResult> SendAwayAsync(AwayAnswered answered, CancellationToken ct)
+    {
+        if (!HasSession) return BreakSendResult.Later;
+
+        try
+        {
+            var (response, _) = await SendAuthorizedAsync(() => new HttpRequestMessage(HttpMethod.Post, BuildUri(TrackerAwayPath))
+            {
+                Content = JsonContent.Create(AwayRequest.Of(answered))
+            }, ct);
+            if (response is null) return BreakSendResult.Later;
+            using var owned = response;
+
+            var result = BreakReporter.Classify(response.StatusCode);
+            if (result != BreakSendResult.Delivered)
+                _log.Warning("Away answer answered {StatusCode} ({Result})", (int)response.StatusCode, result);
+            return result;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Away answer send failed — will retry");
+            return BreakSendResult.Later;
+        }
+    }
+
+    /// <summary>The user's activities, for the away answers in Settings. A 404 is a server from before the route.</summary>
+    public async Task<TrackerRead<TrackerActivities>> FetchActivitiesAsync(CancellationToken ct)
+    {
+        var (status, value) = await GetTrackerJsonAsync<TrackerActivities>(TrackerActivitiesPath, "Activities", ct);
+        return new TrackerRead<TrackerActivities>(status, value);
     }
 
     private async Task<bool> PostBlockAsync(string path, long plannerTaskId, CancellationToken ct)

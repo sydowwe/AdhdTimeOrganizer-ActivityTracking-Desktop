@@ -207,6 +207,21 @@ public sealed class AppConfig
     [JsonConverter(typeof(LenientEnumConverter<RampBlocks>))]
     public RampBlocks BlockEndBlocks { get; set; } = RampBlocks.NotOptional;
 
+    // ── Away question (see AwayReturnPolicy) ──────────────────────────────────
+
+    /// <summary>
+    /// "Away 47 min — what was it?" at the return from 15 min – 4 h away, answered with an activity in one click. On by default,
+    /// like the start ramp: it is a question at the one moment the answer is still known, not a reproach.
+    /// </summary>
+    public bool AwayReturnEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Up to two activities the away toast offers besides the planned block ("Break → Rest", "Meeting → Meetings"), picked in
+    /// Settings from the server's list. The names are kept so the toast needs no server. Replaced as a whole, never mutated:
+    /// the poll loop reads it on its own thread.
+    /// </summary>
+    public List<AwayChoice> AwayAnswers { get; set; } = [];
+
     // ── Time chime (see ChimeSchedule) ────────────────────────────────────────
 
     /// <summary>
@@ -518,6 +533,14 @@ public sealed class AppConfig
         {
             reset++;
             TimeChimeChoices = TimeChimeChoices.Where(c => c?.Key is not null).Select(c => c with { Name = c.Name ?? "" }).ToList();
+        }
+
+        if (AwayAnswers is null) { AwayAnswers = defaults.AwayAnswers; reset++; }
+        else if (AwayAnswers.Any(a => a is null || a.ActivityId <= 0 || a.Name is null) || AwayAnswers.Count > AwayReturnPolicy.MaxChoices)
+        {
+            reset++;
+            AwayAnswers = AwayAnswers.Where(a => a is { ActivityId: > 0 }).Select(a => a with { Name = a.Name ?? "" })
+                .Take(AwayReturnPolicy.MaxChoices).ToList();
         }
 
         if (LocalRules is null) { LocalRules = defaults.LocalRules; reset++; }

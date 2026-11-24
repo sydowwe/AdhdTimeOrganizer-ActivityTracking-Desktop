@@ -316,6 +316,23 @@ public sealed class AppConfigLoadTests : IDisposable
         Assert.Empty(load.Config.TimeChimeChoices);
     }
 
+    /// <summary>The away answers (prompt 23): null is none, an item naming no activity is dropped, and at most two are kept.</summary>
+    [Fact]
+    public void AwayAnswers_NullIsNone_BadItemsAreDropped_AtMostTwo()
+    {
+        File.WriteAllText(_path, """{ "AwayAnswers": null }""");
+        Assert.Empty(AppConfig.Load(_path).Config.AwayAnswers);
+
+        File.WriteAllText(_path, """
+            { "AwayAnswers": [ null, { "ActivityId": 0, "Name": "x" }, { "ActivityId": 21, "Name": null },
+              { "ActivityId": 22, "Name": "Meetings" }, { "ActivityId": 23, "Name": "Errands" } ] }
+            """);
+        var load = AppConfig.Load(_path);
+
+        Assert.Equal([new Services.AwayChoice(21, ""), new Services.AwayChoice(22, "Meetings")], load.Config.AwayAnswers);
+        Assert.Equal(1, load.ResetValues);
+    }
+
     /// <summary>One range per number (ConfigLimits), the one Settings offers; they used to disagree.</summary>
     [Fact]
     public void Numbers_AreClampedToTheirRanges_Once_OnLoad()
@@ -425,7 +442,7 @@ public sealed class AppConfigLoadTests : IDisposable
 
         config.Save();
         var written = JsonDocument.Parse(File.ReadAllText(_path)).RootElement.EnumerateObject().Select(p => p.Name).ToHashSet();
-        Assert.Equal(["BlockEndBlocks", "BlockEndEnabled", "PauseRemindersEnabled", "PausedSinceUtc"],
+        Assert.Equal(["AwayAnswers", "AwayReturnEnabled", "BlockEndBlocks", "BlockEndEnabled", "PauseRemindersEnabled", "PausedSinceUtc"],
             written.Except(keys121).Order(StringComparer.Ordinal));
         Assert.Empty(keys121.Except(written));
     }

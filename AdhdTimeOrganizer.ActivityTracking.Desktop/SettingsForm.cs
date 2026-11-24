@@ -38,15 +38,26 @@ public sealed class SettingsForm : Form
     private readonly CheckBox _chimeDistractionsBox;
     private readonly CheckedListBox _chimeTargetsBox;
     private readonly TextBox _captureHotkeyBox;
+    private readonly CheckBox _awayBox;
+    private readonly ComboBox[] _awayAnswerBoxes;
+    private readonly Label _awayAnswersHint;
+    private readonly Func<CancellationToken, Task<TrackerRead<TrackerActivities>>>? _loadActivities;
+    private readonly CancellationTokenSource _closing = new();
     private readonly IReadOnlyList<ChimeCandidate> _chimeCandidates;
     private readonly Label _errorLabel;
     private readonly TabControl _tabs;
 
     /// <param name="chimeCandidates">The lines the time chime can be set on (<see cref="ChimeChoices.Candidates"/>).</param>
-    public SettingsForm(AppConfig config, IReadOnlyList<ChimeCandidate>? chimeCandidates = null)
+    /// <param name="loadActivities">
+    /// The user's activities, for the away answers (<c>ApiClient.FetchActivitiesAsync</c>); fetched when the form opens, so it
+    /// opens at once offline. Null offers only the answers already chosen.
+    /// </param>
+    public SettingsForm(AppConfig config, IReadOnlyList<ChimeCandidate>? chimeCandidates = null,
+        Func<CancellationToken, Task<TrackerRead<TrackerActivities>>>? loadActivities = null)
     {
         _config = config;
         _chimeCandidates = chimeCandidates ?? [];
+        _loadActivities = loadActivities;
 
         Text = "Activity Tracker - Settings";
         // Sizable and scrolling, never auto-sized: the rows outgrew a laptop screen, and an auto-sized dialog put Save
@@ -84,6 +95,15 @@ public sealed class SettingsForm : Form
         _blockEndBlocksBox.Items.AddRange(["Every block", "All but Optional", "Critical only"]);
         _blockEndBlocksBox.SelectedIndex = (int)config.BlockEndBlocks;
         AddRow(general, "Block-end warning &covers:", _blockEndBlocksBox, "Its own choice: the start ramp's doesn't change it.");
+
+        _awayBox = new CheckBox { Text = "On", Checked = config.AwayReturnEnabled, AutoSize = true };
+        AddRow(general, "Away &question:", _awayBox,
+            "Back after 15 minutes to 4 hours away: one notice asking what it was. One click files it in your history; closing it skips.");
+
+        _awayAnswerBoxes = [AwayAnswerBox(config.AwayAnswers.ElementAtOrDefault(0)), AwayAnswerBox(config.AwayAnswers.ElementAtOrDefault(1))];
+        AddRow(general, "Away answer &1:", _awayAnswerBoxes[0], null);
+        _awayAnswersHint = AddRow(general, "Away answer &2:", _awayAnswerBoxes[1],
+            "Offered besides the planned block, like a Rest or Meetings activity. Loading your activities…")!;
 
         _uploadNoticesBox = new CheckBox { Text = "On", Checked = config.UploadNoticesEnabled, AutoSize = true };
         AddRow(general, "Upload problem notices:", _uploadNoticesBox,
@@ -211,6 +231,77 @@ public sealed class SettingsForm : Form
         CancelButton = cancelButton;
 
         Load += (_, _) => FitToScreen(footer);
+        Load += async (_, _) => await LoadActivitiesAsync();
+        FormClosed += (_, _) => _closing.Cancel();
+    }
+
+    /// <summary>An away answer: an activity by id, shown by name. <see cref="None"/> is "no answer here".</summary>
+    private sealed record ActivityItem(long Id, string Name)
+    {
+        public static readonly ActivityItem None = new(0, "(none)");
+        public override string ToString() => Name;
+    }
+
+    /// <summary>"(none)" and the answer already chosen, until the server's list arrives.</summary>
+    private static ComboBox AwayAnswerBox(AwayChoice? chosen)
+    {
+        var box = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
+        box.Items.Add(ActivityItem.None);
+        if (chosen is { ActivityId: > 0 }) box.Items.Add(new ActivityItem(chosen.ActivityId, chosen.Name));
+        box.SelectedIndex = box.Items.Count - 1;
+        return box;
+    }
+
+    /// <summary>
+    /// Fills the away answer lists from the server, keeping what each one has selected. Offline, signed out or an older server,
+    /// the lists keep the answers already chosen and the hint says why there are no others. Never throws: it runs from Load.
+    /// </summary>
+    private async Task LoadActivitiesAsync()
+    {
+        const string hint = "Offered besides the planned block, like a Rest or Meetings activity.";
+        if (_loadActivities is null)
+        {
+            _awayAnswersHint.Text = hint;
+            return;
+        }
+
+        try
+        {
+            var read = await _loadActivities(_closing.Token);
+            if (IsDisposed) return;
+            if (read is not { Status: CoverageFetch.Fetched, Value: { } fetched })
+            {
+                _awayAnswersHint.Text = hint + (read.Status == CoverageFetch.NotSupported
+                    ? " The server is too old to list your activities."
+                    : " Your activities couldn’t be loaded: sign in or check the connection, then open Settings again.");
+                return;
+            }
+
+            foreach (var box in _awayAnswerBoxes)
+            {
+                var selected = (box.SelectedItem as ActivityItem)?.Id ?? 0;
+                var items = new List<ActivityItem> { ActivityItem.None };
+                items.AddRange(fetched.Activities.Select(a => new ActivityItem(a.Id, a.Name)));
+                // A chosen activity the list no longer has (archived since) stays chosen until changed.
+                if (selected > 0 && items.All(i => i.Id != selected) && box.SelectedItem is ActivityItem kept) items.Add(kept);
+
+                box.BeginUpdate();
+                box.Items.Clear();
+                box.Items.AddRange(items.ToArray<object>());
+                box.SelectedIndex = Math.Max(0, items.FindIndex(i => i.Id == selected));
+                box.EndUpdate();
+            }
+            _awayAnswersHint.Text = hint;
+        }
+        catch (OperationCanceledException)
+        {
+            // The form closed first.
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.ForContext<SettingsForm>().Warning(ex, "Could not list activities for the away answers");
+            if (!IsDisposed) _awayAnswersHint.Text = hint;
+        }
     }
 
     /// <summary>A tab whose rows scroll on their own when the form is shorter than they are.</summary>
@@ -358,6 +449,14 @@ public sealed class SettingsForm : Form
         _config.StartRampBlocks = (RampBlocks)_startRampBlocksBox.SelectedIndex;
         _config.BlockEndEnabled = _blockEndBox.Checked;
         _config.BlockEndBlocks = (RampBlocks)_blockEndBlocksBox.SelectedIndex;
+        _config.AwayReturnEnabled = _awayBox.Checked;
+        _config.AwayAnswers = _awayAnswerBoxes
+            .Select(b => b.SelectedItem as ActivityItem)
+            .OfType<ActivityItem>()
+            .Where(i => i.Id > 0)
+            .DistinctBy(i => i.Id)
+            .Select(i => new AwayChoice(i.Id, i.Name))
+            .ToList();
         _config.UploadNoticesEnabled = _uploadNoticesBox.Checked;
         _config.UnmappedReviewEnabled = _unmappedReviewBox.Checked;
         _config.PauseRemindersEnabled = _pauseRemindersBox.Checked;

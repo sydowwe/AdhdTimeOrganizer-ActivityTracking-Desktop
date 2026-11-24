@@ -40,5 +40,13 @@
   },
   "captureRequest": { "text": "Email the landlord" },
   "captured": { "outcome": "added", "todoListItemId": 41, "todoListId": 3 },
-  "breakRequest": { "startedAt": "2026-10-18T10:04:30Z", "plannedEndAt": "2026-10-18T10:14:30Z", "endedAt": null }
+  "breakRequest": { "startedAt": "2026-10-18T10:04:30Z", "plannedEndAt": "2026-10-18T10:14:30Z", "endedAt": null },
+  "activities": {
+    "activities": [
+      { "id": 21, "name": "Meetings" },
+      { "id": 22, "name": "Rest" }
+    ]
+  },
+  "awayRequest": { "from": "2026-10-18T11:02:10Z", "to": "2026-10-18T11:49:40Z", "activityId": 21 },
+  "awayRecorded": { "recordedSeconds": 2850 }
 }
