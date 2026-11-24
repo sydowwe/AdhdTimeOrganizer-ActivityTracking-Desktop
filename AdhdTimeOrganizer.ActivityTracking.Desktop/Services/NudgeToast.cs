@@ -202,8 +202,9 @@ internal static class NudgeToast
     }
 
     /// <summary>
-    /// "Away 47 min — what was it?" over the span on the local clock and, when a planned block covered it, its name: the
-    /// planned answer is the first button, and the line says why it is there.
+    /// "Away 47 min — what was it?" over the span on the local clock, then what the server knew — "20 min on the phone: YouTube,
+    /// Instagram" from a minute up — and, when a planned block covered it, its name: the planned answer is the first button,
+    /// and the line says why it is there.
     /// </summary>
     private static (string Title, string Body) AwayText(AwayDetails away)
     {
@@ -211,11 +212,15 @@ internal static class NudgeToast
             TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), TimeZoneInfo.Local)
                 .ToString("HH:mm", CultureInfo.InvariantCulture);
 
-        var span = $"{Local(away.FromUtc)}–{Local(away.ToUtc)}";
-        var body = away.Answers.FirstOrDefault(a => a.IsPlanned) is { } planned
-            ? $"{span} · planned then: {planned.Name}. One click files it in your history."
-            : $"{span}. One click files it in your history.";
-        return ($"Away {FormatLength(away.ToUtc - away.FromUtc)} — what was it?", body);
+        var parts = new List<string> { $"{Local(away.FromUtc)}–{Local(away.ToUtc)}" };
+        if (away.Known is { PhoneSeconds: >= 60 } known)
+            parts.Add($"{FormatLength(TimeSpan.FromSeconds(known.PhoneSeconds))} on the phone"
+                      + (known.PhoneApps.Count > 0 ? ": " + string.Join(", ", known.PhoneApps.Select(a => a.Name)) : ""));
+        if (away.Answers.FirstOrDefault(a => a.IsPlanned) is { } planned)
+            parts.Add($"planned then: {planned.Name}");
+
+        return ($"Away {FormatLength(away.ToUtc - away.FromUtc)} — what was it?",
+            string.Join(" · ", parts) + ". One click files it in your history.");
     }
 
     /// <summary>

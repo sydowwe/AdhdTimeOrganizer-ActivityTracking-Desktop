@@ -84,7 +84,8 @@ public sealed class TrayApplicationContext : ApplicationContext
             startBlock: plannerTaskId => _apiClient.StartBlockAsync(plannerTaskId, CancellationToken.None),
             skipBlock: plannerTaskId => _apiClient.SkipBlockAsync(plannerTaskId, CancellationToken.None),
             capture: OpenCapture, reportBreak: _breakReporter.Report, resume: ResumeFromReminder,
-            reportAway: _awayReporter.Report);
+            reportAway: _awayReporter.Report,
+            readAway: async (fromUtc, toUtc, ct) => (await _apiClient.FetchAwayKnownAsync(fromUtc, toUtc, ct)).Value);
         _tracker = new ActivityTrackerService(config, _apiClient, _nudges);
         var ui = new WindowsFormsSynchronizationContext();
         _apiClient.SignedIn += () => ui.Post(_ => OnSignedIn(), null);

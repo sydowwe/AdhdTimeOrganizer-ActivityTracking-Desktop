@@ -8,8 +8,11 @@ public sealed record AwayChoice(long ActivityId, string Name);
 /// <summary>A button on the away toast: an activity, and whether it is the planned block's. The name is user-authored.</summary>
 public sealed record AwayAnswer(long ActivityId, string Name, bool IsPlanned);
 
-/// <summary>What the away toast asks about: the span the user was away, and the activities it offers.</summary>
-public sealed record AwayDetails(DateTime FromUtc, DateTime ToUtc, IReadOnlyList<AwayAnswer> Answers);
+/// <summary>
+/// What the away toast asks about: the span the user was away, the activities it offers, and what the server already knew
+/// about the span (null when it couldn't say: an older server, offline, too slow).
+/// </summary>
+public sealed record AwayDetails(DateTime FromUtc, DateTime ToUtc, IReadOnlyList<AwayAnswer> Answers, AwayKnown? Known = null);
 
 /// <summary>An absence answered with an activity: what <see cref="AwayReporter"/> sends.</summary>
 public sealed record AwayAnswered(DateTime FromUtc, DateTime ToUtc, long ActivityId);
@@ -51,6 +54,12 @@ public sealed record AwaySettings(bool Enabled, IReadOnlyList<AwayChoice> Choice
 /// and keeps no gap to the other families. One not shown within <see cref="HoldFor"/> of the return is let go: the moment
 /// that made it easy to answer has passed. A newer absence replaces a question still held.
 /// </para>
+/// <para>
+/// <b>What the server already knows</b> (<see cref="Consider"/>, decided 2026-11-24). Just before it shows, the caller reads
+/// the server's account of the span. When History already holds <see cref="CoveredShare"/> of it — a timer ran, phone time was
+/// mapped, it was logged by hand — the question is settled without a word. Otherwise the toast says how long the phone was in
+/// use and on what. No answer (an older server, offline, too slow) asks as before.
+/// </para>
 /// </remarks>
 public sealed class AwayReturnPolicy
 {
@@ -61,6 +70,9 @@ public sealed class AwayReturnPolicy
 
     /// <summary>At most this many of the Settings answers; with the block and "Something else" a toast has four buttons.</summary>
     internal const int MaxChoices = 2;
+
+    /// <summary>History holding this share of the absence already accounts for it: nothing is asked.</summary>
+    internal const double CoveredShare = 0.75;
 
     private DateTime? _lastPollUtc;
     private DateTime? _lastPresentUtc; // null until a poll since the start (or a pause) found someone there
@@ -154,6 +166,29 @@ public sealed class AwayReturnPolicy
         _outstanding = (nudge.Id, details);
         _withdrawn = false;
         return nudge;
+    }
+
+    /// <summary>
+    /// Folds what the server knows about <paramref name="nudge"/>'s absence into it, between <see cref="TakeDue"/> and showing.
+    /// Null when the toast should not show: the absence is mostly recorded already (the question is settled, and a press on
+    /// nothing can't match), or a newer question replaced this one while the server was asked. A null
+    /// <paramref name="known"/> leaves the toast as it was.
+    /// </summary>
+    public Nudge? Consider(Nudge nudge, AwayKnown? known)
+    {
+        if (_outstanding is not { } outstanding || outstanding.Id != nudge.Id) return null;
+        if (known is null) return nudge;
+
+        var details = outstanding.Details;
+        if (known.RecordedSeconds >= (details.ToUtc - details.FromUtc).TotalSeconds * CoveredShare)
+        {
+            _outstanding = null;
+            return null;
+        }
+
+        details = details with { Known = known };
+        _outstanding = (outstanding.Id, details);
+        return nudge with { Away = details };
     }
 
     /// <summary>

@@ -243,6 +243,49 @@ public class AwayReturnPolicyTests
         Assert.Null(policy.Respond(second.Id, NudgeResponse.AwayAnswer, 3, T0.AddHours(4).AddMinutes(31)));
     }
 
+    /// <summary>
+    /// The server already holds three quarters of the absence (a timer ran, phone time was mapped): nothing is asked, and the
+    /// question is settled so nothing can answer it later.
+    /// </summary>
+    [Theory]
+    [InlineData(35 * 60 + 14, false)] // a second under three quarters of 47 min
+    [InlineData(35 * 60 + 15, true)] // 75 %
+    public void WhatTheServerKnows_MostlyRecorded_SettlesWithoutAToast(int recordedSeconds, bool settled)
+    {
+        var policy = new AwayReturnPolicy();
+        Away(policy, minutes: 47);
+        var nudge = TakeDue(policy, T0.AddMinutes(47))!;
+
+        var shown = policy.Consider(nudge, new AwayKnown { RecordedSeconds = recordedSeconds });
+
+        Assert.Equal(settled, shown is null);
+        Assert.Equal(settled, policy.Respond(nudge.Id, NudgeResponse.SomethingElse, null, T0.AddMinutes(48)) is null);
+    }
+
+    [Fact]
+    public void WhatTheServerKnows_RidesOnTheToast_AndNoAnswerLeavesItAsItWas()
+    {
+        var policy = new AwayReturnPolicy();
+        Away(policy, minutes: 47);
+        var nudge = TakeDue(policy, T0.AddMinutes(47))!;
+        var known = new AwayKnown { PhoneSeconds = 1200, PhoneApps = [new AwayPhoneApp("YouTube", 900)] };
+
+        Assert.Same(nudge, policy.Consider(nudge, null));
+        Assert.Same(known, policy.Consider(nudge, known)!.Away!.Known);
+    }
+
+    [Fact]
+    public void WhatTheServerKnows_AboutAQuestionSinceReplaced_ShowsNothing()
+    {
+        var policy = new AwayReturnPolicy();
+        Away(policy, minutes: 47);
+        var first = TakeDue(policy, T0.AddMinutes(47))!;
+        Away(policy, minutes: 30, start: T0.AddMinutes(48));
+        Assert.NotNull(TakeDue(policy, T0.AddMinutes(78)));
+
+        Assert.Null(policy.Consider(first, new AwayKnown()));
+    }
+
     // ---- helpers ----------------------------------------------------------
 
     /// <summary>

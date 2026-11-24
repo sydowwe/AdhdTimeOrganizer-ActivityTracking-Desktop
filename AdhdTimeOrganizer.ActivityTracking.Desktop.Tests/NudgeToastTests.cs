@@ -1,4 +1,5 @@
 using System.Xml.Linq;
+using AdhdTimeOrganizer.ActivityTracking.Desktop.Models;
 using AdhdTimeOrganizer.ActivityTracking.Desktop.Services;
 using Xunit;
 
@@ -344,6 +345,27 @@ public class NudgeToastTests
             NudgeToast.Text(Away(new AwayAnswer(7, "Thesis", true), new AwayAnswer(21, "Rest", false))));
         Assert.Equal(("Away 47 min — what was it?", $"{span}. One click files it in your history."),
             NudgeToast.Text(Away(new AwayAnswer(21, "Rest", false))));
+    }
+
+    /// <summary>What the server knew about the absence: the phone's time from a minute up, with its busiest apps when it named any.</summary>
+    [Fact]
+    public void Text_AwayReturn_SaysThePhonesTime()
+    {
+        var fromUtc = new DateTime(2026, 11, 24, 10, 2, 0, DateTimeKind.Utc);
+        var toUtc = fromUtc.AddMinutes(47);
+        var span = $"{TimeZoneInfo.ConvertTimeFromUtc(fromUtc, TimeZoneInfo.Local):HH:mm}–{TimeZoneInfo.ConvertTimeFromUtc(toUtc, TimeZoneInfo.Local):HH:mm}";
+        Nudge Away(AwayKnown known, params AwayAnswer[] answers) =>
+            new(1, NudgeKind.AwayReturn, toUtc - fromUtc, null, Away: new AwayDetails(fromUtc, toUtc, answers, known));
+
+        Assert.Equal($"{span} · 21 min on the phone: YouTube, Instagram · planned then: Thesis. One click files it in your history.",
+            NudgeToast.Text(Away(new AwayKnown
+            {
+                PhoneSeconds = 21 * 60, PhoneApps = [new AwayPhoneApp("YouTube", 900), new AwayPhoneApp("Instagram", 300)]
+            }, new AwayAnswer(7, "Thesis", true))).Body);
+        Assert.Equal($"{span} · 3 min on the phone. One click files it in your history.",
+            NudgeToast.Text(Away(new AwayKnown { PhoneSeconds = 200 })).Body);
+        Assert.Equal($"{span}. One click files it in your history.",
+            NudgeToast.Text(Away(new AwayKnown { PhoneSeconds = 59, RecordedSeconds = 600 })).Body);
     }
 
     [Fact]

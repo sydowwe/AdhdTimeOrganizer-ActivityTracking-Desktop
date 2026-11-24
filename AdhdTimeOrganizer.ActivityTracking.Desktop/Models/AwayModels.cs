@@ -26,6 +26,29 @@ public sealed record AwayRecorded
     public int RecordedSeconds { get; init; }
 }
 
+/// <summary>
+/// What the server already knows about an absence (<c>GET /api/tracker/desktop/away?from=&amp;to=</c>, servers from 2026-11-24),
+/// read just before the away toast shows. Pinned as <c>awayKnown</c> in <c>DesktopTrackerWire.samples.json</c>.
+/// </summary>
+public sealed record AwayKnown
+{
+    /// <summary>Seconds of the absence History already holds, whatever the activity, each second once.</summary>
+    [JsonPropertyName("recordedSeconds")]
+    public int RecordedSeconds { get; init; }
+
+    /// <summary>Seconds of the absence the phone was in use.</summary>
+    [JsonPropertyName("phoneSeconds")]
+    public int PhoneSeconds { get; init; }
+
+    /// <summary>The phone's busiest apps in the absence, at most two, busiest first. Labels are the phone's: never logged.</summary>
+    [JsonPropertyName("phoneApps")]
+    public List<AwayPhoneApp> PhoneApps { get; init; } = [];
+}
+
+public sealed record AwayPhoneApp(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("seconds")] int Seconds);
+
 /// <summary>The caller's activities (<c>GET /api/tracker/desktop/activities</c>): what Settings offers as away answers.</summary>
 public sealed record TrackerActivities
 {

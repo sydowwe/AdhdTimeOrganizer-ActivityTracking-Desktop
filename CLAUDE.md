@@ -395,6 +395,12 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
     (a question, not a reproach) but only in a pass with no ramp, hyperfocus or drift toast, and before the block-end heads-up
     and the chime. One not shown within 30 min of the return is let go; a newer absence replaces a held one. An ordinary toast,
     `Expiration` 2 h after the return, and a press counts as long (`AwayReturnPolicy.AnswerFor`).
+  - **What the server already knows** (decided 2026-11-24). Just before showing, `NudgeService` reads
+    `GET /api/tracker/desktop/away?from=&to=` (`AwayKnown`, pinned as `awayKnown`) on the thread pool, at most 3 s
+    (`AwayReadTimeout`), never on the poll loop. `AwayReturnPolicy.Consider` then settles the question **without a toast**
+    when History already holds 75 % of the absence (a timer ran, phone time was mapped, it was logged), or puts the phone's
+    time on it — "20 min on the phone: YouTube, Instagram" from a minute up. No answer (an older server's 404, offline, too
+    slow) asks as before. The phone syncs about every 15 min, so its last minutes may be missing.
   - **Delivery.** `AwayReporter` sends `POST /api/tracker/desktop/away` `{ from, to, activityId }` (pinned as `awayRequest`, and
     the answer as `awayRecorded`, in `DesktopTrackerWire.samples.json`): oldest first, in memory, retried each minute
     (`BreakReporter.Classify`'s rule), let go a day after the absence. The server writes History through the attribution sink,

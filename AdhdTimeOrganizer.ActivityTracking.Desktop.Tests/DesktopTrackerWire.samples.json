@@ -48,5 +48,13 @@
     ]
   },
   "awayRequest": { "from": "2026-10-18T11:02:10Z", "to": "2026-10-18T11:49:40Z", "activityId": 21 },
-  "awayRecorded": { "recordedSeconds": 2850 }
+  "awayRecorded": { "recordedSeconds": 2850 },
+  "awayKnown": {
+    "recordedSeconds": 600,
+    "phoneSeconds": 1260,
+    "phoneApps": [
+      { "name": "YouTube", "seconds": 900 },
+      { "name": "Instagram", "seconds": 300 }
+    ]
+  }
 }

@@ -157,6 +157,10 @@ public class WireSampleTests
 
         Assert.Equal([new TrackerActivity(21, "Meetings"), new TrackerActivity(22, "Rest")], activities!.Activities);
         Assert.Equal(2850, recorded!.RecordedSeconds);
+
+        var known = Samples.Value["awayKnown"]!.Deserialize<AwayKnown>();
+        Assert.Equal((600, 1260), (known!.RecordedSeconds, known.PhoneSeconds));
+        Assert.Equal([new AwayPhoneApp("YouTube", 900), new AwayPhoneApp("Instagram", 300)], known.PhoneApps);
     }
 
     [Fact]
@@ -176,6 +180,7 @@ public class WireSampleTests
     [InlineData("captured", typeof(CaptureResponse))]
     [InlineData("activities", typeof(TrackerActivities))]
     [InlineData("awayRecorded", typeof(AwayRecorded))]
+    [InlineData("awayKnown", typeof(AwayKnown))]
     public void TheTrackerModels_HaveEveryFieldTheServerSends(string sample, Type model)
     {
         var node = Samples.Value[sample]!;

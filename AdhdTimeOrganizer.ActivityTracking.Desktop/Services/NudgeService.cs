@@ -88,7 +88,14 @@ public sealed class NudgeService : IDisposable
     private readonly Action? _capture;
     private readonly Action<BreakReport>? _reportBreak;
     private readonly Action<AwayAnswered>? _reportAway;
+    private readonly Func<DateTime, DateTime, CancellationToken, Task<AwayKnown?>>? _readAway;
     private readonly string _driftStatePath;
+
+    /// <summary>How long the away toast waits for the server's account of the absence before asking without it.</summary>
+    internal static readonly TimeSpan AwayReadTimeout = TimeSpan.FromSeconds(3);
+
+    /// <summary>The latest away toast's read-then-show, so tests can wait for it. Completed when there is none.</summary>
+    internal Task AwayShown { get; private set; } = Task.CompletedTask;
     private readonly string _rampStatePath;
     private readonly string _blockEndStatePath;
     private readonly string _chimeStatePath;
@@ -133,12 +140,17 @@ public sealed class NudgeService : IDisposable
     /// <param name="reportBreak">A started break changed (prompt 10): hands it to <see cref="BreakReporter"/>. Null tells no one.</param>
     /// <param name="resume">"Resume" on a pause reminder; resumes tracking on the UI thread. Null does nothing.</param>
     /// <param name="reportAway">An absence answered with an activity (prompt 23): hands it to <see cref="AwayReporter"/>. Null tells no one.</param>
+    /// <param name="readAway">
+    /// What the server already knows about an absence (<c>ApiClient.FetchAwayKnownAsync</c>), null when it couldn't say. Null
+    /// shows the away toast without asking.
+    /// </param>
     public NudgeService(AppConfig config, SynchronizationContext? uiContext, Action? signIn = null,
         Func<long, Task<bool>>? startBlock = null, Func<long, Task<bool>>? skipBlock = null, Action? capture = null,
-        Action<BreakReport>? reportBreak = null, Action? resume = null, Action<AwayAnswered>? reportAway = null)
+        Action<BreakReport>? reportBreak = null, Action? resume = null, Action<AwayAnswered>? reportAway = null,
+        Func<DateTime, DateTime, CancellationToken, Task<AwayKnown?>>? readAway = null)
         : this(config, uiContext, onActivated => new NudgeNotifier(onActivated), OpenInBrowser, DefaultDriftStatePath, signIn,
             startBlock: startBlock, skipBlock: skipBlock, capture: capture, reportBreak: reportBreak, resume: resume,
-            reportAway: reportAway)
+            reportAway: reportAway, readAway: readAway)
     {
     }
 
@@ -156,16 +168,19 @@ public sealed class NudgeService : IDisposable
     /// <param name="reportBreak">A started break changed; tests record the reports.</param>
     /// <param name="resume">"Resume" on a pause reminder; tests count it.</param>
     /// <param name="reportAway">An answered absence; tests record the answers.</param>
+    /// <param name="readAway">The server's account of an absence; tests answer it.</param>
     internal NudgeService(AppConfig config, SynchronizationContext? uiContext,
         Func<Action<NudgeActivation>, INudgeNotifier> createNotifier, Action<Uri> openInBrowser, string driftStatePath,
         Action? signIn = null, Action<string>? openFolder = null, Func<long, Task<bool>>? startBlock = null,
         Func<long, Task<bool>>? skipBlock = null, TimeZoneInfo? zone = null, Action? capture = null,
-        Action<BreakReport>? reportBreak = null, Action? resume = null, Action<AwayAnswered>? reportAway = null)
+        Action<BreakReport>? reportBreak = null, Action? resume = null, Action<AwayAnswered>? reportAway = null,
+        Func<DateTime, DateTime, CancellationToken, Task<AwayKnown?>>? readAway = null)
     {
         _capture = capture;
         _resume = resume;
         _reportBreak = reportBreak;
         _reportAway = reportAway;
+        _readAway = readAway;
         _chime = new ChimeSchedule(zone ?? TimeZoneInfo.Local);
         _chimeStatePath = Path.Combine(Path.GetDirectoryName(driftStatePath)!, ChimeStateFileName);
         if (LoadState<ChimeState>(_chimeStatePath, "time chime") is { } chime) _chime.Restore(chime);
@@ -560,7 +575,8 @@ public sealed class NudgeService : IDisposable
             // No names: the answers are the user's own words.
             _log.Information("Away question after {Minutes} min away, {Answers} answer(s)", (int)away.Length.TotalMinutes,
                 away.Away!.Answers.Count);
-            _notifier.Show(away);
+            if (_readAway is null) _notifier.Show(away);
+            else AwayShown = Task.Run(() => ShowAwayAsync(away)); // the read never holds up the poll loop
         }
 
         if (blockEnd is not null)
@@ -798,6 +814,44 @@ public sealed class NudgeService : IDisposable
         _notifier.Remove(NudgeKind.TimeChime);
         _log.Information("Time chime stopped for today");
         Evaluate(nowUtc); // saves the state
+    }
+
+    /// <summary>
+    /// Asks the server what it knows about the absence — at most <see cref="AwayReadTimeout"/> — and shows the toast with it,
+    /// or not at all when History already accounts for the time (<see cref="AwayReturnPolicy.Consider"/>). No answer asks as
+    /// before. Never throws: it runs on the thread pool.
+    /// </summary>
+    private async Task ShowAwayAsync(Nudge nudge)
+    {
+        try
+        {
+            AwayKnown? known = null;
+            using (var timeout = new CancellationTokenSource(AwayReadTimeout))
+            {
+                try
+                {
+                    known = await _readAway!(nudge.Away!.FromUtc, nudge.Away.ToUtc, timeout.Token).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _log.Debug(ex, "What is known about the absence could not be read — asking without it");
+                }
+            }
+
+            Nudge? shown;
+            lock (_lock) shown = _away.Consider(nudge, known);
+
+            if (shown is not null)
+                _notifier.Show(shown);
+            else if (known is not null)
+                // Minutes only: what the time was is the user's.
+                _log.Information("Away question not asked: {Recorded} of {Minutes} min already recorded",
+                    known.RecordedSeconds / 60, (int)nudge.Length.TotalMinutes);
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Away question failed");
+        }
     }
 
     /// <summary>

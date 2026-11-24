@@ -642,6 +642,20 @@ public sealed class ApiClient(AppConfig config, HttpMessageHandler? handler = nu
         }
     }
 
+    /// <summary>
+    /// What the server already knows about an absence, read just before the away toast shows. A 404 is a server from before
+    /// the route; then, and on any failure, the toast asks as it would without it.
+    /// </summary>
+    public async Task<TrackerRead<AwayKnown>> FetchAwayKnownAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
+    {
+        static string Instant(DateTime utc) => Uri.EscapeDataString(
+            DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture));
+
+        var (status, value) = await GetTrackerJsonAsync<AwayKnown>(
+            $"{TrackerAwayPath}?from={Instant(fromUtc)}&to={Instant(toUtc)}", "Away known", ct);
+        return new TrackerRead<AwayKnown>(status, value);
+    }
+
     /// <summary>The user's activities, for the away answers in Settings. A 404 is a server from before the route.</summary>
     public async Task<TrackerRead<TrackerActivities>> FetchActivitiesAsync(CancellationToken ct)
     {
