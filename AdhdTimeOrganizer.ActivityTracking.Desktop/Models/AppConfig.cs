@@ -381,7 +381,7 @@ public sealed class AppConfig
     /// <remarks>
     /// <list type="bullet">
     /// <item>Read: a legacy plain-text token moves to DPAPI, and the file — as it is now on disk — is copied to
-    /// <c>.bak</c>, the last file that loaded.</item>
+    /// <c>.bak</c>, the last file that loaded. Every <see cref="Save"/> after that writes <c>.bak</c> too.</item>
     /// <item>Damaged (empty, cut short, not JSON): moved to <c>.bad</c> (one kept), then <c>.bak</c> is used, then defaults
     /// with every title hidden; either is saved at once, so a crash right after cannot come back as a clean first start.</item>
     /// <item>Could not be opened, even after a short wait: the same fall-back, but the file is left where it is and the
@@ -601,7 +601,20 @@ public sealed class AppConfig
                 return;
             }
 
-            JsonFile.Write(FilePath, this, WriteOptions);
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(this, WriteOptions);
+            JsonFile.WriteBytes(FilePath, bytes);
+
+            // The backup follows every save, not only each start: a rule added today must survive tomorrow's damaged file,
+            // or the title it hides is uploaded from the restored copy. After the file itself, so a failure here costs
+            // only the backup.
+            try
+            {
+                JsonFile.WriteBytes(FilePath + ".bak", bytes);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Could not update the config backup");
+            }
         }
     }
 

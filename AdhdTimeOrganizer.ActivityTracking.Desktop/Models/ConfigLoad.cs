@@ -9,7 +9,7 @@ public enum ConfigOrigin
     /// <summary>No <c>config.json</c> yet: a first start. Defaults, and nothing to say.</summary>
     Created,
 
-    /// <summary><c>config.json</c> was damaged or could not be opened; <c>config.json.bak</c>, the last file that loaded, was used, without its refresh token.</summary>
+    /// <summary><c>config.json</c> was damaged or could not be opened; <c>config.json.bak</c>, the last file that loaded or was saved, was used, without its refresh token.</summary>
     FromBackup,
 
     /// <summary>Neither file could be used: defaults, with every title hidden until the Privacy form is saved.</summary>

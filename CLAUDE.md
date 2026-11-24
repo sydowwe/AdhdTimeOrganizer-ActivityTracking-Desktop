@@ -219,7 +219,8 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   already holds — a poll and a button press could otherwise write the older state last.
 - **`config.json` never falls back to defaults silently** (`AppConfig.Load(path)` → `ConfigLoad`): the tray's first act
   without a session is a save, which used to overwrite a damaged file — rules, pause, chime choices and all. A file that
-  loads is copied to `config.json.bak`. A damaged one goes to `config.json.bad` (one kept), then `.bak` is used, **without its
+  loads is copied to `config.json.bak`, and every save writes it too — a backup only from the start would be a session
+  behind, and a hide-title rule added since would be missing from the restored copy. A damaged one goes to `config.json.bad` (one kept), then `.bak` is used, **without its
   refresh token** — it has been rotated since, and the server answers a rotated token by revoking every session of the
   account — then defaults with `HideAllTitlesUntilReviewed` (see "Privacy before upload"); either is saved at once. One that
   can't be opened (after ~2 s of retries) gets the same fall-back but is neither moved nor saved over — not by the load, and

@@ -86,6 +86,40 @@ public sealed class AppConfigLoadTests : IDisposable
         Assert.Equal(2, AppConfig.Load(_path).Config.LocalRules.Count);
     }
 
+    /// <summary>
+    /// A backup written only at start is a session behind: a hide-title rule added today would be missing from it, and the
+    /// title uploaded after tomorrow's damaged file. Every save writes it.
+    /// </summary>
+    [Fact]
+    public void ARuleAddedSinceStart_SurvivesADamagedFile()
+    {
+        Customized().Save();
+        var config = AppConfig.Load(_path).Config;
+
+        config.LocalRules = [.. config.LocalRules, new LocalRule { Action = LocalRuleAction.HideTitle, ProcessName = "signal" }];
+        config.Save();
+        Assert.Equal(File.ReadAllBytes(_path), File.ReadAllBytes(Bak));
+
+        File.WriteAllBytes(_path, []);
+        var load = AppConfig.Load(_path);
+
+        Assert.Equal(ConfigOrigin.FromBackup, load.Origin);
+        Assert.Equal(["firefox", "LockApp", "signal"], load.Config.LocalRules.Select(r => r.ProcessName));
+        Assert.False(load.Config.HideAllTitlesUntilReviewed);
+    }
+
+    /// <summary>The backup is a convenience: one that can't be written never costs the save itself.</summary>
+    [Fact]
+    public void ABackupThatCannotBeWritten_DoesNotFailTheSave()
+    {
+        var config = Customized();
+        Directory.CreateDirectory(Bak); // a folder where the backup should be: every write to it fails
+
+        config.Save();
+
+        Assert.Equal(["firefox", "LockApp"], AppConfig.Load(_path).Config.LocalRules.Select(r => r.ProcessName));
+    }
+
     [Fact]
     public void BadJson_WithoutABackup_FallsBackToDefaults_WithEveryTitleHidden_AndSaysSo()
     {
