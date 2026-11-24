@@ -222,8 +222,10 @@ The server is the sibling repo `../AdhdTimeOrganizer` (Tracking slice:
   loads is copied to `config.json.bak`. A damaged one goes to `config.json.bad` (one kept), then `.bak` is used, **without its
   refresh token** — it has been rotated since, and the server answers a rotated token by revoking every session of the
   account — then defaults with `HideAllTitlesUntilReviewed` (see "Privacy before upload"); either is saved at once. One that
-  can't be opened (after ~2 s of retries) gets the same fall-back but is neither moved nor saved over. The tray says what
-  happened once, in a balloon, in counts (`ConfigLoad.Notice`).
+  can't be opened (after ~2 s of retries) gets the same fall-back but is neither moved nor saved over — not by the load, and
+  not later in the run: that stand-in's `Save` does nothing, because the tray saves at once when there is no session and the
+  stand-in never has one. The next start reads the real file; changes made meanwhile are lost, and the notice says so. The
+  tray says what happened once, in a balloon, in counts (`ConfigLoad.Notice`).
 - **A config value this build doesn't know costs that value, not the file.** Config enums use `LenientEnumConverter`
   (writes the member name like `JsonStringEnumConverter`; an unknown name reads as an undefined value), and
   `AppConfig.Normalize` resets those, `null` lists and blank URLs to their defaults and clamps each number to its

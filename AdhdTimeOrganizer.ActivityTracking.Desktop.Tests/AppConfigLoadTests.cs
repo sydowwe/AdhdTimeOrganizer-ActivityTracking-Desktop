@@ -129,13 +129,17 @@ public sealed class AppConfigLoadTests : IDisposable
         Assert.Single(Directory.GetFiles(_directory, "*.bad"));
     }
 
-    /// <summary>Locked at logon by a scanner, say: not damaged. Nothing is moved or saved over it.</summary>
+    /// <summary>
+    /// Locked at logon by a scanner, say: not damaged. Nothing is moved or saved over it — not by the load, and not by the
+    /// stand-in afterwards: the tray saves straight away when there is no session, and the backup never carries one.
+    /// </summary>
     [Fact]
-    public void AFileThatCannotBeOpened_IsLeftInPlace_AndTheBackupIsUsedForNow()
+    public void AFileThatCannotBeOpened_IsLeftInPlace_AndTheBackupIsUsedForNow_WithoutEverSavingOverIt()
     {
         Customized().Save();
         AppConfig.Load(_path);
         var before = File.ReadAllBytes(_path);
+        var backupBefore = File.ReadAllBytes(Bak);
 
         ConfigLoad load;
         using (new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.None))
@@ -143,9 +147,50 @@ public sealed class AppConfigLoadTests : IDisposable
 
         Assert.Equal(ConfigOrigin.FromBackup, load.Origin);
         Assert.True(load.CouldNotOpen);
-        Assert.Contains("couldn't be opened", load.Notice()!.Value.Text);
+        var notice = load.Notice()!.Value.Text;
+        Assert.Contains("couldn't be opened", notice);
+        Assert.Contains("until a restart", notice);
         Assert.False(File.Exists(Bad));
         Assert.Equal(before, File.ReadAllBytes(_path));
+
+        // The lock is gone; the tray signs in and saves, as it does with no session.
+        load.Config.RefreshToken = "signed-in-again";
+        load.Config.LocalRules = [];
+        load.Config.Save();
+
+        Assert.Equal(before, File.ReadAllBytes(_path));
+        Assert.Equal(backupBefore, File.ReadAllBytes(Bak));
+        var next = AppConfig.Load(_path);
+        Assert.Equal(ConfigOrigin.Loaded, next.Origin);
+        Assert.Equal("refresh-SECRET", next.Config.RefreshToken);
+        Assert.Equal(["firefox", "LockApp"], next.Config.LocalRules.Select(r => r.ProcessName));
+    }
+
+    /// <summary>
+    /// The worst case of the one above: no backup yet (the first start on a build that writes one), so the stand-in is the
+    /// defaults. Saving them over the real file would lose the user's rules for good.
+    /// </summary>
+    [Fact]
+    public void AFileThatCannotBeOpened_WithNoBackup_IsNeverReplacedByTheDefaults()
+    {
+        Customized().Save();
+        File.Delete(Bak);
+        var before = File.ReadAllBytes(_path);
+
+        ConfigLoad load;
+        using (new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.None))
+            load = AppConfig.Load(_path);
+
+        Assert.Equal(ConfigOrigin.Defaults, load.Origin);
+        Assert.True(load.Config.HideAllTitlesUntilReviewed);
+
+        load.Config.Save();
+        load.Config.HideAllTitlesUntilReviewed = false; // the Privacy form saved
+        load.Config.Save();
+
+        Assert.Equal(before, File.ReadAllBytes(_path));
+        Assert.False(File.Exists(Bak));
+        Assert.Equal(["firefox", "LockApp"], AppConfig.Load(_path).Config.LocalRules.Select(r => r.ProcessName));
     }
 
     /// <summary>A newer build's value must cost that one setting, not the file: that would take the rules with it.</summary>

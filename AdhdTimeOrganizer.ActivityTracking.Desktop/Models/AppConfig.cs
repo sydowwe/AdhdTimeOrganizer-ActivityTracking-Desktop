@@ -105,6 +105,15 @@ public sealed class AppConfig
 
     private static readonly Lock SaveGate = new();
 
+    /// <summary>
+    /// This config stands in for a <c>config.json</c> that was there but could not be opened: <see cref="Save"/> writes
+    /// nothing for the rest of the run. The tray saves straight after start when there is no session — and a stand-in never
+    /// has one — so without this the backup or the defaults would replace the user's real file as soon as its lock went.
+    /// The next start reads the real file; what changed meanwhile is lost, and the tray's notice says so.
+    /// </summary>
+    private bool _savesHeld;
+    private bool _heldSaveLogged;
+
 #if DEBUG
     public string ApiBaseUrl { get; set; } = "https://localhost:8080";
 
@@ -375,8 +384,8 @@ public sealed class AppConfig
     /// <c>.bak</c>, the last file that loaded.</item>
     /// <item>Damaged (empty, cut short, not JSON): moved to <c>.bad</c> (one kept), then <c>.bak</c> is used, then defaults
     /// with every title hidden; either is saved at once, so a crash right after cannot come back as a clean first start.</item>
-    /// <item>Could not be opened, even after a short wait: the same fall-back, but the file is left where it is and nothing
-    /// is saved over it here.</item>
+    /// <item>Could not be opened, even after a short wait: the same fall-back, but the file is left where it is and the
+    /// stand-in never saves over it — not here, and not later in the run either.</item>
     /// <item>From <c>.bak</c>, the refresh token is dropped: it has almost certainly been rotated since, and the server
     /// answers an old one as a stolen token — by revoking every session of the account.</item>
     /// </list>
@@ -468,7 +477,9 @@ public sealed class AppConfig
                 CouldNotOpen: couldNotOpen);
         }
 
-        if (!couldNotOpen)
+        if (couldNotOpen)
+            load.Config._savesHeld = true;
+        else
         {
             try
             {
@@ -579,7 +590,19 @@ public sealed class AppConfig
 
     public void Save()
     {
-        lock (SaveGate) JsonFile.Write(FilePath, this, WriteOptions);
+        lock (SaveGate)
+        {
+            if (_savesHeld)
+            {
+                if (!_heldSaveLogged)
+                    Log.Warning("Not saving {File}: it could not be opened at start, and this stand-in would replace it — " +
+                                "changes are kept until the tracker exits", Path.GetFileName(FilePath));
+                _heldSaveLogged = true;
+                return;
+            }
+
+            JsonFile.Write(FilePath, this, WriteOptions);
+        }
     }
 
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
